@@ -3,6 +3,7 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { getDiskInfo } from 'node-disk-info'
+import { scanDrive, getGroupedFiles } from './scanner'
 
 let mainWindow: BrowserWindow
 
@@ -35,7 +36,6 @@ function createWindow(): void {
   }
 }
 
-// Send drive list to renderer
 async function sendDrives(): Promise<void> {
   try {
     const disks = await getDiskInfo()
@@ -66,6 +66,28 @@ app.whenReady().then(() => {
   // Send drives when renderer asks
   ipcMain.on('get-drives', () => {
     sendDrives()
+  })
+
+  // Scan a drive when user selects it
+  ipcMain.on('scan-drive', async (_event, drivePath: string) => {
+    let count = 0
+    await scanDrive(drivePath, (progress) => {
+      count = progress
+      if (mainWindow) {
+        mainWindow.webContents.send('scan-progress', { count, drive: drivePath })
+      }
+    })
+    if (mainWindow) {
+      mainWindow.webContents.send('scan-complete', { count, drive: drivePath })
+    }
+  })
+
+  // Get grouped files for a drive
+  ipcMain.on('get-files', (_event, drivePath: string) => {
+    const grouped = getGroupedFiles(drivePath)
+    if (mainWindow) {
+      mainWindow.webContents.send('files-updated', grouped)
+    }
   })
 
   createWindow()
