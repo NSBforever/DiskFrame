@@ -14,6 +14,11 @@ declare global {
     api: {
       getDrives: () => void
       onDrivesUpdated: (callback: (drives: DriveInfo[]) => void) => void
+      scanDrive: (drivePath: string) => void
+      getFiles: (drivePath: string) => void
+      onScanProgress: (callback: (data: { count: number; drive: string }) => void) => void
+      onScanComplete: (callback: (data: { count: number; drive: string }) => void) => void
+      onFilesUpdated: (callback: (grouped: Record<string, unknown[]>) => void) => void
     }
   }
 }

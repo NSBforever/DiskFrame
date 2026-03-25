@@ -8,63 +8,97 @@ interface DriveInfo {
   free: number
 }
 
+interface ScannedFile {
+  path: string
+  name: string
+  ext: string
+  size: number
+  date: string
+  year: string
+  month: string
+  lat: number | null
+  lng: number | null
+  drive: string
+}
+
 function App(): React.JSX.Element {
   const [activeNav, setActiveNav] = useState('all')
   const [drives, setDrives] = useState<DriveInfo[]>([])
+  const [selectedDrive, setSelectedDrive] = useState<string | null>(null)
+  const [scanning, setScanning] = useState(false)
+  const [scanCount, setScanCount] = useState(0)
+  const [groupedFiles, setGroupedFiles] = useState<Record<string, ScannedFile[]>>({})
 
   useEffect(() => {
-    // Ask main process for drives
     window.api.getDrives()
-
-    // Listen for drive updates
     window.api.onDrivesUpdated((updatedDrives) => {
-      setDrives(updatedDrives)
+      setDrives(updatedDrives as DriveInfo[])
+    })
+    window.api.onScanProgress((data) => {
+      setScanCount(data.count)
+    })
+    window.api.onScanComplete((data) => {
+      setScanning(false)
+      setScanCount(data.count)
+      window.api.getFiles(data.drive)
+    })
+    window.api.onFilesUpdated((grouped) => {
+      setGroupedFiles(grouped as Record<string, ScannedFile[]>)
     })
   }, [])
 
+  const handleDriveClick = (driveName: string): void => {
+    setSelectedDrive(driveName)
+    setScanning(true)
+    setScanCount(0)
+    setGroupedFiles({})
+    window.api.scanDrive(driveName)
+  }
+
+  const months = Object.keys(groupedFiles).sort((a, b) => b.localeCompare(a))
+  const photoExts = ['.jpg', '.jpeg', '.png', '.heic', '.raw', '.cr2', '.nef']
+
   return (
     <div style={{
-      display: 'flex',
-      height: '100vh',
-      background: '#0f0f10',
-      color: '#e8e8ea',
-      fontFamily: 'system-ui, sans-serif',
-      fontSize: '13px',
-      overflow: 'hidden'
+      display: 'flex', height: '100vh', background: '#0f0f10',
+      color: '#e8e8ea', fontFamily: 'system-ui, sans-serif',
+      fontSize: '13px', overflow: 'hidden'
     }}>
       {/* Sidebar */}
-      <div style={{
-        width: '200px',
-        background: '#161618',
-        borderRight: '0.5px solid #2a2a2e',
-        display: 'flex',
-        flexDirection: 'column',
-        flexShrink: 0
-      }}>
+      <div style={{ width: '200px', background: '#161618', borderRight: '0.5px solid #2a2a2e', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
         <div style={{ padding: '16px 14px 12px', borderBottom: '0.5px solid #2a2a2e' }}>
           <div style={{ fontSize: '15px', fontWeight: 500, color: '#f0f0f2', letterSpacing: '-0.3px' }}>DiskFrame</div>
           <div style={{ fontSize: '11px', color: '#5a5a62', marginTop: '2px' }}>Smart file organiser</div>
         </div>
 
-        {/* Real Drives */}
-        <div style={{ overflowY: 'auto', maxHeight: '220px' }}>
+        {/* Drives */}
+        <div style={{ overflowY: 'auto', maxHeight: '240px' }}>
           {drives.length === 0 ? (
             <div style={{ margin: '12px 10px', fontSize: '11px', color: '#5a5a62' }}>Scanning drives...</div>
           ) : (
             drives.map((drive, i) => {
               const usedPercent = drive.total > 0 ? Math.round((drive.used / drive.total) * 100) : 0
+              const isSelected = selectedDrive === drive.name
               return (
-                <div key={i} style={{ margin: '8px 10px', background: '#1e1e22', borderRadius: '10px', padding: '10px 12px', border: '0.5px solid #2e2e36' }}>
+                <div key={i} onClick={() => handleDriveClick(drive.name)} style={{
+                  margin: '8px 10px', background: isSelected ? '#22223a' : '#1e1e22',
+                  borderRadius: '10px', padding: '10px 12px',
+                  border: `0.5px solid ${isSelected ? '#4040a0' : '#2e2e36'}`,
+                  cursor: 'pointer'
+                }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', fontWeight: 500, color: '#c8c8d0' }}>
                     <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#4cd97b', flexShrink: 0 }}></div>
                     {drive.name}
                   </div>
-                  <div style={{ fontSize: '10px', color: '#5a5a62', marginTop: '4px' }}>
-                    {drive.total} GB total · {drive.free} GB free
-                  </div>
+                  <div style={{ fontSize: '10px', color: '#5a5a62', marginTop: '4px' }}>{drive.total} GB · {drive.free} GB free</div>
                   <div style={{ height: '3px', background: '#2a2a2e', borderRadius: '2px', marginTop: '8px' }}>
                     <div style={{ height: '100%', width: `${usedPercent}%`, background: '#6c6cff', borderRadius: '2px' }}></div>
                   </div>
+                  {isSelected && (
+                    <div style={{ fontSize: '10px', color: '#6c6cff', marginTop: '6px' }}>
+                      {scanning ? `Scanning... ${scanCount} files` : `${scanCount} files indexed`}
+                    </div>
+                  )}
                 </div>
               )
             })
@@ -75,10 +109,10 @@ function App(): React.JSX.Element {
         <div style={{ padding: '10px 10px 4px' }}>
           <div style={{ fontSize: '10px', color: '#44444e', textTransform: 'uppercase', letterSpacing: '0.8px', padding: '0 4px', marginBottom: '4px' }}>Browse</div>
           {[
-            { id: 'all', label: 'All files', count: '4,821' },
-            { id: 'photos', label: 'Photos', count: '3,204' },
-            { id: 'videos', label: 'Videos', count: '617' },
-            { id: 'docs', label: 'Documents', count: '1,000' },
+            { id: 'all', label: 'All files' },
+            { id: 'photos', label: 'Photos' },
+            { id: 'videos', label: 'Videos' },
+            { id: 'docs', label: 'Documents' },
           ].map(item => (
             <div key={item.id} onClick={() => setActiveNav(item.id)} style={{
               display: 'flex', alignItems: 'center', gap: '8px',
@@ -87,70 +121,83 @@ function App(): React.JSX.Element {
               background: activeNav === item.id ? '#252530' : 'transparent'
             }}>
               <span style={{ flex: 1 }}>{item.label}</span>
-              <span style={{ fontSize: '10px', color: '#44444e' }}>{item.count}</span>
-            </div>
-          ))}
-        </div>
-
-        <div style={{ padding: '10px 10px 4px' }}>
-          <div style={{ fontSize: '10px', color: '#44444e', textTransform: 'uppercase', letterSpacing: '0.8px', padding: '0 4px', marginBottom: '4px' }}>Events</div>
-          {['Goa Trip', 'Graduation Day', 'Hostel Memories'].map(event => (
-            <div key={event} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', borderRadius: '7px', cursor: 'pointer', color: '#9090a0' }}>
-              <span style={{ fontSize: '12px' }}>★</span>
-              <span style={{ flex: 1 }}>{event}</span>
             </div>
           ))}
         </div>
       </div>
 
-      {/* Main content */}
+      {/* Main */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         {/* Topbar */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 18px', borderBottom: '0.5px solid #2a2a2e', background: '#0f0f10' }}>
           <div style={{ flex: 1, fontSize: '13px', color: '#6060a0' }}>
-            DiskFrame › <span style={{ color: '#e8e8f4' }}>{activeNav}</span>
+            {selectedDrive ? <><span style={{ color: '#e8e8f4' }}>{selectedDrive}</span> › {activeNav}</> : 'Select a drive to scan'}
           </div>
           <div style={{ display: 'flex', gap: '2px', background: '#1a1a1e', borderRadius: '7px', padding: '2px' }}>
             {['Grid', 'Timeline', 'Map'].map(v => (
               <div key={v} style={{ padding: '4px 8px', borderRadius: '5px', cursor: 'pointer', fontSize: '11px', background: v === 'Grid' ? '#252530' : 'transparent', color: v === 'Grid' ? '#c0c0e0' : '#5a5a70' }}>{v}</div>
             ))}
           </div>
-          <div style={{ fontSize: '11px', color: '#5a5a70', background: '#1a1a1e', border: '0.5px solid #2a2a2e', borderRadius: '6px', padding: '4px 10px', cursor: 'pointer' }}>Sort: Date ↓</div>
         </div>
 
-        {/* Photo Grid */}
+        {/* Content */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '16px 18px' }}>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', marginBottom: '10px' }}>
-            <div style={{ fontSize: '15px', fontWeight: 500, color: '#e0e0f0' }}>December 2024</div>
-            <div style={{ fontSize: '11px', color: '#44444e' }}>· 142 files</div>
-            <div style={{ fontSize: '10px', color: '#8080c0', background: '#1a1a2e', border: '0.5px solid #2a2a4e', borderRadius: '5px', padding: '2px 7px', marginLeft: '6px' }}>★ Goa Trip</div>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '4px', marginBottom: '20px' }}>
-            {['#1a3040','#2a1f3a','#1f2e20','#3a2218','#1e2040','#28201e','#1c3030','#301c28','#223020','#2a2a1c'].map((bg, i) => (
-              <div key={i} style={{ background: bg, borderRadius: '6px', aspectRatio: '1', cursor: 'pointer' }}></div>
-            ))}
-          </div>
+          {!selectedDrive && (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#44444e' }}>
+              <div style={{ fontSize: '32px', marginBottom: '12px' }}>💾</div>
+              <div style={{ fontSize: '14px', fontWeight: 500, color: '#6060a0' }}>Click a drive to scan it</div>
+              <div style={{ fontSize: '12px', marginTop: '4px' }}>DiskFrame will read EXIF data and organise your files by date</div>
+            </div>
+          )}
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
-            <div style={{ fontSize: '12px', color: '#5a5a72' }}>November</div>
-            <div style={{ flex: 1, height: '0.5px', background: '#222228' }}></div>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', marginBottom: '10px' }}>
-            <div style={{ fontSize: '15px', fontWeight: 500, color: '#e0e0f0' }}>November 2024</div>
-            <div style={{ fontSize: '11px', color: '#44444e' }}>· 98 files</div>
-            <div style={{ fontSize: '10px', color: '#8080c0', background: '#1a1a2e', border: '0.5px solid #2a2a4e', borderRadius: '5px', padding: '2px 7px', marginLeft: '6px' }}>★ Graduation Day</div>
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '4px' }}>
-            {['#1e2840','#28181a','#1a2820','#2e2018','#181e30','#201e28'].map((bg, i) => (
-              <div key={i} style={{ background: bg, borderRadius: '6px', aspectRatio: '4/3', cursor: 'pointer' }}></div>
-            ))}
-          </div>
+          {scanning && (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#44444e' }}>
+              <div style={{ fontSize: '14px', fontWeight: 500, color: '#6c6cff', marginBottom: '8px' }}>Scanning {selectedDrive}...</div>
+              <div style={{ fontSize: '12px', color: '#5a5a72' }}>{scanCount} files found so far</div>
+              <div style={{ marginTop: '16px', width: '200px', height: '3px', background: '#2a2a2e', borderRadius: '2px' }}>
+                <div style={{ height: '100%', width: '60%', background: '#6c6cff', borderRadius: '2px', animation: 'pulse 1.5s ease-in-out infinite' }}></div>
+              </div>
+            </div>
+          )}
+
+          {!scanning && months.length > 0 && months.map(monthKey => {
+            const files = groupedFiles[monthKey]
+            const photos = activeNav === 'videos'
+              ? files.filter(f => ['.mp4', '.mov', '.avi'].includes(f.ext))
+              : activeNav === 'photos'
+              ? files.filter(f => photoExts.includes(f.ext))
+              : files
+
+            if (photos.length === 0) return null
+            const [year, month] = monthKey.split('-')
+
+            return (
+              <div key={monthKey} style={{ marginBottom: '24px' }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '8px', marginBottom: '10px' }}>
+                  <div style={{ fontSize: '15px', fontWeight: 500, color: '#e0e0f0' }}>{month} {year}</div>
+                  <div style={{ fontSize: '11px', color: '#44444e' }}>· {photos.length} files</div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: '4px' }}>
+                  {photos.slice(0, 18).map((file, i) => (
+                    <div key={i} title={file.name} style={{
+                      background: photoExts.includes(file.ext) ? '#1a2840' : '#2a1a1a',
+                      borderRadius: '6px', aspectRatio: '1', cursor: 'pointer',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: '10px', color: '#44444e', overflow: 'hidden'
+                    }}>
+                      {file.ext}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          })}
         </div>
 
         {/* Status bar */}
         <div style={{ borderTop: '0.5px solid #2a2a2e', padding: '8px 18px', display: 'flex', alignItems: 'center', gap: '16px', background: '#0d0d0f' }}>
-          <div style={{ fontSize: '11px', color: '#44444e' }}><span style={{ color: '#8080a8' }}>{drives.length}</span> drives connected</div>
-          <div style={{ fontSize: '11px', color: '#44444e' }}><span style={{ color: '#8080a8' }}>4,821</span> total files</div>
+          <div style={{ fontSize: '11px', color: '#44444e' }}><span style={{ color: '#8080a8' }}>{drives.length}</span> drives</div>
+          <div style={{ fontSize: '11px', color: '#44444e' }}><span style={{ color: '#8080a8' }}>{Object.values(groupedFiles).flat().length}</span> files indexed</div>
           <div style={{ marginLeft: 'auto', fontSize: '10px', color: '#4cd97b', background: 'rgba(76,217,123,0.1)', border: '0.5px solid rgba(76,217,123,0.3)', borderRadius: '4px', padding: '2px 8px' }}>● live</div>
         </div>
       </div>

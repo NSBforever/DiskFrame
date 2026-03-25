@@ -69,9 +69,11 @@ app.whenReady().then(() => {
   })
 
   // Scan a drive when user selects it
-  ipcMain.on('scan-drive', async (_event, drivePath: string) => {
+ ipcMain.on('scan-drive', async (_event, drivePath: string) => {
     let count = 0
-    await scanDrive(drivePath, (progress) => {
+    const { homedir } = await import('os')
+    const scanPath = drivePath === 'C:' ? homedir() : drivePath
+    await scanDrive(scanPath, (progress) => {
       count = progress
       if (mainWindow) {
         mainWindow.webContents.send('scan-progress', { count, drive: drivePath })
@@ -84,7 +86,7 @@ app.whenReady().then(() => {
 
   // Get grouped files for a drive
   ipcMain.on('get-files', (_event, drivePath: string) => {
-    const grouped = getGroupedFiles(drivePath)
+    const grouped = getGroupedFiles()
     if (mainWindow) {
       mainWindow.webContents.send('files-updated', grouped)
     }

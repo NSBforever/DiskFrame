@@ -7,7 +7,6 @@ import { app } from 'electron'
 const dbPath = join(app.getPath('userData'), 'diskframe.db')
 const db = new Database(dbPath)
 
-// Create table if not exists
 db.exec(`
   CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -37,7 +36,6 @@ export interface ScannedFile {
   drive: string
 }
 
-// Get all files from DB
 export function getFiles(drive?: string): ScannedFile[] {
   if (drive) {
     return db.prepare('SELECT * FROM files WHERE drive = ? ORDER BY date DESC').all(drive) as ScannedFile[]
@@ -45,7 +43,6 @@ export function getFiles(drive?: string): ScannedFile[] {
   return db.prepare('SELECT * FROM files ORDER BY date DESC').all() as ScannedFile[]
 }
 
-// Get files grouped by year/month
 export function getGroupedFiles(drive?: string): Record<string, ScannedFile[]> {
   const files = getFiles(drive)
   const grouped: Record<string, ScannedFile[]> = {}
@@ -57,12 +54,17 @@ export function getGroupedFiles(drive?: string): Record<string, ScannedFile[]> {
   return grouped
 }
 
-// Scan a directory recursively
-export async function scanDrive(drivePath: string, onProgress: (count: number) => void): Promise<void> {
-  const photoExts = ['.jpg', '.jpeg', '.png', '.heic', '.raw', '.cr2', '.nef']
-  const videoExts = ['.mp4', '.mov', '.avi', '.mkv']
-  const allExts = [...photoExts, ...videoExts]
+const SKIP_DIRS = [
+  'windows', 'program files', 'program files (x86)',
+  '$recycle.bin', 'system volume information', 'programdata',
+  'appdata', 'node_modules', '.git'
+]
 
+const photoExts = ['.jpg', '.jpeg', '.png', '.heic', '.raw', '.cr2', '.nef', '.webp']
+const videoExts = ['.mp4', '.mov', '.avi', '.mkv', '.wmv']
+const allExts = [...photoExts, ...videoExts]
+
+export async function scanDrive(drivePath: string, onProgress: (count: number) => void): Promise<void> {
   let count = 0
 
   async function walk(dir: string): Promise<void> {
@@ -74,20 +76,22 @@ export async function scanDrive(drivePath: string, onProgress: (count: number) =
     }
 
     for (const entry of entries) {
-      const fullPath = join(dir, entry.name)
+      // Skip system directories
       if (entry.isDirectory()) {
-        await walk(fullPath)
+        const nameLower = entry.name.toLowerCase()
+        if (SKIP_DIRS.some(skip => nameLower === skip)) continue
+        await walk(join(dir, entry.name))
       } else if (entry.isFile()) {
         const ext = entry.name.slice(entry.name.lastIndexOf('.')).toLowerCase()
         if (!allExts.includes(ext)) continue
 
+        const fullPath = join(dir, entry.name)
         try {
           const stat = fs.statSync(fullPath)
           let date = new Date(stat.mtime)
           let lat = null
           let lng = null
 
-          // Try to read EXIF for photos
           if (photoExts.includes(ext)) {
             try {
               const exif = await exifr.parse(fullPath, ['DateTimeOriginal', 'latitude', 'longitude'])
@@ -95,7 +99,7 @@ export async function scanDrive(drivePath: string, onProgress: (count: number) =
               if (exif?.latitude) lat = exif.latitude
               if (exif?.longitude) lng = exif.longitude
             } catch {
-              // no exif, use file date
+              // use file date
             }
           }
 
@@ -108,7 +112,7 @@ export async function scanDrive(drivePath: string, onProgress: (count: number) =
           `).run(fullPath, entry.name, ext, stat.size, date.toISOString(), year, month, lat, lng, drivePath)
 
           count++
-          if (count % 50 === 0) onProgress(count)
+          if (count % 20 === 0) onProgress(count)
         } catch {
           // skip file
         }
