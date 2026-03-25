@@ -1,8 +1,26 @@
-import { useState } from 'react'
-import './assets/main.css'
+import { useState, useEffect } from 'react'
+
+interface DriveInfo {
+  name: string
+  filesystem: string
+  total: number
+  used: number
+  free: number
+}
 
 function App(): React.JSX.Element {
   const [activeNav, setActiveNav] = useState('all')
+  const [drives, setDrives] = useState<DriveInfo[]>([])
+
+  useEffect(() => {
+    // Ask main process for drives
+    window.api.getDrives()
+
+    // Listen for drive updates
+    window.api.onDrivesUpdated((updatedDrives) => {
+      setDrives(updatedDrives)
+    })
+  }, [])
 
   return (
     <div style={{
@@ -28,16 +46,29 @@ function App(): React.JSX.Element {
           <div style={{ fontSize: '11px', color: '#5a5a62', marginTop: '2px' }}>Smart file organiser</div>
         </div>
 
-        {/* Drive Card */}
-        <div style={{ margin: '12px 10px', background: '#1e1e22', borderRadius: '10px', padding: '10px 12px', border: '0.5px solid #2e2e36' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', fontWeight: 500, color: '#c8c8d0' }}>
-            <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#4cd97b' }}></div>
-            Samsung T7 Pro
-          </div>
-          <div style={{ fontSize: '10px', color: '#5a5a62', marginTop: '4px' }}>2.0 TB · 1.36 TB used</div>
-          <div style={{ height: '3px', background: '#2a2a2e', borderRadius: '2px', marginTop: '8px' }}>
-            <div style={{ height: '100%', width: '68%', background: '#6c6cff', borderRadius: '2px' }}></div>
-          </div>
+        {/* Real Drives */}
+        <div style={{ overflowY: 'auto', maxHeight: '220px' }}>
+          {drives.length === 0 ? (
+            <div style={{ margin: '12px 10px', fontSize: '11px', color: '#5a5a62' }}>Scanning drives...</div>
+          ) : (
+            drives.map((drive, i) => {
+              const usedPercent = drive.total > 0 ? Math.round((drive.used / drive.total) * 100) : 0
+              return (
+                <div key={i} style={{ margin: '8px 10px', background: '#1e1e22', borderRadius: '10px', padding: '10px 12px', border: '0.5px solid #2e2e36' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', fontWeight: 500, color: '#c8c8d0' }}>
+                    <div style={{ width: '7px', height: '7px', borderRadius: '50%', background: '#4cd97b', flexShrink: 0 }}></div>
+                    {drive.name}
+                  </div>
+                  <div style={{ fontSize: '10px', color: '#5a5a62', marginTop: '4px' }}>
+                    {drive.total} GB total · {drive.free} GB free
+                  </div>
+                  <div style={{ height: '3px', background: '#2a2a2e', borderRadius: '2px', marginTop: '8px' }}>
+                    <div style={{ height: '100%', width: `${usedPercent}%`, background: '#6c6cff', borderRadius: '2px' }}></div>
+                  </div>
+                </div>
+              )
+            })
+          )}
         </div>
 
         {/* Nav */}
@@ -77,7 +108,7 @@ function App(): React.JSX.Element {
         {/* Topbar */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 18px', borderBottom: '0.5px solid #2a2a2e', background: '#0f0f10' }}>
           <div style={{ flex: 1, fontSize: '13px', color: '#6060a0' }}>
-            Samsung T7 Pro › <span style={{ color: '#e8e8f4' }}>2024</span>
+            DiskFrame › <span style={{ color: '#e8e8f4' }}>{activeNav}</span>
           </div>
           <div style={{ display: 'flex', gap: '2px', background: '#1a1a1e', borderRadius: '7px', padding: '2px' }}>
             {['Grid', 'Timeline', 'Map'].map(v => (
@@ -118,10 +149,9 @@ function App(): React.JSX.Element {
 
         {/* Status bar */}
         <div style={{ borderTop: '0.5px solid #2a2a2e', padding: '8px 18px', display: 'flex', alignItems: 'center', gap: '16px', background: '#0d0d0f' }}>
+          <div style={{ fontSize: '11px', color: '#44444e' }}><span style={{ color: '#8080a8' }}>{drives.length}</span> drives connected</div>
           <div style={{ fontSize: '11px', color: '#44444e' }}><span style={{ color: '#8080a8' }}>4,821</span> total files</div>
-          <div style={{ fontSize: '11px', color: '#44444e' }}><span style={{ color: '#8080a8' }}>3,204</span> photos</div>
-          <div style={{ fontSize: '11px', color: '#44444e' }}><span style={{ color: '#8080a8' }}>617</span> videos</div>
-          <div style={{ marginLeft: 'auto', fontSize: '10px', color: '#4cd97b', background: 'rgba(76,217,123,0.1)', border: '0.5px solid rgba(76,217,123,0.3)', borderRadius: '4px', padding: '2px 8px' }}>+ 1,240 new files detected</div>
+          <div style={{ marginLeft: 'auto', fontSize: '10px', color: '#4cd97b', background: 'rgba(76,217,123,0.1)', border: '0.5px solid rgba(76,217,123,0.3)', borderRadius: '4px', padding: '2px 8px' }}>● live</div>
         </div>
       </div>
     </div>
