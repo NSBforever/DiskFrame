@@ -1,22 +1,29 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, protocol, net } from 'electron'
 import { join } from 'path'
+import { pathToFileURL } from 'url'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { getDiskInfo } from 'node-disk-info'
-import { scanDrive, getGroupedFiles } from './scanner'
+import { scanDrive, getGroupedFiles, clearDrive, isDriveScanned, getFileCount } from './scanner'
 
 let mainWindow: BrowserWindow
 
+// Register custom protocol to serve local files without space issues
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'localfile', privileges: { secure: true, supportFetchAPI: true, bypassCSP: true, stream: true } }
+])
+
 function createWindow(): void {
   mainWindow = new BrowserWindow({
-    width: 1100,
-    height: 700,
+    width: 1280,
+    height: 800,
     show: false,
     autoHideMenuBar: true,
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
+      sandbox: false,
+      webSecurity: false
     }
   })
 
@@ -57,36 +64,70 @@ async function sendDrives(): Promise<void> {
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.electron')
 
+  // Register localfile:// protocol — handles spaces in paths correctly
+  protocol.handle('localfile', (request) => {
+    // request.url looks like: localfile:///C:/Users/foo/my file.jpg
+    const filePath = decodeURIComponent(request.url.replace('localfile:///', ''))
+    const fileUrl = pathToFileURL(filePath).toString()
+    return net.fetch(fileUrl)
+  })
+
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
 
   ipcMain.on('ping', () => console.log('pong'))
 
-  // Send drives when renderer asks
   ipcMain.on('get-drives', () => {
     sendDrives()
   })
 
-  // Scan a drive when user selects it
- ipcMain.on('scan-drive', async (_event, drivePath: string) => {
+  ipcMain.on('scan-drive', async (_event, drivePath: string) => {
+    if (isDriveScanned(drivePath)) {
+      const count = getFileCount(drivePath)
+      if (mainWindow) {
+        mainWindow.webContents.send('scan-complete', { count, drive: drivePath, cached: true })
+      }
+      return
+    }
+
+    clearDrive(drivePath)
     let count = 0
     const { homedir } = await import('os')
     const scanPath = drivePath === 'C:' ? homedir() : drivePath
-    await scanDrive(scanPath, (progress) => {
+
+    await scanDrive(drivePath, scanPath, (progress) => {
       count = progress
       if (mainWindow) {
         mainWindow.webContents.send('scan-progress', { count, drive: drivePath })
       }
     })
+
     if (mainWindow) {
-      mainWindow.webContents.send('scan-complete', { count, drive: drivePath })
+      mainWindow.webContents.send('scan-complete', { count, drive: drivePath, cached: false })
     }
   })
 
-  // Get grouped files for a drive
+  ipcMain.on('rescan-drive', async (_event, drivePath: string) => {
+    clearDrive(drivePath)
+    let count = 0
+    const { homedir } = await import('os')
+    const scanPath = drivePath === 'C:' ? homedir() : drivePath
+
+    await scanDrive(drivePath, scanPath, (progress) => {
+      count = progress
+      if (mainWindow) {
+        mainWindow.webContents.send('scan-progress', { count, drive: drivePath })
+      }
+    })
+
+    if (mainWindow) {
+      mainWindow.webContents.send('scan-complete', { count, drive: drivePath, cached: false })
+    }
+  })
+
   ipcMain.on('get-files', (_event, drivePath: string) => {
-    const grouped = getGroupedFiles()
+    const grouped = getGroupedFiles(drivePath)
     if (mainWindow) {
       mainWindow.webContents.send('files-updated', grouped)
     }
@@ -94,7 +135,6 @@ app.whenReady().then(() => {
 
   createWindow()
 
-  // Poll for drive changes every 3 seconds
   setInterval(() => {
     sendDrives()
   }, 3000)

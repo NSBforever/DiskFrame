@@ -7,11 +7,12 @@ const api = {
     ipcRenderer.on('drives-updated', (_event, drives) => callback(drives))
   },
   scanDrive: (drivePath: string) => ipcRenderer.send('scan-drive', drivePath),
+  rescanDrive: (drivePath: string) => ipcRenderer.send('rescan-drive', drivePath),
   getFiles: (drivePath: string) => ipcRenderer.send('get-files', drivePath),
   onScanProgress: (callback: (data: { count: number; drive: string }) => void) => {
     ipcRenderer.on('scan-progress', (_event, data) => callback(data))
   },
-  onScanComplete: (callback: (data: { count: number; drive: string }) => void) => {
+  onScanComplete: (callback: (data: { count: number; drive: string; cached: boolean }) => void) => {
     ipcRenderer.on('scan-complete', (_event, data) => callback(data))
   },
   onFilesUpdated: (callback: (grouped: Record<string, unknown[]>) => void) => {

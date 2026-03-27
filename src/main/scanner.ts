@@ -36,15 +36,22 @@ export interface ScannedFile {
   drive: string
 }
 
-export function getFiles(drive?: string): ScannedFile[] {
-  if (drive) {
-    return db.prepare('SELECT * FROM files WHERE drive = ? ORDER BY date DESC').all(drive) as ScannedFile[]
-  }
-  return db.prepare('SELECT * FROM files ORDER BY date DESC').all() as ScannedFile[]
+// Check if a drive has already been scanned
+export function isDriveScanned(drivePath: string): boolean {
+  const row = db.prepare('SELECT COUNT(*) as count FROM files WHERE drive = ?').get(drivePath) as { count: number }
+  return row.count > 0
 }
 
-export function getGroupedFiles(drive?: string): Record<string, ScannedFile[]> {
-  const files = getFiles(drive)
+// Clear files for a specific drive only
+export function clearDrive(drivePath: string): void {
+  db.prepare('DELETE FROM files WHERE drive = ?').run(drivePath)
+}
+
+export function getGroupedFiles(drivePath?: string): Record<string, ScannedFile[]> {
+  const files = drivePath
+    ? db.prepare('SELECT * FROM files WHERE drive = ? ORDER BY date DESC').all(drivePath) as ScannedFile[]
+    : db.prepare('SELECT * FROM files ORDER BY date DESC').all() as ScannedFile[]
+
   const grouped: Record<string, ScannedFile[]> = {}
   for (const file of files) {
     const key = `${file.year}-${file.month}`
@@ -54,17 +61,30 @@ export function getGroupedFiles(drive?: string): Record<string, ScannedFile[]> {
   return grouped
 }
 
+export function getFileCount(drivePath: string): number {
+  const row = db.prepare('SELECT COUNT(*) as count FROM files WHERE drive = ?').get(drivePath) as { count: number }
+  return row.count
+}
+
 const SKIP_DIRS = [
   'windows', 'program files', 'program files (x86)',
   '$recycle.bin', 'system volume information', 'programdata',
-  'appdata', 'node_modules', '.git'
+  'node_modules', '.git', 'appdata'
 ]
 
-const photoExts = ['.jpg', '.jpeg', '.png', '.heic', '.raw', '.cr2', '.nef', '.webp']
+// Only real image/video files — skip tiny PNGs under 50KB (icons, assets)
+const photoExts = ['.jpg', '.jpeg', '.heic', '.raw', '.cr2', '.nef']
+const photoExtsWithPng = ['.jpg', '.jpeg', '.png', '.heic', '.raw', '.cr2', '.nef', '.webp']
 const videoExts = ['.mp4', '.mov', '.avi', '.mkv', '.wmv']
-const allExts = [...photoExts, ...videoExts]
+const allExts = [...photoExtsWithPng, ...videoExts]
 
-export async function scanDrive(drivePath: string, onProgress: (count: number) => void): Promise<void> {
+const MIN_PHOTO_SIZE = 50 * 1024 // 50KB — skip tiny icons/assets
+
+export async function scanDrive(
+  drivePath: string,
+  scanPath: string,
+  onProgress: (count: number) => void
+): Promise<void> {
   let count = 0
 
   async function walk(dir: string): Promise<void> {
@@ -76,10 +96,10 @@ export async function scanDrive(drivePath: string, onProgress: (count: number) =
     }
 
     for (const entry of entries) {
-      // Skip system directories
       if (entry.isDirectory()) {
         const nameLower = entry.name.toLowerCase()
-        if (SKIP_DIRS.some(skip => nameLower === skip)) continue
+        if (SKIP_DIRS.some(s => nameLower === s)) continue
+        if (entry.name.startsWith('.')) continue
         await walk(join(dir, entry.name))
       } else if (entry.isFile()) {
         const ext = entry.name.slice(entry.name.lastIndexOf('.')).toLowerCase()
@@ -88,6 +108,10 @@ export async function scanDrive(drivePath: string, onProgress: (count: number) =
         const fullPath = join(dir, entry.name)
         try {
           const stat = fs.statSync(fullPath)
+
+          // Skip tiny files — they're icons, not real photos
+          if (photoExtsWithPng.includes(ext) && stat.size < MIN_PHOTO_SIZE) continue
+
           let date = new Date(stat.mtime)
           let lat = null
           let lng = null
@@ -114,12 +138,12 @@ export async function scanDrive(drivePath: string, onProgress: (count: number) =
           count++
           if (count % 20 === 0) onProgress(count)
         } catch {
-          // skip file
+          // skip
         }
       }
     }
   }
 
-  await walk(drivePath)
+  await walk(scanPath)
   onProgress(count)
 }
