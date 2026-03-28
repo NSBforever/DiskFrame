@@ -18,7 +18,9 @@ declare global {
       rescanDrive: (drivePath: string) => void
       getFiles: (drivePath: string) => void
       onScanProgress: (callback: (data: { count: number; drive: string }) => void) => void
-      onScanComplete: (callback: (data: { count: number; drive: string; cached: boolean }) => void) => void
+      onScanComplete: (
+        callback: (data: { count: number; drive: string; cached: boolean }) => void
+      ) => void
       onFilesUpdated: (callback: (grouped: Record<string, unknown[]>) => void) => void
     }
   }

@@ -17,7 +17,9 @@ const api = {
   },
   onFilesUpdated: (callback: (grouped: Record<string, unknown[]>) => void) => {
     ipcRenderer.on('files-updated', (_event, grouped) => callback(grouped))
-  }
+  },
+  getThumb: (filePath: string) => ipcRenderer.invoke('get-thumb', filePath),
+  deleteFiles: (paths: string[]) => ipcRenderer.send('delete-files', paths),
 }
 
 if (process.contextIsolated) {

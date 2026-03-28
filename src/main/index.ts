@@ -1,16 +1,33 @@
 import { app, shell, BrowserWindow, ipcMain, protocol, net } from 'electron'
 import { join } from 'path'
 import { pathToFileURL } from 'url'
+import { unlinkSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { getDiskInfo } from 'node-disk-info'
-import { scanDrive, getGroupedFiles, clearDrive, isDriveScanned, getFileCount } from './scanner'
+import {
+  scanDrive,
+  getGroupedFiles,
+  clearDrive,
+  isDriveScanned,
+  getFileCount,
+  generateThumb,
+  getThumbPath,
+} from './scanner'
 
 let mainWindow: BrowserWindow
 
-// Register custom protocol to serve local files without space issues
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'localfile', privileges: { secure: true, supportFetchAPI: true, bypassCSP: true, stream: true } }
+  {
+    scheme: 'localfile',
+    privileges: {
+      secure: true,
+      standard: true,
+      supportFetchAPI: true,
+      bypassCSP: true,
+      stream: true,
+    },
+  },
 ])
 
 function createWindow(): void {
@@ -23,8 +40,8 @@ function createWindow(): void {
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
-      webSecurity: false
-    }
+      webSecurity: false,
+    },
   })
 
   mainWindow.on('ready-to-show', () => {
@@ -51,7 +68,7 @@ async function sendDrives(): Promise<void> {
       filesystem: disk.filesystem,
       total: Math.round(disk.blocks / 1024 / 1024 / 1024),
       used: Math.round((disk.blocks - disk.available) / 1024 / 1024 / 1024),
-      free: Math.round(disk.available / 1024 / 1024 / 1024)
+      free: Math.round(disk.available / 1024 / 1024 / 1024),
     }))
     if (mainWindow) {
       mainWindow.webContents.send('drives-updated', drives)
@@ -64,22 +81,32 @@ async function sendDrives(): Promise<void> {
 app.whenReady().then(() => {
   electronApp.setAppUserModelId('com.electron')
 
-  // Register localfile:// protocol — handles spaces in paths correctly
   protocol.handle('localfile', (request) => {
-    // request.url looks like: localfile:///C:/Users/foo/my file.jpg
-    const filePath = decodeURIComponent(request.url.replace('localfile:///', ''))
-    const fileUrl = pathToFileURL(filePath).toString()
-    return net.fetch(fileUrl)
+    let filePath = decodeURIComponent(request.url.slice('localfile:///'.length))
+    if (process.platform === 'win32' && /^\/[A-Za-z]:/.test(filePath)) {
+      filePath = filePath.slice(1)
+    }
+    return net.fetch(pathToFileURL(filePath).toString())
   })
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  ipcMain.on('ping', () => console.log('pong'))
-
   ipcMain.on('get-drives', () => {
     sendDrives()
+  })
+
+  ipcMain.handle('get-thumb', async (_event, filePath: string) => {
+    const cached = getThumbPath(filePath)
+    if (cached) return cached
+    return await generateThumb(filePath)
+  })
+
+  ipcMain.on('delete-files', (_event, paths: string[]) => {
+    for (const p of paths) {
+      try { unlinkSync(p) } catch {}
+    }
   })
 
   ipcMain.on('scan-drive', async (_event, drivePath: string) => {
@@ -90,19 +117,16 @@ app.whenReady().then(() => {
       }
       return
     }
-
     clearDrive(drivePath)
     let count = 0
     const { homedir } = await import('os')
     const scanPath = drivePath === 'C:' ? homedir() : drivePath
-
     await scanDrive(drivePath, scanPath, (progress) => {
       count = progress
       if (mainWindow) {
         mainWindow.webContents.send('scan-progress', { count, drive: drivePath })
       }
     })
-
     if (mainWindow) {
       mainWindow.webContents.send('scan-complete', { count, drive: drivePath, cached: false })
     }
@@ -113,14 +137,12 @@ app.whenReady().then(() => {
     let count = 0
     const { homedir } = await import('os')
     const scanPath = drivePath === 'C:' ? homedir() : drivePath
-
     await scanDrive(drivePath, scanPath, (progress) => {
       count = progress
       if (mainWindow) {
         mainWindow.webContents.send('scan-progress', { count, drive: drivePath })
       }
     })
-
     if (mainWindow) {
       mainWindow.webContents.send('scan-complete', { count, drive: drivePath, cached: false })
     }
