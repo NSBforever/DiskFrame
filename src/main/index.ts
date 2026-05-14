@@ -1,8 +1,11 @@
-import { app, shell, BrowserWindow, ipcMain, protocol } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, protocol, net } from 'electron'
 import { join } from 'path'
+import { spawn } from 'child_process'
+import * as fs from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { getDiskInfo } from 'node-disk-info'
+import ffmpegPath from 'ffmpeg-static'
 import {
   scanDrive,
   getGroupedFiles,
@@ -14,13 +17,23 @@ import {
   updateThumb
 } from './scanner'
 
+const ffmpegExe = ffmpegPath
+  ? ffmpegPath.replace('app.asar', 'app.asar.unpacked')
+  : 'ffmpeg'
+
 let mainWindow: BrowserWindow
 let driveInterval: ReturnType<typeof setInterval> | null = null
 
 protocol.registerSchemesAsPrivileged([
   {
     scheme: 'media',
-    privileges: { secure: true, supportFetchAPI: true, bypassCSP: true, stream: true }
+    privileges: {
+      secure: true,
+      supportFetchAPI: true,
+      bypassCSP: true,
+      stream: true,
+      corsEnabled: true
+    }
   }
 ])
 
@@ -80,18 +93,11 @@ async function generateThumbsForDrive(drivePath: string): Promise<void> {
 }
 
 app.whenReady().then(() => {
-  protocol.registerFileProtocol('media', (request, callback) => {
-    try {
-      const urlWithoutQuery = request.url.split('?')[0]
-      const withoutScheme = urlWithoutQuery.replace('media:///', '')
-      const decoded = decodeURIComponent(withoutScheme)
-      // Handle both Windows absolute paths (C:/...) and relative
-      const filePath = decoded.replace(/\//g, '\\')
-      callback({ path: filePath })
-    } catch (e) {
-      console.error('[media protocol error]', e)
-      callback({ error: -2 })
-    }
+  // Electron 25+ streaming protocol handler — supports range requests for video
+  protocol.handle('media', (request) => {
+    const url = request.url.replace('media:///', '')
+    const filePath = decodeURIComponent(url).replace(/\//g, '\\')
+    return net.fetch('file:///' + filePath.replace(/\\/g, '/'))
   })
 
   electronApp.setAppUserModelId('com.electron')
@@ -154,6 +160,51 @@ app.whenReady().then(() => {
   ipcMain.on('get-favourites', () => {
     const files = getFavourites()
     if (mainWindow) mainWindow.webContents.send('favourites-updated', files)
+  })
+
+  // On-demand MOV/AVI/MKV → MP4 transcoding — non-blocking, streams progress back
+  ipcMain.on('transcode-video', async (event, inputPath: string) => {
+    const { createHash } = await import('crypto')
+    const hash = createHash('md5').update(inputPath).digest('hex')
+    const transcodeDir = join(app.getPath('userData'), 'transcoded')
+    if (!fs.existsSync(transcodeDir)) fs.mkdirSync(transcodeDir, { recursive: true })
+    const outPath = join(transcodeDir, `${hash}.mp4`)
+
+    // Already transcoded — reply immediately
+    if (fs.existsSync(outPath)) {
+      event.reply('transcode-done', { inputPath, outPath })
+      return
+    }
+
+    const ff = spawn(ffmpegExe, [
+      '-i', inputPath,
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '30',
+      '-c:a', 'aac', '-b:a', '96k',
+      '-movflags', '+faststart',
+      '-y', outPath
+    ])
+
+    // Send progress updates
+    ff.stderr.on('data', (data: Buffer) => {
+      const str = data.toString()
+      const match = str.match(/time=(\d+):(\d+):(\d+)/)
+      if (match) {
+        const secs = parseInt(match[1]) * 3600 + parseInt(match[2]) * 60 + parseInt(match[3])
+        if (mainWindow) mainWindow.webContents.send('transcode-progress', { inputPath, secs })
+      }
+    })
+
+    ff.on('close', (code: number) => {
+      if (code === 0 && fs.existsSync(outPath)) {
+        if (mainWindow) mainWindow.webContents.send('transcode-done', { inputPath, outPath })
+      } else {
+        if (mainWindow) mainWindow.webContents.send('transcode-error', { inputPath })
+      }
+    })
+
+    ff.on('error', () => {
+      if (mainWindow) mainWindow.webContents.send('transcode-error', { inputPath })
+    })
   })
 
   createWindow()

@@ -36,7 +36,14 @@ const api = {
   onThumbReady: (cb: (d: { filePath: string; thumbPath: string }) => void) => {
     ipcRenderer.removeAllListeners('thumb-ready')
     ipcRenderer.on('thumb-ready', (_e, d) => cb(d))
-  }
+  },
+  transcodeVideo: (path: string) => ipcRenderer.send('transcode-video', path),
+  onTranscodeDone: (cb: (d: { inputPath: string; outPath: string }) => void) =>
+    ipcRenderer.on('transcode-done', (_e, d) => cb(d)),
+  onTranscodeProgress: (cb: (d: { inputPath: string; secs: number }) => void) =>
+    ipcRenderer.on('transcode-progress', (_e, d) => cb(d)),
+  onTranscodeError: (cb: (d: { inputPath: string }) => void) =>
+    ipcRenderer.on('transcode-error', (_e, d) => cb(d))
 }
 
 if (process.contextIsolated) {

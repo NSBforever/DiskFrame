@@ -5,10 +5,26 @@ import exifr from 'exifr'
 import Database from 'better-sqlite3'
 import { app } from 'electron'
 import sharp from 'sharp'
-import ffmpegPath from 'ffmpeg-static'
 import { createHash } from 'crypto'
 
-const ffmpegExe = ffmpegPath ? ffmpegPath.replace('app.asar', 'app.asar.unpacked') : 'ffmpeg'
+function resolveFfmpeg(): string {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const p = require('ffmpeg-static') as string
+    if (p) {
+      const candidates = [
+        p,
+        p.replace('app.asar', 'app.asar.unpacked'),
+        p + '.exe'
+      ]
+      for (const c of candidates) {
+        if (fs.existsSync(c)) return c
+      }
+    }
+  } catch {}
+  return 'ffmpeg' // system ffmpeg fallback
+}
+const ffmpegExe = resolveFfmpeg()
 
 const dbPath = join(app.getPath('userData'), 'diskframe.db')
 const db = new Database(dbPath)
@@ -130,26 +146,27 @@ export async function generateThumbForFile(fullPath: string, ext: string): Promi
           return
         }
 
-        const ffmpeg = cp.spawn(
-          ffmpegExe,
-          [
-            '-ss',
-            '00:00:01',
-            '-i',
-            fullPath,
-            '-vframes',
-            '1',
-            '-vf',
-            'scale=240:240:force_original_aspect_ratio=increase,crop=240:240',
-            '-q:v',
-            '3',
-            '-y',
-            thumbPath
-          ],
-          { timeout: 10000 }
+        const ffmpeg = cp.spawn(ffmpegExe, [
+          '-ss', '00:00:02',
+          '-i', fullPath,
+          '-vframes', '1',
+          '-vf', 'scale=240:240:force_original_aspect_ratio=increase,crop=240:240',
+          '-f', 'image2',
+          '-q:v', '2',
+          '-y',
+          thumbPath
+        ])
+
+        ffmpeg.stderr.on('data', (d: Buffer) =>
+          console.log('[ffmpeg thumb]', d.toString().slice(0, 100))
         )
 
+        const killTimer = setTimeout(() => {
+          try { ffmpeg.kill() } catch {}
+        }, 15000)
+
         ffmpeg.on('close', (code) => {
+          clearTimeout(killTimer)
           if (code === 0 && fs.existsSync(thumbPath)) resolve(thumbPath)
           else {
             console.warn(`[Scanner] FFmpeg close code ${code} for ${fullPath}`)
@@ -157,6 +174,7 @@ export async function generateThumbForFile(fullPath: string, ext: string): Promi
           }
         })
         ffmpeg.on('error', (err) => {
+          clearTimeout(killTimer)
           console.warn(`[Scanner] FFmpeg error for ${fullPath}:`, err)
           resolve(null)
         })

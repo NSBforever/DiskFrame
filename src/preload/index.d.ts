@@ -41,6 +41,7 @@ declare global {
       openFile: (filePath: string) => void
       readFileBase64: (filePath: string) => Promise<string>
       onThumbReady: (callback: (data: { filePath: string; thumbPath: string }) => void) => void
+      transcodeVideo: (inputPath: string) => Promise<string>
     }
   }
 }
