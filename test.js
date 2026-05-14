@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 const fs = require('fs');
 const path = require('path');
 let count = 0;
@@ -9,10 +10,10 @@ function walk(dir) {
         count++;
         if (count <= 5) console.log(path.join(dir, e.name));
       } else if (e.isDirectory() && !['Windows','Program Files','AppData','node_modules'].includes(e.name)) {
-        try { walk(path.join(dir, e.name)); } catch {}
+        try { walk(path.join(dir, e.name)); } catch { /* ignore */ }
       }
     }
-  } catch {}
+  } catch { /* ignore */ }
 }
 walk('C:\\Users\\nagir\\Pictures');
 walk('C:\\Users\\nagir\\Downloads');

@@ -3,23 +3,40 @@ import { electronAPI } from '@electron-toolkit/preload'
 
 const api = {
   getDrives: () => ipcRenderer.send('get-drives'),
-  onDrivesUpdated: (callback: (drives: unknown[]) => void) => {
-    ipcRenderer.on('drives-updated', (_event, drives) => callback(drives))
+  onDrivesUpdated: (cb: (drives: unknown[]) => void) => {
+    ipcRenderer.removeAllListeners('drives-updated')
+    ipcRenderer.on('drives-updated', (_e, d) => cb(d))
   },
-  scanDrive: (drivePath: string) => ipcRenderer.send('scan-drive', drivePath),
-  rescanDrive: (drivePath: string) => ipcRenderer.send('rescan-drive', drivePath),
-  getFiles: (drivePath: string) => ipcRenderer.send('get-files', drivePath),
-  onScanProgress: (callback: (data: { count: number; drive: string }) => void) => {
-    ipcRenderer.on('scan-progress', (_event, data) => callback(data))
+  scanDrive: (p: string) => ipcRenderer.send('scan-drive', p),
+  getFiles: (p: string) => ipcRenderer.send('get-files', p),
+  onScanProgress: (cb: (d: { count: number; drive: string }) => void) => {
+    ipcRenderer.removeAllListeners('scan-progress')
+    ipcRenderer.on('scan-progress', (_e, d) => cb(d))
   },
-  onScanComplete: (callback: (data: { count: number; drive: string; cached: boolean }) => void) => {
-    ipcRenderer.on('scan-complete', (_event, data) => callback(data))
+  onScanComplete: (cb: (d: { count: number; drive: string }) => void) => {
+    ipcRenderer.removeAllListeners('scan-complete')
+    ipcRenderer.on('scan-complete', (_e, d) => cb(d))
   },
-  onFilesUpdated: (callback: (grouped: Record<string, unknown[]>) => void) => {
-    ipcRenderer.on('files-updated', (_event, grouped) => callback(grouped))
+  onFilesUpdated: (cb: (g: Record<string, unknown[]>) => void) => {
+    ipcRenderer.removeAllListeners('files-updated')
+    ipcRenderer.on('files-updated', (_e, g) => cb(g))
   },
-  getThumb: (filePath: string) => ipcRenderer.invoke('get-thumb', filePath),
-  deleteFiles: (paths: string[]) => ipcRenderer.send('delete-files', paths),
+  toggleFavourite: (p: string) => ipcRenderer.send('toggle-favourite', p),
+  getFavourites: () => ipcRenderer.send('get-favourites'),
+  onFavouritesUpdated: (cb: (files: unknown[]) => void) => {
+    ipcRenderer.removeAllListeners('favourites-updated')
+    ipcRenderer.on('favourites-updated', (_e, f) => cb(f))
+  },
+  onFavouriteToggled: (cb: (p: string) => void) => {
+    ipcRenderer.removeAllListeners('favourite-toggled')
+    ipcRenderer.on('favourite-toggled', (_e, p) => cb(p))
+  },
+  openFile: (p: string) => ipcRenderer.send('open-file', p),
+  readFileBase64: (p: string) => ipcRenderer.invoke('read-file-base64', p),
+  onThumbReady: (cb: (d: { filePath: string; thumbPath: string }) => void) => {
+    ipcRenderer.removeAllListeners('thumb-ready')
+    ipcRenderer.on('thumb-ready', (_e, d) => cb(d))
+  }
 }
 
 if (process.contextIsolated) {
@@ -30,8 +47,8 @@ if (process.contextIsolated) {
     console.error(error)
   }
 } else {
-  // @ts-ignore
+  // @ts-expect-error window globals mapped in dts
   window.electron = electronAPI
-  // @ts-ignore
+  // @ts-expect-error window globals mapped in dts
   window.api = api
 }

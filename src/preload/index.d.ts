@@ -8,6 +8,21 @@ interface DriveInfo {
   free: number
 }
 
+interface ScannedFile {
+  path: string
+  name: string
+  ext: string
+  size: number
+  date: string
+  year: string
+  month: string
+  lat: number | null
+  lng: number | null
+  drive: string
+  favourited: number
+  thumb: string | null
+}
+
 declare global {
   interface Window {
     electron: ElectronAPI
@@ -15,13 +30,17 @@ declare global {
       getDrives: () => void
       onDrivesUpdated: (callback: (drives: DriveInfo[]) => void) => void
       scanDrive: (drivePath: string) => void
-      rescanDrive: (drivePath: string) => void
       getFiles: (drivePath: string) => void
       onScanProgress: (callback: (data: { count: number; drive: string }) => void) => void
-      onScanComplete: (
-        callback: (data: { count: number; drive: string; cached: boolean }) => void
-      ) => void
-      onFilesUpdated: (callback: (grouped: Record<string, unknown[]>) => void) => void
+      onScanComplete: (callback: (data: { count: number; drive: string }) => void) => void
+      onFilesUpdated: (callback: (grouped: Record<string, ScannedFile[]>) => void) => void
+      toggleFavourite: (filePath: string) => void
+      getFavourites: () => void
+      onFavouritesUpdated: (callback: (files: ScannedFile[]) => void) => void
+      onFavouriteToggled: (callback: (filePath: string) => void) => void
+      openFile: (filePath: string) => void
+      readFileBase64: (filePath: string) => Promise<string>
+      onThumbReady: (callback: (data: { filePath: string; thumbPath: string }) => void) => void
     }
   }
 }

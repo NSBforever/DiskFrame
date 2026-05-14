@@ -1,33 +1,27 @@
-import { app, shell, BrowserWindow, ipcMain, protocol, net } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, protocol } from 'electron'
 import { join } from 'path'
-import { pathToFileURL } from 'url'
-import { unlinkSync } from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { getDiskInfo } from 'node-disk-info'
 import {
   scanDrive,
   getGroupedFiles,
-  clearDrive,
-  isDriveScanned,
+  toggleFavourite,
+  getFavourites,
   getFileCount,
-  generateThumb,
-  getThumbPath,
+  getFilesWithoutThumbs,
+  generateThumbForFile,
+  updateThumb
 } from './scanner'
 
 let mainWindow: BrowserWindow
+let driveInterval: ReturnType<typeof setInterval> | null = null
 
 protocol.registerSchemesAsPrivileged([
   {
-    scheme: 'localfile',
-    privileges: {
-      secure: true,
-      standard: true,
-      supportFetchAPI: true,
-      bypassCSP: true,
-      stream: true,
-    },
-  },
+    scheme: 'media',
+    privileges: { secure: true, supportFetchAPI: true, bypassCSP: true, stream: true }
+  }
 ])
 
 function createWindow(): void {
@@ -40,13 +34,11 @@ function createWindow(): void {
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
-      webSecurity: false,
-    },
+      webSecurity: false
+    }
   })
 
-  mainWindow.on('ready-to-show', () => {
-    mainWindow.show()
-  })
+  mainWindow.on('ready-to-show', () => mainWindow.show())
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
@@ -68,98 +60,105 @@ async function sendDrives(): Promise<void> {
       filesystem: disk.filesystem,
       total: Math.round(disk.blocks / 1024 / 1024 / 1024),
       used: Math.round((disk.blocks - disk.available) / 1024 / 1024 / 1024),
-      free: Math.round(disk.available / 1024 / 1024 / 1024),
+      free: Math.round(disk.available / 1024 / 1024 / 1024)
     }))
-    if (mainWindow) {
-      mainWindow.webContents.send('drives-updated', drives)
-    }
+    if (mainWindow) mainWindow.webContents.send('drives-updated', drives)
   } catch (err) {
     console.error('Error getting disk info:', err)
   }
 }
 
-app.whenReady().then(() => {
-  electronApp.setAppUserModelId('com.electron')
-
-  protocol.handle('localfile', (request) => {
-    let filePath = decodeURIComponent(request.url.slice('localfile:///'.length))
-    if (process.platform === 'win32' && /^\/[A-Za-z]:/.test(filePath)) {
-      filePath = filePath.slice(1)
+async function generateThumbsForDrive(drivePath: string): Promise<void> {
+  const files = getFilesWithoutThumbs(drivePath)
+  for (const file of files) {
+    const thumbPath = await generateThumbForFile(file.path, file.ext)
+    if (thumbPath && mainWindow && !mainWindow.isDestroyed()) {
+      updateThumb(file.path, thumbPath)
+      mainWindow.webContents.send('thumb-ready', { filePath: file.path, thumbPath })
     }
-    return net.fetch(pathToFileURL(filePath).toString())
+  }
+}
+
+app.whenReady().then(() => {
+  protocol.registerFileProtocol('media', (request, callback) => {
+    try {
+      const urlWithoutQuery = request.url.split('?')[0]
+      const withoutScheme = urlWithoutQuery.replace('media:///', '')
+      const decoded = decodeURIComponent(withoutScheme)
+      // Handle both Windows absolute paths (C:/...) and relative
+      const filePath = decoded.replace(/\//g, '\\')
+      callback({ path: filePath })
+    } catch (e) {
+      console.error('[media protocol error]', e)
+      callback({ error: -2 })
+    }
   })
+
+  electronApp.setAppUserModelId('com.electron')
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  ipcMain.on('get-drives', () => {
-    sendDrives()
+  ipcMain.on('get-drives', () => sendDrives())
+
+  ipcMain.on('reveal-file', (_event, filePath: string) => {
+    shell.showItemInFolder(filePath)
   })
 
-  ipcMain.handle('get-thumb', async (_event, filePath: string) => {
-    const cached = getThumbPath(filePath)
-    if (cached) return cached
-    return await generateThumb(filePath)
-  })
-
-  ipcMain.on('delete-files', (_event, paths: string[]) => {
-    for (const p of paths) {
-      try { unlinkSync(p) } catch {}
-    }
+  ipcMain.on('open-file', (_event, filePath: string) => {
+    shell.openPath(filePath)
   })
 
   ipcMain.on('scan-drive', async (_event, drivePath: string) => {
-    if (isDriveScanned(drivePath)) {
-      const count = getFileCount(drivePath)
-      if (mainWindow) {
-        mainWindow.webContents.send('scan-complete', { count, drive: drivePath, cached: true })
-      }
+    const existing = getFileCount(drivePath)
+    if (existing > 0) {
+      if (mainWindow)
+        mainWindow.webContents.send('scan-complete', { count: existing, drive: drivePath })
+      generateThumbsForDrive(drivePath)
       return
     }
-    clearDrive(drivePath)
-    let count = 0
     const { homedir } = await import('os')
     const scanPath = drivePath === 'C:' ? homedir() : drivePath
+    let count = 0
     await scanDrive(drivePath, scanPath, (progress) => {
       count = progress
-      if (mainWindow) {
-        mainWindow.webContents.send('scan-progress', { count, drive: drivePath })
-      }
+      if (mainWindow) mainWindow.webContents.send('scan-progress', { count, drive: drivePath })
     })
-    if (mainWindow) {
-      mainWindow.webContents.send('scan-complete', { count, drive: drivePath, cached: false })
-    }
+    if (mainWindow) mainWindow.webContents.send('scan-complete', { count, drive: drivePath })
+    generateThumbsForDrive(drivePath)
   })
 
   ipcMain.on('rescan-drive', async (_event, drivePath: string) => {
-    clearDrive(drivePath)
-    let count = 0
     const { homedir } = await import('os')
     const scanPath = drivePath === 'C:' ? homedir() : drivePath
+    let count = 0
     await scanDrive(drivePath, scanPath, (progress) => {
       count = progress
-      if (mainWindow) {
-        mainWindow.webContents.send('scan-progress', { count, drive: drivePath })
-      }
+      if (mainWindow) mainWindow.webContents.send('scan-progress', { count, drive: drivePath })
     })
-    if (mainWindow) {
-      mainWindow.webContents.send('scan-complete', { count, drive: drivePath, cached: false })
-    }
+    if (mainWindow) mainWindow.webContents.send('scan-complete', { count, drive: drivePath })
+    generateThumbsForDrive(drivePath)
   })
 
   ipcMain.on('get-files', (_event, drivePath: string) => {
     const grouped = getGroupedFiles(drivePath)
-    if (mainWindow) {
-      mainWindow.webContents.send('files-updated', grouped)
-    }
+    if (mainWindow) mainWindow.webContents.send('files-updated', grouped)
+  })
+
+  ipcMain.on('toggle-favourite', (_event, filePath: string) => {
+    toggleFavourite(filePath)
+    if (mainWindow) mainWindow.webContents.send('favourite-toggled', filePath)
+  })
+
+  ipcMain.on('get-favourites', () => {
+    const files = getFavourites()
+    if (mainWindow) mainWindow.webContents.send('favourites-updated', files)
   })
 
   createWindow()
 
-  setInterval(() => {
-    sendDrives()
-  }, 3000)
+  driveInterval = setInterval(() => sendDrives(), 3000)
 
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -167,7 +166,6 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
+  if (driveInterval) clearInterval(driveInterval)
+  if (process.platform !== 'darwin') app.quit()
 })
