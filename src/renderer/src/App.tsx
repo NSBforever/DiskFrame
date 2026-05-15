@@ -39,13 +39,7 @@ function thumbUrl(file: ScannedFile): string {
 }
 
 function FileTile({
-  file,
-  onOpen,
-  onFav,
-  isFav,
-  isSelected,
-  onSelect,
-  tileSize
+  file, onOpen, onFav, isFav, isSelected, onSelect, tileSize
 }: {
   file: ScannedFile
   onOpen: (f: ScannedFile) => void
@@ -64,10 +58,7 @@ function FileTile({
   const hasThumb = !!file.thumb
   const imgKey = file.thumb ?? 'no-thumb'
 
-  useEffect(() => {
-    setLoaded(false)
-    setError(false)
-  }, [file.thumb])
+  useEffect(() => { setLoaded(false); setError(false) }, [file.thumb])
 
   const fontSize = tileSize < 80 ? '20px' : '28px'
   const subFontSize = tileSize < 80 ? '7px' : '9px'
@@ -78,24 +69,15 @@ function FileTile({
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
-        borderRadius: tileSize < 80 ? '8px' : '12px',
-        aspectRatio: '1',
-        cursor: 'pointer',
-        overflow: 'hidden',
-        background: '#141420',
-        position: 'relative',
+        borderRadius: tileSize < 80 ? '8px' : '12px', aspectRatio: '1', cursor: 'pointer',
+        overflow: 'hidden', background: '#141420', position: 'relative',
         border: `1px solid ${isSelected ? '#6c6cff' : hovered ? '#4a4a7a' : '#1e1e2a'}`,
-        outline: isSelected ? '2px solid #6c6cff' : 'none',
-        outlineOffset: '2px',
+        outline: isSelected ? '2px solid #6c6cff' : 'none', outlineOffset: '2px',
         transform: hovered ? 'scale(1.03) translateY(-3px)' : 'scale(1) translateY(0)',
-        boxShadow: hovered
-          ? '0 12px 24px rgba(108,108,255,0.15), 0 6px 12px rgba(0,0,0,0.4)'
-          : '0 2px 8px rgba(0,0,0,0.1)',
-        transition: 'all 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
-        zIndex: hovered ? 2 : 1
+        boxShadow: hovered ? '0 12px 24px rgba(108,108,255,0.15), 0 6px 12px rgba(0,0,0,0.4)' : '0 2px 8px rgba(0,0,0,0.1)',
+        transition: 'all 0.3s cubic-bezier(0.16, 1, 0.3, 1)', zIndex: hovered ? 2 : 1
       }}
     >
-      {/* Photo tile */}
       {isPhoto && !error ? (
         <>
           {!loaded && (
@@ -103,20 +85,9 @@ function FileTile({
               <div style={{ width: '16px', height: '16px', border: '1.5px solid #2a2a3a', borderTop: '1.5px solid #6c6cff', borderRadius: '50%', animation: 'tileSpin 0.8s linear infinite' }} />
             </div>
           )}
-          <img
-            key={imgKey}
-            src={thumbUrl(file)}
-            loading="lazy"
-            decoding="async"
-            onLoad={() => setLoaded(true)}
-            onError={() => { setError(true); setLoaded(true) }}
-            style={{
-              width: '100%', height: '100%', objectFit: 'cover',
-              display: loaded ? 'block' : 'none',
-              transform: hovered ? 'scale(1.06)' : 'scale(1)',
-              transition: 'transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)',
-              willChange: 'transform'
-            }}
+          <img key={imgKey} src={thumbUrl(file)} loading="lazy" decoding="async"
+            onLoad={() => setLoaded(true)} onError={() => { setError(true); setLoaded(true) }}
+            style={{ width: '100%', height: '100%', objectFit: 'cover', display: loaded ? 'block' : 'none', transform: hovered ? 'scale(1.06)' : 'scale(1)', transition: 'transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)', willChange: 'transform' }}
           />
         </>
       ) : isVideo ? (
@@ -128,20 +99,9 @@ function FileTile({
                   <div style={{ width: '16px', height: '16px', border: '1.5px solid #2a2a3a', borderTop: '1.5px solid #a060ff', borderRadius: '50%', animation: 'tileSpin 0.8s linear infinite' }} />
                 </div>
               )}
-              <img
-                key={imgKey}
-                src={thumbUrl(file)}
-                loading="lazy"
-                decoding="async"
-                onLoad={() => setLoaded(true)}
-                onError={() => { setError(true); setLoaded(true) }}
-                style={{
-                  width: '100%', height: '100%', objectFit: 'cover',
-                  display: loaded ? 'block' : 'none',
-                  transform: hovered ? 'scale(1.06)' : 'scale(1)',
-                  transition: 'transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)',
-                  willChange: 'transform'
-                }}
+              <img key={imgKey} src={thumbUrl(file)} loading="lazy" decoding="async"
+                onLoad={() => setLoaded(true)} onError={() => { setError(true); setLoaded(true) }}
+                style={{ width: '100%', height: '100%', objectFit: 'cover', display: loaded ? 'block' : 'none', transform: hovered ? 'scale(1.06)' : 'scale(1)', transition: 'transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)', willChange: 'transform' }}
               />
               {loaded && (
                 <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.2)' }}>
@@ -151,62 +111,56 @@ function FileTile({
             </>
           ) : (
             <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px', background: '#1a1020' }}>
-              <div style={{ fontSize: fontSize }}>🎬</div>
+              <div style={{ fontSize }}>🎬</div>
               <div style={{ fontSize: subFontSize, color: '#7070a0' }}>{file.ext}</div>
               {tileSize >= 80 && <div style={{ fontSize: '8px', color: '#44444e', maxWidth: '90%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</div>}
-        </div>
+            </div>
           )}
-    </>
-  ) : isDoc ? (
-    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px', background: '#101a20' }}>
-      <div style={{ fontSize: fontSize }}>{file.ext === '.pdf' ? '📕' : '📄'}</div>
-      <div style={{ fontSize: subFontSize, color: '#7070a0' }}>{file.ext}</div>
-      {tileSize >= 80 && <div style={{ fontSize: '8px', color: '#44444e', maxWidth: '90%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</div>}
-    </div>
-  ) : (
+        </>
+      ) : isDoc ? (
+        <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px', background: '#101a20' }}>
+          <div style={{ fontSize }}>{file.ext === '.pdf' ? '📕' : '📄'}</div>
+          <div style={{ fontSize: subFontSize, color: '#7070a0' }}>{file.ext}</div>
+          {tileSize >= 80 && <div style={{ fontSize: '8px', color: '#44444e', maxWidth: '90%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</div>}
+        </div>
+      ) : (
         <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px' }}>
-          <div style={{ fontSize: fontSize }}>🖼️</div>
+          <div style={{ fontSize }}>🖼️</div>
           <div style={{ fontSize: subFontSize, color: '#44444e' }}>{file.ext}</div>
-        </div >
+        </div>
       )
-}
+      }
 
-{/* Hover overlay with filename — only show if tile is big enough */ }
-{
-  tileSize >= 70 && (
-    <div style={{
-      position: 'absolute', bottom: 0, left: 0, right: 0, padding: '20px 6px 5px',
-      background: 'linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.4) 50%, transparent 100%)',
-      display: 'flex', alignItems: 'flex-end',
-      opacity: hovered ? 1 : 0,
-      transform: hovered ? 'translateY(0)' : 'translateY(8px)',
-      transition: 'all 0.25s cubic-bezier(0.16, 1, 0.3, 1)',
-      pointerEvents: 'none'
-    }}>
-      <div style={{ fontSize: '9px', fontWeight: 500, color: '#e8e8f4', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', width: '100%' }}>{file.name}</div>
-    </div>
-  )
-}
+      {
+        tileSize >= 70 && (
+          <div style={{
+            position: 'absolute', bottom: 0, left: 0, right: 0, padding: '20px 6px 5px',
+            background: 'linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.4) 50%, transparent 100%)',
+            display: 'flex', alignItems: 'flex-end',
+            opacity: hovered ? 1 : 0, transform: hovered ? 'translateY(0)' : 'translateY(8px)',
+            transition: 'all 0.25s cubic-bezier(0.16, 1, 0.3, 1)', pointerEvents: 'none'
+          }}>
+            <div style={{ fontSize: '9px', fontWeight: 500, color: '#e8e8f4', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', width: '100%' }}>{file.name}</div>
+          </div>
+        )
+      }
 
-{/* Select checkbox */ }
-<div
-  onClick={(e) => { e.stopPropagation(); onSelect(file) }}
-  style={{ position: 'absolute', top: '4px', left: '4px', width: '16px', height: '16px', borderRadius: '4px', background: isSelected ? '#6c6cff' : 'rgba(0,0,0,0.6)', border: `1.5px solid ${isSelected ? '#6c6cff' : 'rgba(255,255,255,0.3)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '9px', cursor: 'pointer', color: '#fff', opacity: hovered || isSelected ? 1 : 0, transition: 'opacity 0.15s' }}
->{isSelected ? '✓' : ''}</div>
+      <div onClick={(e) => { e.stopPropagation(); onSelect(file) }}
+        style={{ position: 'absolute', top: '4px', left: '4px', width: '16px', height: '16px', borderRadius: '4px', background: isSelected ? '#6c6cff' : 'rgba(0,0,0,0.6)', border: `1.5px solid ${isSelected ? '#6c6cff' : 'rgba(255,255,255,0.3)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '9px', cursor: 'pointer', color: '#fff', opacity: hovered || isSelected ? 1 : 0, transition: 'opacity 0.15s' }}
+      >{isSelected ? '✓' : ''}</div>
 
-{/* Fav button */ }
-{
-  tileSize >= 70 && (
-    <div
-      onClick={(e) => { e.stopPropagation(); onFav(file) }}
-      style={{ position: 'absolute', top: '4px', right: '4px', width: '20px', height: '20px', borderRadius: '50%', background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', cursor: 'pointer', opacity: hovered || isFav ? 1 : 0, transition: 'opacity 0.15s' }}
-    >{isFav ? '❤️' : '🤍'}</div>
-  )
-}
+      {
+        tileSize >= 70 && (
+          <div onClick={(e) => { e.stopPropagation(); onFav(file) }}
+            style={{ position: 'absolute', top: '4px', right: '4px', width: '20px', height: '20px', borderRadius: '50%', background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', cursor: 'pointer', opacity: hovered || isFav ? 1 : 0, transition: 'opacity 0.15s' }}
+          >{isFav ? '❤️' : '🤍'}</div>
+        )
+      }
     </div >
   )
 }
 
+// ─── PREMIUM LIGHTBOX ────────────────────────────────────────────────────────
 function LightBox({
   file, onClose, onFav, isFav, onNext, onPrev, onReveal
 }: {
@@ -224,7 +178,11 @@ function LightBox({
   const [zoom, setZoom] = useState(1)
   const [imgError, setImgError] = useState(false)
 
-  // Video player state
+  // Pinch-to-zoom state
+  const pinchStartDistRef = useRef<number | null>(null)
+  const pinchStartZoomRef = useRef(1)
+
+  // Video state
   const videoRef = useRef<HTMLVideoElement>(null)
   const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [videoReady, setVideoReady] = useState(false)
@@ -238,19 +196,14 @@ function LightBox({
   const [transcoding, setTranscoding] = useState(false)
   const [transcodedSrc, setTranscodedSrc] = useState<string | null>(null)
   const [transcodeProgress, setTranscodeProgress] = useState(0)
+  const [transcodeDuration, setTranscodeDuration] = useState(0) // total secs parsed from ffmpeg
 
   const needsTranscode = isVideo && ['.mov', '.avi', '.mkv', '.wmv'].includes(file.ext)
 
   useEffect(() => {
-    setVideoReady(false)
-    setPlaying(false)
-    setCurrentTime(0)
-    setDuration(0)
-    setTranscodedSrc(null)
-    setTranscoding(false)
-    setTranscodeProgress(0)
+    setVideoReady(false); setPlaying(false); setCurrentTime(0); setDuration(0)
+    setTranscodedSrc(null); setTranscoding(false); setTranscodeProgress(0); setTranscodeDuration(0)
     if (!needsTranscode) return
-
     setTranscoding(true)
     window.api.transcodeVideo(file.path)
 
@@ -259,15 +212,15 @@ function LightBox({
       setTranscodedSrc('media:///' + d.outPath.replace(/\\/g, '/'))
       setTranscoding(false)
     }
-    const progressHandler = (d: { inputPath: string; secs: number }): void => {
+    const progressHandler = (d: { inputPath: string; secs: number; totalSecs?: number }): void => {
       if (d.inputPath !== file.path) return
       setTranscodeProgress(d.secs)
+      if (d.totalSecs) setTranscodeDuration(d.totalSecs)
     }
     const errorHandler = (d: { inputPath: string }): void => {
       if (d.inputPath !== file.path) return
       setTranscoding(false)
     }
-
     window.api.onTranscodeDone(doneHandler)
     window.api.onTranscodeProgress(progressHandler)
     window.api.onTranscodeError(errorHandler)
@@ -281,24 +234,43 @@ function LightBox({
 
   const togglePlay = useCallback((): void => {
     if (!videoRef.current) return
-    if (videoRef.current.paused) {
-      videoRef.current.play()
-    } else {
-      videoRef.current.pause()
-    }
+    videoRef.current.paused ? videoRef.current.play() : videoRef.current.pause()
     resetControlsTimer()
   }, [resetControlsTimer])
 
   const fmtTime = (s: number): string => {
     if (!isFinite(s)) return '0:00'
-    const m = Math.floor(s / 60)
-    const sec = Math.floor(s % 60)
+    const m = Math.floor(s / 60); const sec = Math.floor(s % 60)
     return `${m}:${sec.toString().padStart(2, '0')}`
   }
 
+  // Pinch handlers
+  const handleTouchStart = useCallback((e: React.TouchEvent): void => {
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX
+      const dy = e.touches[0].clientY - e.touches[1].clientY
+      pinchStartDistRef.current = Math.sqrt(dx * dx + dy * dy)
+      pinchStartZoomRef.current = zoom
+    }
+  }, [zoom])
+
+  const handleTouchMove = useCallback((e: React.TouchEvent): void => {
+    if (e.touches.length === 2 && pinchStartDistRef.current !== null) {
+      e.preventDefault()
+      const dx = e.touches[0].clientX - e.touches[1].clientX
+      const dy = e.touches[0].clientY - e.touches[1].clientY
+      const dist = Math.sqrt(dx * dx + dy * dy)
+      const scale = dist / pinchStartDistRef.current
+      setZoom(Math.max(0.5, Math.min(4, pinchStartZoomRef.current * scale)))
+    }
+  }, [])
+
+  const handleTouchEnd = useCallback((): void => {
+    pinchStartDistRef.current = null
+  }, [])
+
   useEffect(() => {
-    setZoom(1)
-    setImgError(false)
+    setZoom(1); setImgError(false)
     const handler = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') onClose()
       if (e.key === 'ArrowRight') onNext()
@@ -311,13 +283,30 @@ function LightBox({
   }, [file.path])
 
   useEffect(() => {
-    if (isPdf) {
-      window.api.openFile(file.path)
-      onClose()
-    }
+    if (isPdf) { window.api.openFile(file.path); onClose() }
   }, [file.path, isPdf, onClose])
 
   const mediaSrc = toUrl(file.path)
+  const transcodePercent = transcodeDuration > 0 ? Math.min(99, Math.round((transcodeProgress / transcodeDuration) * 100)) : null
+
+  // Premium icon button helper
+  const IconBtn = ({ onClick, title, children, active }: { onClick: (e: React.MouseEvent) => void; title?: string; children: React.ReactNode; active?: boolean }) => (
+    <button
+      onClick={onClick}
+      title={title}
+      style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        width: '34px', height: '34px', borderRadius: '10px', border: 'none', cursor: 'pointer',
+        background: active ? 'rgba(108,108,255,0.25)' : 'rgba(255,255,255,0.06)',
+        color: active ? '#a0a0ff' : '#d0d0e0', fontSize: '15px',
+        backdropFilter: 'blur(8px)',
+        transition: 'background 0.15s, transform 0.1s',
+        flexShrink: 0,
+      }}
+      onMouseEnter={e => (e.currentTarget.style.background = active ? 'rgba(108,108,255,0.35)' : 'rgba(255,255,255,0.12)')}
+      onMouseLeave={e => (e.currentTarget.style.background = active ? 'rgba(108,108,255,0.25)' : 'rgba(255,255,255,0.06)')}
+    >{children}</button>
+  )
 
   return (
     <div
@@ -325,26 +314,81 @@ function LightBox({
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.97)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
     >
       {/* Prev/Next */}
-      <div onClick={(e) => { e.stopPropagation(); onPrev() }} style={{ position: 'absolute', left: '16px', top: '50%', transform: 'translateY(-50%)', width: '44px', height: '44px', borderRadius: '50%', background: 'rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: '22px', color: '#fff', zIndex: 10, backdropFilter: 'blur(8px)' }}>‹</div>
-      <div onClick={(e) => { e.stopPropagation(); onNext() }} style={{ position: 'absolute', right: '16px', top: '50%', transform: 'translateY(-50%)', width: '44px', height: '44px', borderRadius: '50%', background: 'rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: '22px', color: '#fff', zIndex: 10, backdropFilter: 'blur(8px)' }}>›</div>
+      <div onClick={(e) => { e.stopPropagation(); onPrev() }}
+        style={{ position: 'absolute', left: '16px', top: '50%', transform: 'translateY(-50%)', width: '44px', height: '44px', borderRadius: '50%', background: 'rgba(255,255,255,0.08)', border: '0.5px solid rgba(255,255,255,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: '22px', color: '#fff', zIndex: 10, backdropFilter: 'blur(12px)', transition: 'background 0.15s' }}
+        onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.16)')}
+        onMouseLeave={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.08)')}
+      >‹</div>
+      <div onClick={(e) => { e.stopPropagation(); onNext() }}
+        style={{ position: 'absolute', right: '16px', top: '50%', transform: 'translateY(-50%)', width: '44px', height: '44px', borderRadius: '50%', background: 'rgba(255,255,255,0.08)', border: '0.5px solid rgba(255,255,255,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: '22px', color: '#fff', zIndex: 10, backdropFilter: 'blur(12px)', transition: 'background 0.15s' }}
+        onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.16)')}
+        onMouseLeave={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.08)')}
+      >›</div>
 
-      {/* Top bar */}
-      <div style={{ position: 'absolute', top: 0, left: 0, right: 0, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: '8px', background: 'linear-gradient(to bottom, rgba(0,0,0,0.9), transparent)', zIndex: 10 }}>
-        <div style={{ flex: 1, fontSize: '12px', color: '#c0c0d0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</div>
+      {/* ── PREMIUM TOP BAR ── */}
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          position: 'absolute', top: '12px', left: '50%', transform: 'translateX(-50%)',
+          display: 'flex', alignItems: 'center', gap: '6px',
+          background: 'rgba(18,18,28,0.72)', backdropFilter: 'blur(20px) saturate(1.4)',
+          border: '0.5px solid rgba(255,255,255,0.1)', borderRadius: '16px',
+          padding: '6px 10px', zIndex: 20,
+          boxShadow: '0 8px 32px rgba(0,0,0,0.5), 0 1px 0 rgba(255,255,255,0.05) inset',
+          maxWidth: 'calc(100vw - 160px)', minWidth: '320px',
+        }}
+      >
+        {/* Filename */}
+        <div style={{ fontSize: '12px', fontWeight: 500, color: '#b0b0c8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '240px', padding: '0 4px' }}
+          title={file.name}
+        >{file.name}</div>
+
+        <div style={{ width: '0.5px', height: '20px', background: 'rgba(255,255,255,0.1)', margin: '0 2px', flexShrink: 0 }} />
+
+        {/* Zoom controls — only for photos */}
         {isPhoto && !imgError && (
           <>
-            <div onClick={(e) => { e.stopPropagation(); setZoom(z => Math.min(z + 0.5, 4)) }} style={{ padding: '4px 10px', borderRadius: '6px', background: 'rgba(255,255,255,0.1)', cursor: 'pointer', fontSize: '14px', color: '#fff' }}>＋</div>
-            <div onClick={(e) => { e.stopPropagation(); setZoom(z => Math.max(z - 0.5, 0.5)) }} style={{ padding: '4px 10px', borderRadius: '6px', background: 'rgba(255,255,255,0.1)', cursor: 'pointer', fontSize: '14px', color: '#fff' }}>－</div>
-            <div onClick={(e) => { e.stopPropagation(); setZoom(1) }} style={{ padding: '4px 10px', borderRadius: '6px', background: 'rgba(255,255,255,0.1)', cursor: 'pointer', fontSize: '11px', color: '#ccc' }}>Reset</div>
+            <IconBtn onClick={(e) => { e.stopPropagation(); setZoom(z => Math.max(0.5, z - 0.5)) }} title="Zoom out">－</IconBtn>
+            <div style={{ fontSize: '11px', color: '#7070a0', minWidth: '36px', textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}>{Math.round(zoom * 100)}%</div>
+            <IconBtn onClick={(e) => { e.stopPropagation(); setZoom(z => Math.min(4, z + 0.5)) }} title="Zoom in">＋</IconBtn>
+            <IconBtn onClick={(e) => { e.stopPropagation(); setZoom(1) }} title="Reset zoom" active={zoom !== 1}>
+              <span style={{ fontSize: '10px', fontWeight: 600 }}>1:1</span>
+            </IconBtn>
+            <div style={{ width: '0.5px', height: '20px', background: 'rgba(255,255,255,0.1)', margin: '0 2px', flexShrink: 0 }} />
           </>
         )}
-        <div onClick={(e) => { e.stopPropagation(); onFav(file) }} style={{ padding: '4px 10px', borderRadius: '6px', background: 'rgba(255,255,255,0.1)', cursor: 'pointer', fontSize: '16px' }}>{isFav ? '❤️' : '🤍'}</div>
-        <div onClick={(e) => { e.stopPropagation(); onReveal(file) }} style={{ padding: '4px 10px', borderRadius: '6px', background: 'rgba(255,255,255,0.1)', cursor: 'pointer', fontSize: '11px', color: '#fff' }}>📁 Show in folder</div>
-        <div onClick={onClose} style={{ padding: '4px 10px', borderRadius: '6px', background: 'rgba(255,255,255,0.1)', cursor: 'pointer', fontSize: '14px', color: '#fff' }}>✕</div>
+
+        {/* Fav */}
+        <IconBtn onClick={(e) => { e.stopPropagation(); onFav(file) }} title={isFav ? 'Unfavourite' : 'Favourite'} active={isFav}>
+          {isFav ? '❤️' : '🤍'}
+        </IconBtn>
+
+        {/* Show in folder */}
+        <button
+          onClick={(e) => { e.stopPropagation(); onReveal(file) }}
+          style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '0 10px', height: '34px', borderRadius: '10px', border: 'none', cursor: 'pointer', background: 'rgba(255,255,255,0.06)', color: '#b0b0c8', fontSize: '11px', fontWeight: 500, backdropFilter: 'blur(8px)', transition: 'background 0.15s', flexShrink: 0, whiteSpace: 'nowrap' }}
+          onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.12)')}
+          onMouseLeave={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
+        >
+          <span style={{ fontSize: '13px' }}>📁</span> Show in folder
+        </button>
+
+        <div style={{ width: '0.5px', height: '20px', background: 'rgba(255,255,255,0.1)', margin: '0 2px', flexShrink: 0 }} />
+
+        {/* Close */}
+        <IconBtn onClick={(e) => { e.stopPropagation(); onClose() }} title="Close (Esc)">
+          <span style={{ fontSize: '13px', fontWeight: 300 }}>✕</span>
+        </IconBtn>
       </div>
 
       {/* Media */}
-      <div onClick={(e) => e.stopPropagation()} style={{ maxWidth: '92vw', maxHeight: '88vh', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'auto' }}>
+      <div
+        onClick={(e) => e.stopPropagation()}
+        onTouchStart={isPhoto ? handleTouchStart : undefined}
+        onTouchMove={isPhoto ? handleTouchMove : undefined}
+        onTouchEnd={isPhoto ? handleTouchEnd : undefined}
+        style={{ maxWidth: '92vw', maxHeight: '88vh', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'auto' }}
+      >
         {isPhoto ? (
           imgError ? (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
@@ -357,7 +401,7 @@ function LightBox({
               key={file.path}
               src={mediaSrc}
               onError={() => setImgError(true)}
-              style={{ transform: `scale(${zoom})`, transformOrigin: 'center', maxWidth: '90vw', maxHeight: '86vh', objectFit: 'contain', display: 'block', transition: 'transform 0.2s' }}
+              style={{ transform: `scale(${zoom})`, transformOrigin: 'center', maxWidth: '90vw', maxHeight: '86vh', objectFit: 'contain', display: 'block', transition: 'transform 0.2s', touchAction: 'none' }}
             />
           )
         ) : isVideo ? (
@@ -366,16 +410,37 @@ function LightBox({
             onMouseMove={resetControlsTimer}
             onMouseEnter={resetControlsTimer}
           >
-            {/* Transcoding overlay */}
+            {/* Transcoding overlay — with real % */}
             {transcoding && (
-              <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.9)', zIndex: 10, gap: '14px' }}>
+              <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.92)', zIndex: 10, gap: '16px' }}>
                 <div style={{ fontSize: '40px' }}>🎬</div>
-                <div style={{ color: '#c0c0e0', fontSize: '14px', fontWeight: 500 }}>Converting for playback...</div>
-                <div style={{ fontSize: '12px', color: '#6060a0' }}>{transcodeProgress > 0 ? `${transcodeProgress}s processed` : 'Starting ffmpeg...'}</div>
-                <div style={{ width: '240px', height: '3px', background: '#1e1e2a', borderRadius: '2px', overflow: 'hidden' }}>
-                  <div style={{ height: '100%', width: '40%', background: 'linear-gradient(90deg,transparent,#6c6cff,transparent)', animation: 'shimmer 1.4s infinite' }} />
+                <div style={{ color: '#c0c0e0', fontSize: '14px', fontWeight: 600, letterSpacing: '-0.2px' }}>Converting for playback...</div>
+
+                {/* Progress bar */}
+                <div style={{ width: '280px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#6060a0' }}>
+                    <span>{transcodeProgress > 0 ? `${fmtTime(transcodeProgress)} processed` : 'Starting ffmpeg...'}</span>
+                    {transcodePercent !== null && (
+                      <span style={{ color: '#8080d0', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{transcodePercent}%</span>
+                    )}
+                  </div>
+                  <div style={{ width: '100%', height: '4px', background: '#1e1e2a', borderRadius: '4px', overflow: 'hidden' }}>
+                    {transcodePercent !== null ? (
+                      <div style={{
+                        height: '100%',
+                        width: `${transcodePercent}%`,
+                        background: 'linear-gradient(90deg, #4a4aef, #8080ff)',
+                        borderRadius: '4px',
+                        transition: 'width 0.6s cubic-bezier(0.16, 1, 0.3, 1)',
+                        boxShadow: '0 0 8px rgba(108,108,255,0.6)'
+                      }} />
+                    ) : (
+                      <div style={{ height: '100%', width: '40%', background: 'linear-gradient(90deg,transparent,#6c6cff,transparent)', animation: 'shimmer 1.4s infinite' }} />
+                    )}
+                  </div>
                 </div>
-                <div style={{ fontSize: '10px', color: '#3a3a48' }}>Cached after first conversion</div>
+
+                <div style={{ fontSize: '10px', color: '#3a3a48' }}>Cached after first conversion · RAM optimised</div>
               </div>
             )}
 
@@ -386,7 +451,6 @@ function LightBox({
               </div>
             )}
 
-            {/* Video element */}
             <video
               ref={videoRef}
               key={file.path}
@@ -410,58 +474,33 @@ function LightBox({
                 position: 'absolute', bottom: 0, left: 0, right: 0,
                 background: 'linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.6) 60%, transparent 100%)',
                 padding: '32px 16px 12px',
-                opacity: showControls ? 1 : 0,
-                transition: 'opacity 0.35s',
+                opacity: showControls ? 1 : 0, transition: 'opacity 0.35s',
                 pointerEvents: showControls ? 'all' : 'none'
               }}
             >
-              {/* Seek bar */}
-              <input
-                type="range" min={0} max={duration || 1} step={0.1} value={currentTime}
-                onChange={(e) => {
-                  const t = Number(e.target.value)
-                  if (videoRef.current) videoRef.current.currentTime = t
-                  setCurrentTime(t)
-                }}
+              <input type="range" min={0} max={duration || 1} step={0.1} value={currentTime}
+                onChange={(e) => { const t = Number(e.target.value); if (videoRef.current) videoRef.current.currentTime = t; setCurrentTime(t) }}
                 style={{ width: '100%', margin: '0 0 10px', accentColor: '#6c6cff', cursor: 'pointer', height: '4px' }}
               />
               <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                {/* Rewind 10s */}
                 <div onClick={() => { if (videoRef.current) videoRef.current.currentTime = Math.max(0, currentTime - 10) }} style={{ fontSize: '16px', cursor: 'pointer', color: '#c0c0e0', userSelect: 'none' }}>⏮</div>
-                {/* Play/Pause */}
                 <div onClick={togglePlay} style={{ fontSize: '22px', cursor: 'pointer', color: '#fff', minWidth: '24px', textAlign: 'center', userSelect: 'none' }}>{playing ? '⏸' : '▶'}</div>
-                {/* Forward 10s */}
                 <div onClick={() => { if (videoRef.current) videoRef.current.currentTime = Math.min(duration, currentTime + 10) }} style={{ fontSize: '16px', cursor: 'pointer', color: '#c0c0e0', userSelect: 'none' }}>⏭</div>
-                {/* Time */}
-                <div style={{ fontSize: '12px', color: '#a0a0c0', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
-                  {fmtTime(currentTime)} / {fmtTime(duration)}
-                </div>
-                {/* Volume */}
+                <div style={{ fontSize: '12px', color: '#a0a0c0', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>{fmtTime(currentTime)} / {fmtTime(duration)}</div>
                 <div onClick={() => { const m = !muted; setMuted(m); if (videoRef.current) videoRef.current.muted = m }} style={{ fontSize: '16px', cursor: 'pointer', color: '#c0c0e0', userSelect: 'none' }}>
                   {muted || volume === 0 ? '🔇' : volume < 0.5 ? '🔉' : '🔊'}
                 </div>
-                <input
-                  type="range" min={0} max={1} step={0.02} value={muted ? 0 : volume}
-                  onChange={(e) => {
-                    const v = Number(e.target.value)
-                    setVolume(v); setMuted(v === 0)
-                    if (videoRef.current) { videoRef.current.volume = v; videoRef.current.muted = v === 0 }
-                  }}
+                <input type="range" min={0} max={1} step={0.02} value={muted ? 0 : volume}
+                  onChange={(e) => { const v = Number(e.target.value); setVolume(v); setMuted(v === 0); if (videoRef.current) { videoRef.current.volume = v; videoRef.current.muted = v === 0 } }}
                   style={{ width: '80px', accentColor: '#6c6cff', cursor: 'pointer' }}
                 />
                 <div style={{ flex: 1 }} />
-                {/* Speed */}
-                <select
-                  value={speed}
-                  onChange={(e) => {
-                    const s = Number(e.target.value); setSpeed(s)
-                    if (videoRef.current) videoRef.current.playbackRate = s
-                  }}
+                <select value={speed}
+                  onChange={(e) => { const s = Number(e.target.value); setSpeed(s); if (videoRef.current) videoRef.current.playbackRate = s }}
                   style={{ background: '#1a1a2a', color: '#c0c0e0', border: '0.5px solid #3a3a5a', borderRadius: '5px', fontSize: '11px', padding: '3px 6px', cursor: 'pointer' }}
                 >
                   {[0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3].map(s => <option key={s} value={s}>{s}x</option>)}
                 </select>
-                {/* Fullscreen */}
                 <div onClick={() => videoRef.current?.requestFullscreen?.()} style={{ fontSize: '16px', cursor: 'pointer', color: '#c0c0e0', userSelect: 'none' }}>⛶</div>
               </div>
             </div>
@@ -486,6 +525,7 @@ function LightBox({
   )
 }
 
+// ─── YEARS VIEW (fixed thumbnails) ───────────────────────────────────────────
 function YearsView({ groupedFiles, onYearClick }: { groupedFiles: Record<string, ScannedFile[]>; onYearClick: (year: string) => void }): React.JSX.Element {
   const yearMap: Record<string, ScannedFile[]> = {}
   for (const [key, files] of Object.entries(groupedFiles)) {
@@ -499,21 +539,31 @@ function YearsView({ groupedFiles, onYearClick }: { groupedFiles: Record<string,
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '16px', padding: '8px 0' }}>
       {years.map(year => {
         const files = yearMap[year]
-        const thumbFiles = files.filter(f => f.thumb).slice(0, 4)
+        // FIX: use any file with a thumb OR any photo file — don't require thumb
+        const previewFiles = [
+          ...files.filter(f => f.thumb),
+          ...files.filter(f => photoExts.includes(f.ext) && !f.thumb)
+        ].slice(0, 4)
+
         return (
           <div
             key={year}
             onClick={() => onYearClick(year)}
-            style={{ background: '#141420', borderRadius: '14px', border: '0.5px solid #2a2a3a', overflow: 'hidden', cursor: 'pointer', transition: 'transform 0.2s, border-color 0.2s' }}
-            onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.borderColor = '#6c6cff'; (e.currentTarget as HTMLDivElement).style.transform = 'scale(1.02)' }}
-            onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.borderColor = '#2a2a3a'; (e.currentTarget as HTMLDivElement).style.transform = 'scale(1)' }}
+            style={{ background: '#141420', borderRadius: '14px', border: '0.5px solid #2a2a3a', overflow: 'hidden', cursor: 'pointer', transition: 'transform 0.2s, border-color 0.2s, box-shadow 0.2s' }}
+            onMouseEnter={e => { const el = e.currentTarget as HTMLDivElement; el.style.borderColor = '#6c6cff'; el.style.transform = 'scale(1.02)'; el.style.boxShadow = '0 8px 24px rgba(108,108,255,0.15)' }}
+            onMouseLeave={e => { const el = e.currentTarget as HTMLDivElement; el.style.borderColor = '#2a2a3a'; el.style.transform = 'scale(1)'; el.style.boxShadow = 'none' }}
           >
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr 1fr', height: '140px' }}>
               {[0, 1, 2, 3].map(i => {
-                const f = thumbFiles[i]
+                const f = previewFiles[i]
+                const src = f ? ('media:///' + (f.thumb || f.path).replace(/\\/g, '/')) : null
                 return (
-                  <div key={i} style={{ background: '#1a1a28', overflow: 'hidden', borderRight: i % 2 === 0 ? '1px solid #0f0f10' : undefined, borderBottom: i < 2 ? '1px solid #0f0f10' : undefined }}>
-                    {f && <img src={'media:///' + (f.thumb || f.path).replace(/\\/g, '/')} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
+                  <div key={i} style={{ background: '#1a1a28', overflow: 'hidden', borderRight: i % 2 === 0 ? '1px solid #0f0f10' : undefined, borderBottom: i < 2 ? '1px solid #0f0f10' : undefined, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {src ? (
+                      <YearThumb src={src} />
+                    ) : (
+                      <div style={{ fontSize: '20px', opacity: 0.2 }}>📷</div>
+                    )}
                   </div>
                 )
               })}
@@ -529,6 +579,14 @@ function YearsView({ groupedFiles, onYearClick }: { groupedFiles: Record<string,
   )
 }
 
+// Separate component so each thumb has its own error state
+function YearThumb({ src }: { src: string }): React.JSX.Element {
+  const [err, setErr] = useState(false)
+  if (err) return <div style={{ fontSize: '20px', opacity: 0.2 }}>📷</div>
+  return <img src={src} onError={() => setErr(true)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+}
+
+// ─── MAP VIEW ────────────────────────────────────────────────────────────────
 function MapView({ files, onOpen }: { files: ScannedFile[]; onOpen: (f: ScannedFile, list: ScannedFile[]) => void }): React.JSX.Element {
   const mapRef = useRef<HTMLDivElement>(null)
   const mapInstanceRef = useRef<L.Map | null>(null)
@@ -597,6 +655,7 @@ function MapView({ files, onOpen }: { files: ScannedFile[]; onOpen: (f: ScannedF
   )
 }
 
+// ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function App(): React.JSX.Element {
   const [activeNav, setActiveNav] = useState('all')
   const [drives, setDrives] = useState<DriveInfo[]>([])
@@ -614,8 +673,6 @@ export default function App(): React.JSX.Element {
 
   const zoomLevelRef = useRef(1.0)
   const [tileSize, setTileSize] = useState(100)
-
-  // tileSize drives the grid column width live during zoom
   const [transitioning, setTransitioning] = useState(false)
   const monthRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const lastCenteredMonth = useRef<string | null>(null)
@@ -624,8 +681,7 @@ export default function App(): React.JSX.Element {
   const lastZoomDirRef = useRef<'in' | 'out' | null>(null)
 
   const getCenteredMonth = useCallback(() => {
-    let closest = ''
-    let minDiff = Infinity
+    let closest = ''; let minDiff = Infinity
     const center = window.innerHeight / 2
     for (const [key, el] of Object.entries(monthRefs.current)) {
       if (!el) continue
@@ -639,7 +695,6 @@ export default function App(): React.JSX.Element {
   const scrollTopRef = useRef(0)
   const [scrollVersion, setScrollVersion] = useState(0)
   const rafRef = useRef<number | null>(null)
-
 
   useEffect(() => {
     const preventZoom = (e: WheelEvent): void => { if (e.ctrlKey) e.preventDefault() }
@@ -657,8 +712,6 @@ export default function App(): React.JSX.Element {
   const handleWheel = useCallback((e: React.WheelEvent): void => {
     if (!e.ctrlKey) return
     e.preventDefault()
-
-    // Only handle zoom in Grid, Timeline, Years
     if (activeView !== 'Grid' && activeView !== 'Timeline' && activeView !== 'Years') return
 
     const dir: 'in' | 'out' = e.deltaY > 0 ? 'out' : 'in'
@@ -672,60 +725,28 @@ export default function App(): React.JSX.Element {
 
     if (transitioning) return
 
-    // Grid: zoom out enough → Timeline (tiles shrink first, then switch)
     if (activeView === 'Grid' && newTileSize <= 58 && zoomTicksRef.current >= 3) {
       lastCenteredMonth.current = getCenteredMonth()
-      setTransitioning(true)
-      zoomTicksRef.current = 0
-      setTimeout(() => {
-        setActiveView('Timeline')
-        zoomLevelRef.current = 1.0
-        setTileSize(100)
-        setTransitioning(false)
-      }, 320)
+      setTransitioning(true); zoomTicksRef.current = 0
+      setTimeout(() => { setActiveView('Timeline'); zoomLevelRef.current = 1.0; setTileSize(100); setTransitioning(false) }, 320)
       return
     }
-
-    // Timeline: zoom in → Grid
     if (activeView === 'Timeline' && dir === 'in' && zoomTicksRef.current >= 3) {
       lastCenteredMonth.current = getCenteredMonth()
-      setTransitioning(true)
-      zoomTicksRef.current = 0
-      setTimeout(() => {
-        setActiveView('Grid')
-        zoomLevelRef.current = 1.0
-        setTileSize(100)
-        setTransitioning(false)
-      }, 320)
+      setTransitioning(true); zoomTicksRef.current = 0
+      setTimeout(() => { setActiveView('Grid'); zoomLevelRef.current = 1.0; setTileSize(100); setTransitioning(false) }, 320)
       return
     }
-
-    // Timeline: zoom out → Years
     if (activeView === 'Timeline' && dir === 'out' && zoomTicksRef.current >= 4) {
-      setTransitioning(true)
-      zoomTicksRef.current = 0
-      setTimeout(() => {
-        setActiveView('Years')
-        zoomLevelRef.current = 1.0
-        setTileSize(100)
-        setTransitioning(false)
-      }, 320)
+      setTransitioning(true); zoomTicksRef.current = 0
+      setTimeout(() => { setActiveView('Years'); zoomLevelRef.current = 1.0; setTileSize(100); setTransitioning(false) }, 320)
       return
     }
-
-    // Years: zoom in → Timeline
     if (activeView === 'Years' && dir === 'in' && zoomTicksRef.current >= 3) {
-      setTransitioning(true)
-      zoomTicksRef.current = 0
-      setTimeout(() => {
-        setActiveView('Timeline')
-        zoomLevelRef.current = 1.0
-        setTileSize(100)
-        setTransitioning(false)
-      }, 320)
+      setTransitioning(true); zoomTicksRef.current = 0
+      setTimeout(() => { setActiveView('Timeline'); zoomLevelRef.current = 1.0; setTileSize(100); setTransitioning(false) }, 320)
       return
     }
-    // Years zoom out = floor, nothing
   }, [activeView, transitioning, getCenteredMonth])
 
   useEffect(() => {
@@ -735,8 +756,7 @@ export default function App(): React.JSX.Element {
     window.api.onDrivesUpdated((d) => setDrives(d as DriveInfo[]))
     window.api.onScanProgress((d) => setScanCount(d.count))
     window.api.onScanComplete((d) => {
-      setScanning(false)
-      setScanCount(d.count)
+      setScanning(false); setScanCount(d.count)
       currentDriveRef.current = d.drive
       window.api.getFiles(d.drive)
     })
@@ -745,7 +765,6 @@ export default function App(): React.JSX.Element {
         setDriveFiles(prev => ({ ...prev, [currentDriveRef.current!]: g as Record<string, ScannedFile[]> }))
       }
     })
-    // thumb-ready: do NOT use removeAllListeners — use ipcRenderer.on directly via preload
     window.api.onThumbReady(({ filePath, thumbPath }) => {
       setDriveFiles(prev => {
         const updated: Record<string, Record<string, ScannedFile[]>> = {}
@@ -763,30 +782,21 @@ export default function App(): React.JSX.Element {
     window.api.onFavouriteToggled((p) => {
       setFavourites(prev => {
         const next = new Set(prev)
-        if (next.has(p as string)) next.delete(p as string)
-        else next.add(p as string)
+        if (next.has(p as string)) next.delete(p as string); else next.add(p as string)
         return next
       })
     })
   }, [])
 
   const handleDriveClick = (name: string): void => {
-    setSelectedDrive(name)
-    currentDriveRef.current = name
-    setScanning(true)
-    setScanCount(0)
-    setActiveNav('all')
-    setActiveView('Grid')
-    zoomLevelRef.current = 1.0
-    setTileSize(100)
-    setSelected(new Set())
-    setVisibleCount({})
+    setSelectedDrive(name); currentDriveRef.current = name
+    setScanning(true); setScanCount(0); setActiveNav('all'); setActiveView('Grid')
+    zoomLevelRef.current = 1.0; setTileSize(100); setSelected(new Set()); setVisibleCount({})
     window.api.scanDrive(name)
   }
 
   const handleRescan = (name: string): void => {
-    setScanning(true); setScanCount(0)
-    currentDriveRef.current = name
+    setScanning(true); setScanCount(0); currentDriveRef.current = name
     setSelected(new Set()); setVisibleCount({})
     window.electron.ipcRenderer.send('rescan-drive', name)
   }
@@ -830,6 +840,7 @@ export default function App(): React.JSX.Element {
         .leaflet-popup-tip { background: #1a1a2a !important; }
         .leaflet-popup-close-button { color: #7070a0 !important; }
         input[type=range] { height: 4px; }
+        button:focus { outline: none; }
       `}</style>
 
       {/* Sidebar */}
@@ -895,10 +906,7 @@ export default function App(): React.JSX.Element {
               <span onClick={() => setSelected(new Set())} style={{ marginLeft: '8px', cursor: 'pointer', color: '#7070a0' }}>✕</span>
             </div>
           )}
-          {/* Zoom hint */}
-          {activeView === 'Grid' && (
-            <div style={{ fontSize: '10px', color: '#3a3a48' }}>Ctrl+Scroll to zoom</div>
-          )}
+          {activeView === 'Grid' && <div style={{ fontSize: '10px', color: '#3a3a48' }}>Ctrl+Scroll to zoom</div>}
           <div style={{ display: 'flex', gap: '1px', background: '#161618', borderRadius: '7px', padding: '2px', border: '0.5px solid #2a2a2e' }}>
             {['Grid', 'Timeline', 'Years', 'Map'].map(v => (
               <div key={v} onClick={() => setActiveView(v)} style={{ padding: '4px 10px', borderRadius: '5px', cursor: 'pointer', fontSize: '11px', background: activeView === v ? '#252535' : 'transparent', color: activeView === v ? '#c0c0e8' : '#5a5a70' }}>{v}</div>
@@ -1017,7 +1025,6 @@ export default function App(): React.JSX.Element {
                 const scrollTop = scrollTopRef.current
                 const winH = window.innerHeight
                 let offsetY = 0
-                // scrollVersion used to trigger re-render on scroll
                 void scrollVersion
                 return months.map(monthKey => {
                   const files = getFiltered(groupedFiles[monthKey] || [])
@@ -1032,7 +1039,7 @@ export default function App(): React.JSX.Element {
                   const ref = (el: HTMLDivElement | null): void => { monthRefs.current[monthKey] = el }
 
                   if (!inView) {
-                    return <div key={monthKey + '_ph'} ref={ref} style={{ height: estH + 28, marginBottom: '0px' }} />
+                    return <div key={monthKey + '_ph'} ref={ref} style={{ height: estH + 28 }} />
                   }
 
                   return (

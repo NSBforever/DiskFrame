@@ -178,21 +178,29 @@ app.whenReady().then(() => {
 
     const ff = spawn(ffmpegExe, [
       '-i', inputPath,
-      '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '30',
-      '-c:a', 'aac', '-b:a', '96k',
-      '-movflags', '+faststart',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28',
+      '-vf', 'scale=trunc(iw/4)*2:trunc(ih/4)*2',
+      '-c:a', 'aac', '-b:a', '64k',
+      '-threads', '2',
+      '-bufsize', '512k',
+      '-maxrate', '2M',
       '-y', outPath
     ])
 
     // Send progress updates
+    let totalSecs = 0
     ff.stderr.on('data', (data: Buffer) => {
-      const str = data.toString()
-      const match = str.match(/time=(\d+):(\d+):(\d+)/)
-      if (match) {
-        const secs = parseInt(match[1]) * 3600 + parseInt(match[2]) * 60 + parseInt(match[3])
-        if (mainWindow) mainWindow.webContents.send('transcode-progress', { inputPath, secs })
-      }
-    })
+  const str = data.toString()
+  if (!totalSecs) {
+    const durMatch = str.match(/Duration:\s*(\d+):(\d+):(\d+)/)
+    if (durMatch) totalSecs = parseInt(durMatch[1]) * 3600 + parseInt(durMatch[2]) * 60 + parseInt(durMatch[3])
+  }
+  const match = str.match(/time=(\d+):(\d+):(\d+)/)
+  if (match) {
+    const secs = parseInt(match[1]) * 3600 + parseInt(match[2]) * 60 + parseInt(match[3])
+    if (mainWindow) mainWindow.webContents.send('transcode-progress', { inputPath, secs, totalSecs })
+  }
+})
 
     ff.on('close', (code: number) => {
       if (code === 0 && fs.existsSync(outPath)) {
