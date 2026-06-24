@@ -42,6 +42,9 @@ declare global {
       readFileBase64: (filePath: string) => Promise<string>
       onThumbReady: (callback: (data: { filePath: string; thumbPath: string }) => void) => void
       transcodeVideo: (inputPath: string) => Promise<string>
+      onTranscodeDone: (callback: (data: { inputPath: string; outPath: string }) => void) => void
+      onTranscodeProgress: (callback: (data: { inputPath: string; secs: number; totalSecs?: number }) => void) => void
+      onTranscodeError: (callback: (data: { inputPath: string }) => void) => void
     }
   }
 }

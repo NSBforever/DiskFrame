@@ -12,17 +12,11 @@ function resolveFfmpeg(): string {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const p = require('ffmpeg-static') as string
     if (p) {
-      const candidates = [
-        p,
-        p.replace('app.asar', 'app.asar.unpacked'),
-        p + '.exe'
-      ]
-      for (const c of candidates) {
-        if (fs.existsSync(c)) return c
-      }
+      const candidates = [p, p.replace('app.asar', 'app.asar.unpacked'), p + '.exe']
+      for (const c of candidates) if (fs.existsSync(c)) return c
     }
   } catch {}
-  return 'ffmpeg' // system ffmpeg fallback
+  return 'ffmpeg'
 }
 const ffmpegExe = resolveFfmpeg()
 
@@ -31,6 +25,10 @@ const db = new Database(dbPath)
 
 const thumbDir = join(app.getPath('userData'), 'thumbs')
 if (!fs.existsSync(thumbDir)) fs.mkdirSync(thumbDir, { recursive: true })
+
+// Hidden vault folder
+const vaultDir = join(app.getPath('userData'), 'vault')
+if (!fs.existsSync(vaultDir)) fs.mkdirSync(vaultDir, { recursive: true })
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS files (
@@ -46,9 +44,28 @@ db.exec(`
     lng REAL,
     drive TEXT,
     favourited INTEGER DEFAULT 0,
-    thumb TEXT
-  )
+    thumb TEXT,
+    locked INTEGER DEFAULT 0,
+    hidden INTEGER DEFAULT 0,
+    vault_path TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS vault_pin (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    pin TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS delete_prefs (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    skip_confirm INTEGER DEFAULT 0
+  );
 `)
+
+// Migrate existing DB — add columns if missing
+const cols = (db.prepare("PRAGMA table_info(files)").all() as { name: string }[]).map(c => c.name)
+if (!cols.includes('locked')) db.prepare('ALTER TABLE files ADD COLUMN locked INTEGER DEFAULT 0').run()
+if (!cols.includes('hidden')) db.prepare('ALTER TABLE files ADD COLUMN hidden INTEGER DEFAULT 0').run()
+if (!cols.includes('vault_path')) db.prepare('ALTER TABLE files ADD COLUMN vault_path TEXT').run()
 
 export interface ScannedFile {
   path: string
@@ -63,21 +80,97 @@ export interface ScannedFile {
   drive: string
   favourited: number
   thumb: string | null
+  locked: number
+  hidden: number
+  vault_path: string | null
 }
 
+// ─── PIN MANAGEMENT ───────────────────────────────────────────────────────────
+export function getPin(): string | null {
+  const row = db.prepare('SELECT pin FROM vault_pin WHERE id = 1').get() as { pin: string } | undefined
+  return row?.pin ?? null
+}
+
+export function setPin(pin: string): void {
+  db.prepare('INSERT OR REPLACE INTO vault_pin (id, pin) VALUES (1, ?)').run(pin)
+}
+
+export function verifyPin(pin: string): boolean {
+  return getPin() === pin
+}
+
+// ─── DELETE PREFS ─────────────────────────────────────────────────────────────
+export function getSkipConfirm(): boolean {
+  const row = db.prepare('SELECT skip_confirm FROM delete_prefs WHERE id = 1').get() as { skip_confirm: number } | undefined
+  return (row?.skip_confirm ?? 0) === 1
+}
+
+export function setSkipConfirm(skip: boolean): void {
+  db.prepare('INSERT OR REPLACE INTO delete_prefs (id, skip_confirm) VALUES (1, ?)').run(skip ? 1 : 0)
+}
+
+// ─── HIDE/LOCK FILES ──────────────────────────────────────────────────────────
+export function hideFile(filePath: string): { vaultPath: string } | null {
+  const file = db.prepare('SELECT * FROM files WHERE path = ?').get(filePath) as ScannedFile | undefined
+  if (!file) return null
+
+  // Move file to vault
+  const hash = createHash('md5').update(filePath).digest('hex')
+  const vaultPath = join(vaultDir, hash + file.ext)
+  try {
+    fs.renameSync(filePath, vaultPath)
+    db.prepare('UPDATE files SET hidden = 1, vault_path = ? WHERE path = ?').run(vaultPath, filePath)
+    return { vaultPath }
+  } catch (e) {
+    console.error('[hide] failed', e)
+    return null
+  }
+}
+
+export function unhideFile(filePath: string, pin: string): boolean {
+  if (!verifyPin(pin)) return false
+  const file = db.prepare('SELECT * FROM files WHERE path = ?').get(filePath) as ScannedFile | undefined
+  if (!file?.vault_path) return false
+  try {
+    fs.renameSync(file.vault_path, filePath)
+    db.prepare('UPDATE files SET hidden = 0, vault_path = NULL WHERE path = ?').run(filePath)
+    return true
+  } catch {
+    return false
+  }
+}
+
+export function deleteFileToRecycleBin(filePath: string): boolean {
+  try {
+    // Use PowerShell to send to recycle bin on Windows
+    const script = `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('${filePath.replace(/'/g, "''")}', 'OnlyErrorDialogs', 'SendToRecycleBin')`
+    cp.execSync(`powershell -Command "${script}"`, { timeout: 10000 })
+    db.prepare('DELETE FROM files WHERE path = ?').run(filePath)
+    return true
+  } catch (e) {
+    console.error('[delete] recycle bin failed', e)
+    return false
+  }
+}
+
+export function deleteMultipleToRecycleBin(filePaths: string[]): { success: string[]; failed: string[] } {
+  const success: string[] = []
+  const failed: string[] = []
+  for (const p of filePaths) {
+    if (deleteFileToRecycleBin(p)) success.push(p)
+    else failed.push(p)
+  }
+  return { success, failed }
+}
+
+// ─── GROUPED FILES (exclude hidden) ──────────────────────────────────────────
 export function getGroupedFiles(drivePath?: string): Record<string, ScannedFile[]> {
   const files = drivePath
-    ? (db
-        .prepare('SELECT * FROM files WHERE drive = ? ORDER BY date DESC')
-        .all(drivePath) as ScannedFile[])
-    : (db.prepare('SELECT * FROM files ORDER BY date DESC').all() as ScannedFile[])
+    ? (db.prepare('SELECT * FROM files WHERE drive = ? AND hidden = 0 ORDER BY date DESC').all(drivePath) as ScannedFile[])
+    : (db.prepare('SELECT * FROM files WHERE hidden = 0 ORDER BY date DESC').all() as ScannedFile[])
 
   const grouped: Record<string, ScannedFile[]> = {}
-  let videoLogs = 0
   for (const file of files) {
-    if (file.ext === '.mp4' || file.ext === '.mov') {
-      if (videoLogs++ < 5) console.log(`[DB] Video: ${file.path} | Thumb: ${file.thumb}`)
-    }
     const year = file.year || 'Unknown'
     const month = file.month || 'Unknown'
     const key = `${year}-${month}`
@@ -88,22 +181,16 @@ export function getGroupedFiles(drivePath?: string): Record<string, ScannedFile[
 }
 
 export function getFavourites(): ScannedFile[] {
-  return db
-    .prepare('SELECT * FROM files WHERE favourited = 1 ORDER BY date DESC')
-    .all() as ScannedFile[]
+  return db.prepare('SELECT * FROM files WHERE favourited = 1 AND hidden = 0 ORDER BY date DESC').all() as ScannedFile[]
 }
 
 export function toggleFavourite(filePath: string): void {
-  db.prepare(
-    'UPDATE files SET favourited = CASE WHEN favourited = 1 THEN 0 ELSE 1 END WHERE path = ?'
-  ).run(filePath)
+  db.prepare('UPDATE files SET favourited = CASE WHEN favourited = 1 THEN 0 ELSE 1 END WHERE path = ?').run(filePath)
 }
 
 export function getFileCount(drivePath?: string): number {
   if (drivePath) {
-    const row = db
-      .prepare('SELECT COUNT(*) as count FROM files WHERE drive = ?')
-      .get(drivePath) as { count: number }
+    const row = db.prepare('SELECT COUNT(*) as count FROM files WHERE drive = ?').get(drivePath) as { count: number }
     return row.count
   }
   const row = db.prepare('SELECT COUNT(*) as count FROM files').get() as { count: number }
@@ -111,97 +198,12 @@ export function getFileCount(drivePath?: string): number {
 }
 
 export function getFilesWithoutThumbs(drivePath: string): ScannedFile[] {
-  return db
-    .prepare('SELECT * FROM files WHERE drive = ? AND (thumb IS NULL OR thumb = "")')
-    .all(drivePath) as ScannedFile[]
+  return db.prepare('SELECT * FROM files WHERE drive = ? AND (thumb IS NULL OR thumb = "")').all(drivePath) as ScannedFile[]
 }
 
 function makeHash(fullPath: string): string {
   return createHash('md5').update(fullPath).digest('hex')
 }
-
-export async function generateThumbForFile(fullPath: string, ext: string): Promise<string | null> {
-  const lowerExt = ext.toLowerCase()
-  if (sharpExts.includes(lowerExt)) {
-    try {
-      const thumbPath = join(thumbDir, `${makeHash(fullPath)}.jpg`)
-      if (fs.existsSync(thumbPath)) return thumbPath
-      await sharp(fullPath)
-        .rotate()
-        .resize(240, 240, { fit: 'cover', position: 'centre' })
-        .jpeg({ quality: 75 })
-        .toFile(thumbPath)
-      if (fs.existsSync(thumbPath)) return thumbPath
-      return null
-    } catch (e) {
-      console.error('[thumb failed]', fullPath, e)
-      return null
-    }
-  } else if (videoExts.includes(lowerExt)) {
-    return new Promise((resolve) => {
-      try {
-        const thumbPath = join(thumbDir, `${makeHash(fullPath)}.jpg`)
-        if (fs.existsSync(thumbPath)) {
-          resolve(thumbPath)
-          return
-        }
-
-        const ffmpeg = cp.spawn(ffmpegExe, [
-          '-ss', '00:00:02',
-          '-i', fullPath,
-          '-vframes', '1',
-          '-vf', 'scale=240:240:force_original_aspect_ratio=increase,crop=240:240',
-          '-f', 'image2',
-          '-q:v', '2',
-          '-y',
-          thumbPath
-        ])
-
-        ffmpeg.stderr.on('data', (d: Buffer) =>
-          console.log('[ffmpeg thumb]', d.toString().slice(0, 100))
-        )
-
-        const killTimer = setTimeout(() => {
-          try { ffmpeg.kill() } catch {}
-        }, 15000)
-
-        ffmpeg.on('close', (code) => {
-          clearTimeout(killTimer)
-          if (code === 0 && fs.existsSync(thumbPath)) resolve(thumbPath)
-          else {
-            console.warn(`[Scanner] FFmpeg close code ${code} for ${fullPath}`)
-            resolve(null)
-          }
-        })
-        ffmpeg.on('error', (err) => {
-          clearTimeout(killTimer)
-          console.warn(`[Scanner] FFmpeg error for ${fullPath}:`, err)
-          resolve(null)
-        })
-      } catch (err) {
-        console.warn(`[Scanner] Sync error generating video thumb for ${fullPath}:`, err)
-        resolve(null)
-      }
-    })
-  }
-  return null
-}
-
-export function updateThumb(filePath: string, thumbPath: string): void {
-  db.prepare('UPDATE files SET thumb = ? WHERE path = ?').run(thumbPath, filePath)
-}
-
-const SKIP_DIRS = [
-  'windows',
-  'program files',
-  'program files (x86)',
-  '$recycle.bin',
-  'system volume information',
-  'programdata',
-  'node_modules',
-  '.git',
-  'appdata'
-]
 
 const photoExts = ['.jpg', '.jpeg', '.png', '.heic', '.raw', '.cr2', '.nef', '.webp']
 const videoExts = ['.mp4', '.mov', '.avi', '.mkv', '.wmv']
@@ -210,88 +212,201 @@ const allExts = [...photoExts, ...videoExts, ...docExts]
 const sharpExts = ['.jpg', '.jpeg', '.png', '.webp']
 const MIN_PHOTO_SIZE = 50 * 1024
 
+// ─── THUMBNAIL GENERATION ─────────────────────────────────────────────────────
+export async function generateThumbForFile(fullPath: string, ext: string): Promise<string | null> {
+  const lowerExt = ext.toLowerCase()
+
+  if (sharpExts.includes(lowerExt)) {
+    try {
+      const thumbPath = join(thumbDir, `${makeHash(fullPath)}.jpg`)
+      if (fs.existsSync(thumbPath)) return thumbPath
+      await sharp(fullPath)
+        .rotate()
+        .resize(300, 300, { fit: 'cover', position: 'centre' })
+        .jpeg({ quality: 80 })
+        .toFile(thumbPath)
+      return fs.existsSync(thumbPath) ? thumbPath : null
+    } catch (e) {
+      console.error('[thumb:sharp failed]', fullPath, e)
+      return null
+    }
+  }
+
+  if (videoExts.includes(lowerExt)) {
+    return generateVideoThumb(fullPath)
+  }
+
+  return null
+}
+
+function generateVideoThumb(fullPath: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const thumbPath = join(thumbDir, `${makeHash(fullPath)}.jpg`)
+    if (fs.existsSync(thumbPath)) { resolve(thumbPath); return }
+
+    // Strategy: try at 2s first, fall back to 0s if file is short
+    function tryAt(seekSecs: number, fallback: boolean): void {
+      const args = [
+        '-i', fullPath,
+        '-ss', seekSecs.toString(),
+        '-vframes', '1',
+        '-vf', 'scale=300:300:force_original_aspect_ratio=increase,crop=300:300',
+        '-f', 'image2',
+        '-q:v', '3',
+        '-threads', '1',
+        '-y',
+        thumbPath
+      ]
+
+      const ff = cp.spawn(ffmpegExe, args)
+      let stderr = ''
+      ff.stderr.on('data', (d: Buffer) => { stderr += d.toString() })
+
+      const killTimer = setTimeout(() => { try { ff.kill() } catch {} }, 20000)
+
+      ff.on('close', (code) => {
+        clearTimeout(killTimer)
+        if (code === 0 && fs.existsSync(thumbPath) && fs.statSync(thumbPath).size > 0) {
+          resolve(thumbPath)
+        } else if (!fallback && seekSecs > 0) {
+          // Retry at 0s
+          console.warn(`[thumb:video] retry at 0s for ${fullPath}`)
+          tryAt(0, true)
+        } else {
+          console.warn(`[thumb:video] failed code=${code} for ${fullPath}`, stderr.slice(-200))
+          resolve(null)
+        }
+      })
+
+      ff.on('error', (err) => {
+        clearTimeout(killTimer)
+        if (!fallback && seekSecs > 0) tryAt(0, true)
+        else { console.warn('[thumb:video] spawn error', err); resolve(null) }
+      })
+    }
+
+    tryAt(2, false)
+  })
+}
+
+export function updateThumb(filePath: string, thumbPath: string): void {
+  db.prepare('UPDATE files SET thumb = ? WHERE path = ?').run(thumbPath, filePath)
+}
+
+// ─── SCANNER ──────────────────────────────────────────────────────────────────
+const SKIP_DIRS = [
+  'windows', 'program files', 'program files (x86)', '$recycle.bin',
+  'system volume information', 'programdata', 'node_modules', '.git', 'appdata'
+]
+
+const EXIF_EXTS = new Set(['.jpg', '.jpeg', '.heic', '.raw', '.cr2', '.nef', '.png', '.webp', '.mp4', '.mov'])
+
+// Insert stmt reused for perf
+const insertStmt = db.prepare(
+  `INSERT OR IGNORE INTO files (path, name, ext, size, date, year, month, lat, lng, drive, thumb, locked, hidden)
+   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`
+)
+
+const updateExifStmt = db.prepare(
+  `UPDATE files SET date=?, year=?, month=?, lat=?, lng=? WHERE path=? AND lat IS NULL`
+)
+
 export async function scanDrive(
   drivePath: string,
   scanPath: string,
-  onProgress: (count: number) => void
+  onProgress: (count: number) => void,
+  onExifProgress?: (enriched: number, total: number) => void
 ): Promise<void> {
+  // ── PASS 1: fast walk, insert with mtime only, no EXIF ──────────────────
+  const newPaths: { path: string; ext: string }[] = []
   let count = 0
 
-  async function walk(dir: string): Promise<void> {
+  function walkSync(dir: string): void {
     let entries: fs.Dirent[] = []
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true })
-    } catch {
-      return
-    }
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return }
+
+    // Batch inserts in a transaction for speed
+    const batch: Parameters<typeof insertStmt.run>[] = []
 
     for (const entry of entries) {
       if (entry.isDirectory()) {
         const nameLower = entry.name.toLowerCase()
-        if (SKIP_DIRS.some((s) => nameLower === s)) continue
+        if (SKIP_DIRS.some(s => nameLower === s)) continue
         if (entry.name.startsWith('.')) continue
-        await walk(join(dir, entry.name))
-      } else if (entry.isFile()) {
-        const ext = entry.name.slice(entry.name.lastIndexOf('.')).toLowerCase()
-        if (!allExts.includes(ext)) continue
-        const fullPath = join(dir, entry.name)
-        try {
-          const stat = fs.statSync(fullPath)
-          if (photoExts.includes(ext) && stat.size < MIN_PHOTO_SIZE) continue
-
-          const existingFile = db
-            .prepare('SELECT thumb FROM files WHERE path = ?')
-            .get(fullPath) as { thumb: string | null } | undefined
-
-          let date = new Date(stat.mtime)
-          let lat = null,
-            lng = null
-
-          if (!existingFile) {
-            if (['.jpg', '.jpeg', '.heic', '.raw', '.cr2', '.nef'].includes(ext)) {
-              try {
-                const exif = await exifr.parse(fullPath, [
-                  'DateTimeOriginal',
-                  'latitude',
-                  'longitude'
-                ])
-                if (exif?.DateTimeOriginal) date = new Date(exif.DateTimeOriginal)
-                if (exif?.latitude) lat = exif.latitude
-                if (exif?.longitude) lng = exif.longitude
-              } catch {
-                /* use file date */
-              }
-            }
-
-            const year = date.getFullYear().toString()
-            const month = date.toLocaleString('default', { month: 'long' })
-
-            db.prepare(
-              `INSERT OR IGNORE INTO files (path, name, ext, size, date, year, month, lat, lng, drive, thumb) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-            ).run(
-              fullPath,
-              entry.name,
-              ext,
-              stat.size,
-              date.toISOString(),
-              year,
-              month,
-              lat,
-              lng,
-              drivePath,
-              null
-            )
-          }
-
-          count++
-          if (count % 20 === 0) onProgress(count)
-        } catch {
-          /* skip */
-        }
+        walkSync(join(dir, entry.name))
+        continue
       }
+      if (!entry.isFile()) continue
+      const ext = entry.name.slice(entry.name.lastIndexOf('.')).toLowerCase()
+      if (!allExts.includes(ext)) continue
+      const fullPath = join(dir, entry.name)
+      try {
+        const stat = fs.statSync(fullPath)
+        if (photoExts.includes(ext) && stat.size < MIN_PHOTO_SIZE) continue
+
+        const exists = db.prepare('SELECT 1 FROM files WHERE path = ?').get(fullPath)
+        if (!exists) {
+          const date = new Date(stat.mtime)
+          const year = date.getFullYear().toString()
+          const month = date.toLocaleString('default', { month: 'long' })
+          batch.push([fullPath, entry.name, ext, stat.size, date.toISOString(), year, month, null, null, drivePath, null])
+          if (EXIF_EXTS.has(ext)) newPaths.push({ path: fullPath, ext })
+        }
+
+        count++
+        if (count % 50 === 0) onProgress(count)
+      } catch { /* skip */ }
+    }
+
+    // Commit batch
+    if (batch.length > 0) {
+      const tx = db.transaction(() => { for (const row of batch) insertStmt.run(...row) })
+      tx()
     }
   }
 
-  await walk(scanPath)
+  walkSync(scanPath)
   onProgress(count)
+
+  // ── PASS 2: async EXIF enrichment in background ───────────────────────────
+  // Don't await — caller returns immediately, EXIF fills in behind the scenes
+  enrichExifBackground(newPaths, onExifProgress).catch(e => console.error('[exif enrich]', e))
+}
+
+async function enrichExifBackground(
+  files: { path: string; ext: string }[],
+  onProgress?: (enriched: number, total: number) => void
+): Promise<void> {
+  let enriched = 0
+  const total = files.length
+
+  for (const { path: fullPath } of files) {
+    try {
+      const exif = await exifr.parse(fullPath, {
+        pick: ['DateTimeOriginal', 'GPSLatitude', 'GPSLongitude'],
+        gps: true
+      })
+      if (!exif) { enriched++; continue }
+
+      let date: Date | null = null
+      if (exif.DateTimeOriginal) date = new Date(exif.DateTimeOriginal)
+      const lat = typeof exif.latitude === 'number' ? exif.latitude : null
+      const lng = typeof exif.longitude === 'number' ? exif.longitude : null
+
+      if (date || lat !== null) {
+        const d = date || new Date()
+        updateExifStmt.run(
+          d.toISOString(),
+          d.getFullYear().toString(),
+          d.toLocaleString('default', { month: 'long' }),
+          lat, lng, fullPath
+        )
+      }
+    } catch { /* skip */ }
+
+    enriched++
+    if (enriched % 100 === 0 && onProgress) onProgress(enriched, total)
+  }
+
+  if (onProgress) onProgress(total, total)
 }

@@ -52,9 +52,9 @@ function FileTile({
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState(false)
   const [hovered, setHovered] = useState(false)
-  const isPhoto = photoExts.includes(file.ext)
-  const isVideo = videoExts.includes(file.ext)
-  const isDoc = docExts.includes(file.ext)
+  const isPhoto = photoExts.includes(file.ext.toLowerCase())
+  const isVideo = videoExts.includes(file.ext.toLowerCase())
+  const isDoc = docExts.includes(file.ext.toLowerCase())
   const hasThumb = !!file.thumb
   const imgKey = file.thumb ?? 'no-thumb'
 
@@ -172,8 +172,8 @@ function LightBox({
   onPrev: () => void
   onReveal: (f: ScannedFile) => void
 }): React.JSX.Element {
-  const isPhoto = photoExts.includes(file.ext)
-  const isVideo = videoExts.includes(file.ext)
+  const isPhoto = photoExts.includes(file.ext.toLowerCase())
+  const isVideo = videoExts.includes(file.ext.toLowerCase())
   const isPdf = file.ext === '.pdf'
   const [zoom, setZoom] = useState(1)
   const [imgError, setImgError] = useState(false)
@@ -181,68 +181,6 @@ function LightBox({
   // Pinch-to-zoom state
   const pinchStartDistRef = useRef<number | null>(null)
   const pinchStartZoomRef = useRef(1)
-
-  // Video state
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const controlsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const [videoReady, setVideoReady] = useState(false)
-  const [playing, setPlaying] = useState(false)
-  const [currentTime, setCurrentTime] = useState(0)
-  const [duration, setDuration] = useState(0)
-  const [volume, setVolume] = useState(1)
-  const [muted, setMuted] = useState(false)
-  const [showControls, setShowControls] = useState(true)
-  const [speed, setSpeed] = useState(1)
-  const [transcoding, setTranscoding] = useState(false)
-  const [transcodedSrc, setTranscodedSrc] = useState<string | null>(null)
-  const [transcodeProgress, setTranscodeProgress] = useState(0)
-  const [transcodeDuration, setTranscodeDuration] = useState(0) // total secs parsed from ffmpeg
-
-  const needsTranscode = isVideo && ['.mov', '.avi', '.mkv', '.wmv'].includes(file.ext)
-
-  useEffect(() => {
-    setVideoReady(false); setPlaying(false); setCurrentTime(0); setDuration(0)
-    setTranscodedSrc(null); setTranscoding(false); setTranscodeProgress(0); setTranscodeDuration(0)
-    if (!needsTranscode) return
-    setTranscoding(true)
-    window.api.transcodeVideo(file.path)
-
-    const doneHandler = (d: { inputPath: string; outPath: string }): void => {
-      if (d.inputPath !== file.path) return
-      setTranscodedSrc('media:///' + d.outPath.replace(/\\/g, '/'))
-      setTranscoding(false)
-    }
-    const progressHandler = (d: { inputPath: string; secs: number; totalSecs?: number }): void => {
-      if (d.inputPath !== file.path) return
-      setTranscodeProgress(d.secs)
-      if (d.totalSecs) setTranscodeDuration(d.totalSecs)
-    }
-    const errorHandler = (d: { inputPath: string }): void => {
-      if (d.inputPath !== file.path) return
-      setTranscoding(false)
-    }
-    window.api.onTranscodeDone(doneHandler)
-    window.api.onTranscodeProgress(progressHandler)
-    window.api.onTranscodeError(errorHandler)
-  }, [file.path, needsTranscode])
-
-  const resetControlsTimer = useCallback((): void => {
-    setShowControls(true)
-    if (controlsTimerRef.current) clearTimeout(controlsTimerRef.current)
-    controlsTimerRef.current = setTimeout(() => setShowControls(false), 2500)
-  }, [])
-
-  const togglePlay = useCallback((): void => {
-    if (!videoRef.current) return
-    videoRef.current.paused ? videoRef.current.play() : videoRef.current.pause()
-    resetControlsTimer()
-  }, [resetControlsTimer])
-
-  const fmtTime = (s: number): string => {
-    if (!isFinite(s)) return '0:00'
-    const m = Math.floor(s / 60); const sec = Math.floor(s % 60)
-    return `${m}:${sec.toString().padStart(2, '0')}`
-  }
 
   // Pinch handlers
   const handleTouchStart = useCallback((e: React.TouchEvent): void => {
@@ -275,7 +213,6 @@ function LightBox({
       if (e.key === 'Escape') onClose()
       if (e.key === 'ArrowRight') onNext()
       if (e.key === 'ArrowLeft') onPrev()
-      if (e.key === ' ' && isVideo) { e.preventDefault(); togglePlay() }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
@@ -286,8 +223,7 @@ function LightBox({
     if (isPdf) { window.api.openFile(file.path); onClose() }
   }, [file.path, isPdf, onClose])
 
-  const mediaSrc = toUrl(file.path)
-  const transcodePercent = transcodeDuration > 0 ? Math.min(99, Math.round((transcodeProgress / transcodeDuration) * 100)) : null
+  const mediaSrc = 'media:///' + file.path.replace(/\\/g, '/')
 
   // Premium icon button helper
   const IconBtn = ({ onClick, title, children, active }: { onClick: (e: React.MouseEvent) => void; title?: string; children: React.ReactNode; active?: boolean }) => (
@@ -400,111 +336,51 @@ function LightBox({
             <img
               key={file.path}
               src={mediaSrc}
-              onError={() => setImgError(true)}
+              onError={() => {
+                setImgError(true)
+                console.log('Error loading image, src:', mediaSrc)
+              }}
               style={{ transform: `scale(${zoom})`, transformOrigin: 'center', maxWidth: '90vw', maxHeight: '86vh', objectFit: 'contain', display: 'block', transition: 'transform 0.2s', touchAction: 'none' }}
             />
           )
         ) : isVideo ? (
-          <div
-            style={{ position: 'relative', width: '90vw', maxWidth: '1100px', maxHeight: '88vh', background: '#000', borderRadius: '10px', overflow: 'hidden' }}
-            onMouseMove={resetControlsTimer}
-            onMouseEnter={resetControlsTimer}
-          >
-            {/* Transcoding overlay — with real % */}
-            {transcoding && (
-              <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.92)', zIndex: 10, gap: '16px' }}>
-                <div style={{ fontSize: '40px' }}>🎬</div>
-                <div style={{ color: '#c0c0e0', fontSize: '14px', fontWeight: 600, letterSpacing: '-0.2px' }}>Converting for playback...</div>
-
-                {/* Progress bar */}
-                <div style={{ width: '280px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#6060a0' }}>
-                    <span>{transcodeProgress > 0 ? `${fmtTime(transcodeProgress)} processed` : 'Starting ffmpeg...'}</span>
-                    {transcodePercent !== null && (
-                      <span style={{ color: '#8080d0', fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>{transcodePercent}%</span>
-                    )}
-                  </div>
-                  <div style={{ width: '100%', height: '4px', background: '#1e1e2a', borderRadius: '4px', overflow: 'hidden' }}>
-                    {transcodePercent !== null ? (
-                      <div style={{
-                        height: '100%',
-                        width: `${transcodePercent}%`,
-                        background: 'linear-gradient(90deg, #4a4aef, #8080ff)',
-                        borderRadius: '4px',
-                        transition: 'width 0.6s cubic-bezier(0.16, 1, 0.3, 1)',
-                        boxShadow: '0 0 8px rgba(108,108,255,0.6)'
-                      }} />
-                    ) : (
-                      <div style={{ height: '100%', width: '40%', background: 'linear-gradient(90deg,transparent,#6c6cff,transparent)', animation: 'shimmer 1.4s infinite' }} />
-                    )}
-                  </div>
-                </div>
-
-                <div style={{ fontSize: '10px', color: '#3a3a48' }}>Cached after first conversion · RAM optimised</div>
-              </div>
-            )}
-
-            {/* Buffering spinner */}
-            {!videoReady && !transcoding && (
-              <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.5)', zIndex: 9 }}>
-                <div style={{ width: '40px', height: '40px', border: '3px solid #2a2a3a', borderTop: '3px solid #6c6cff', borderRadius: '50%', animation: 'tileSpin 0.8s linear infinite' }} />
-              </div>
-            )}
-
+          file.ext.toLowerCase() === '.mp4' ? (
             <video
-              ref={videoRef}
               key={file.path}
-              src={needsTranscode ? (transcodedSrc ?? '') : toUrl(file.path)}
-              preload="metadata"
-              playsInline
-              style={{ width: '100%', maxHeight: '82vh', display: 'block', background: '#000', cursor: 'pointer' }}
-              onCanPlay={() => setVideoReady(true)}
-              onTimeUpdate={() => setCurrentTime(videoRef.current?.currentTime ?? 0)}
-              onLoadedMetadata={() => setDuration(videoRef.current?.duration ?? 0)}
-              onPlay={() => setPlaying(true)}
-              onPause={() => setPlaying(false)}
-              onError={(e) => console.error('Video error', e)}
-              onClick={(e) => { e.stopPropagation(); togglePlay() }}
+              src={toUrl(file.path)}
+              controls
+              autoPlay
+              style={{ maxWidth: '90vw', maxHeight: '82vh', display: 'block', background: '#000' }}
             />
-
-            {/* VLC-style custom controls */}
-            <div
-              onClick={(e) => e.stopPropagation()}
-              style={{
-                position: 'absolute', bottom: 0, left: 0, right: 0,
-                background: 'linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.6) 60%, transparent 100%)',
-                padding: '32px 16px 12px',
-                opacity: showControls ? 1 : 0, transition: 'opacity 0.35s',
-                pointerEvents: showControls ? 'all' : 'none'
-              }}
-            >
-              <input type="range" min={0} max={duration || 1} step={0.1} value={currentTime}
-                onChange={(e) => { const t = Number(e.target.value); if (videoRef.current) videoRef.current.currentTime = t; setCurrentTime(t) }}
-                style={{ width: '100%', margin: '0 0 10px', accentColor: '#6c6cff', cursor: 'pointer', height: '4px' }}
-              />
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                <div onClick={() => { if (videoRef.current) videoRef.current.currentTime = Math.max(0, currentTime - 10) }} style={{ fontSize: '16px', cursor: 'pointer', color: '#c0c0e0', userSelect: 'none' }}>⏮</div>
-                <div onClick={togglePlay} style={{ fontSize: '22px', cursor: 'pointer', color: '#fff', minWidth: '24px', textAlign: 'center', userSelect: 'none' }}>{playing ? '⏸' : '▶'}</div>
-                <div onClick={() => { if (videoRef.current) videoRef.current.currentTime = Math.min(duration, currentTime + 10) }} style={{ fontSize: '16px', cursor: 'pointer', color: '#c0c0e0', userSelect: 'none' }}>⏭</div>
-                <div style={{ fontSize: '12px', color: '#a0a0c0', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>{fmtTime(currentTime)} / {fmtTime(duration)}</div>
-                <div onClick={() => { const m = !muted; setMuted(m); if (videoRef.current) videoRef.current.muted = m }} style={{ fontSize: '16px', cursor: 'pointer', color: '#c0c0e0', userSelect: 'none' }}>
-                  {muted || volume === 0 ? '🔇' : volume < 0.5 ? '🔉' : '🔊'}
-                </div>
-                <input type="range" min={0} max={1} step={0.02} value={muted ? 0 : volume}
-                  onChange={(e) => { const v = Number(e.target.value); setVolume(v); setMuted(v === 0); if (videoRef.current) { videoRef.current.volume = v; videoRef.current.muted = v === 0 } }}
-                  style={{ width: '80px', accentColor: '#6c6cff', cursor: 'pointer' }}
-                />
-                <div style={{ flex: 1 }} />
-                <select value={speed}
-                  onChange={(e) => { const s = Number(e.target.value); setSpeed(s); if (videoRef.current) videoRef.current.playbackRate = s }}
-                  style={{ background: '#1a1a2a', color: '#c0c0e0', border: '0.5px solid #3a3a5a', borderRadius: '5px', fontSize: '11px', padding: '3px 6px', cursor: 'pointer' }}
-                >
-                  {[0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3].map(s => <option key={s} value={s}>{s}x</option>)}
-                </select>
-                <div onClick={() => videoRef.current?.requestFullscreen?.()} style={{ fontSize: '16px', cursor: 'pointer', color: '#c0c0e0', userSelect: 'none' }}>⛶</div>
-              </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '16px', padding: '40px', background: '#141420', borderRadius: '14px', border: '0.5px solid #2a2a3a' }}>
+              <div style={{ fontSize: '72px' }}>🎬</div>
+              <div style={{ fontSize: '15px', fontWeight: 600, color: '#e8e8ea', textAlign: 'center' }}>{file.name}</div>
+              <div style={{ fontSize: '12px', color: '#7070a0', marginBottom: '8px' }}>This video format cannot be played directly in browser</div>
+              <button
+                onClick={() => window.electron.ipcRenderer.send('open-file', file.path)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                  padding: '10px 24px',
+                  borderRadius: '24px',
+                  border: 'none',
+                  background: '#6c6cff',
+                  color: '#fff',
+                  fontSize: '14px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  boxShadow: '0 8px 16px rgba(108,108,255,0.3)',
+                  transition: 'background 0.2s, transform 0.1s'
+                }}
+                onMouseEnter={e => { e.currentTarget.style.background = '#8080ff'; e.currentTarget.style.transform = 'scale(1.02)' }}
+                onMouseLeave={e => { e.currentTarget.style.background = '#6c6cff'; e.currentTarget.style.transform = 'scale(1)' }}
+              >
+                <span style={{ fontSize: '16px' }}>▶</span> Open in Player
+              </button>
             </div>
-          </div>
+          )
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '16px', padding: '40px' }}>
             <div style={{ fontSize: '72px' }}>📄</div>
@@ -812,9 +688,21 @@ export default function App(): React.JSX.Element {
   const months = Object.keys(groupedFiles).sort((a, b) => b.localeCompare(a))
 
   const getFiltered = (files: ScannedFile[]): ScannedFile[] => {
-    if (activeNav === 'photos') return files.filter(f => photoExts.includes(f.ext))
-    if (activeNav === 'videos') return files.filter(f => videoExts.includes(f.ext))
-    if (activeNav === 'docs') return files.filter(f => docExts.includes(f.ext))
+    if (activeNav === 'photos') return files.filter(f => photoExts.includes(f.ext.toLowerCase()))
+    if (activeNav === 'videos') return files.filter(f => videoExts.includes(f.ext.toLowerCase()))
+    if (activeNav === 'docs') return files.filter(f => docExts.includes(f.ext.toLowerCase()))
+    if (activeNav === 'screenshots') {
+      return files.filter(f => {
+        const lp = f.path.toLowerCase()
+        return lp.includes('screenshot') || lp.includes('screen shot')
+      })
+    }
+    if (activeNav === 'places') {
+      return files.filter(f => f.lat !== null)
+    }
+    if (activeNav === 'archive' || activeNav === 'trash') {
+      return []
+    }
     return files
   }
 
@@ -841,6 +729,25 @@ export default function App(): React.JSX.Element {
         .leaflet-popup-close-button { color: #7070a0 !important; }
         input[type=range] { height: 4px; }
         button:focus { outline: none; }
+        .sidebar-nav-item {
+          display: flex;
+          align-items: center;
+          padding: 7px 12px;
+          margin: 2px 8px;
+          border-radius: 24px;
+          cursor: pointer;
+          color: #9090a0;
+          background: transparent;
+          transition: background 0.15s, color 0.15s;
+        }
+        .sidebar-nav-item:hover {
+          background: rgba(255, 255, 255, 0.05);
+          color: #d0d0e0;
+        }
+        .sidebar-nav-item.active {
+          background: rgba(108, 108, 255, 0.15) !important;
+          color: #a0a0ff !important;
+        }
       `}</style>
 
       {/* Sidebar */}
@@ -875,19 +782,31 @@ export default function App(): React.JSX.Element {
           )
         })}
 
-        <div style={{ padding: '12px 10px 4px' }}>
-          <div style={{ fontSize: '10px', color: '#3a3a48', textTransform: 'uppercase', letterSpacing: '0.8px', padding: '0 4px', marginBottom: '4px' }}>Browse</div>
+        <div style={{ height: '0.5px', background: '#2a2a2e', margin: '14px 16px' }} />
+
+        <div style={{ padding: '4px 0' }}>
+          <div style={{ fontSize: '10px', color: '#5a5a6a', textTransform: 'uppercase', letterSpacing: '0.8px', padding: '0 20px', marginBottom: '8px', fontWeight: 600 }}>Collections</div>
           {[
-            { id: 'all', label: 'All files', icon: '🗂️', count: allFiles.length },
-            { id: 'photos', label: 'Photos', icon: '🖼️', count: allFiles.filter(f => photoExts.includes(f.ext)).length },
-            { id: 'videos', label: 'Videos', icon: '🎬', count: allFiles.filter(f => videoExts.includes(f.ext)).length },
-            { id: 'docs', label: 'Documents', icon: '📄', count: allFiles.filter(f => docExts.includes(f.ext)).length },
-            { id: 'favourites', label: 'Favourites', icon: '❤️', count: allFavFiles.length }
+            { id: 'all', label: 'All files', icon: '🗂' },
+            { id: 'photos', label: 'Photos', icon: '🖼' },
+            { id: 'videos', label: 'Videos', icon: '🎬' },
+            { id: 'docs', label: 'Documents', icon: '📄' },
+            { id: 'screenshots', label: 'Screenshots', icon: '📸' },
+            { id: 'places', label: 'Places', icon: '📍' },
+            { id: 'favourites', label: 'Favourites', icon: '⭐' },
+            { id: 'archive', label: 'Archive', icon: '🗄' },
+            { id: 'trash', label: 'Trash', icon: '🗑' }
           ].map(item => (
-            <div key={item.id} onClick={() => setActiveNav(item.id)} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', borderRadius: '7px', cursor: 'pointer', color: activeNav === item.id ? '#e8e8f4' : '#7070a0', background: activeNav === item.id ? '#1e1e30' : 'transparent', marginBottom: '1px' }}>
-              <span style={{ fontSize: '13px' }}>{item.icon}</span>
-              <span style={{ flex: 1 }}>{item.label}</span>
-              {item.count > 0 && <span style={{ fontSize: '10px', color: '#5050a0', background: '#1a1a2e', borderRadius: '4px', padding: '1px 5px' }}>{item.count}</span>}
+            <div
+              key={item.id}
+              onClick={() => setActiveNav(item.id)}
+              className={`sidebar-nav-item ${activeNav === item.id ? 'active' : ''}`}
+            >
+              <span style={{ fontSize: '18px', marginRight: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{item.icon}</span>
+              <span style={{ flex: 1, fontSize: '13px' }}>{item.label}</span>
+              {item.id === 'favourites' && allFavFiles.length > 0 && (
+                <span style={{ fontSize: '10px', color: '#5050a0', background: '#1a1a2e', borderRadius: '4px', padding: '1px 5px' }}>{allFavFiles.length}</span>
+              )}
             </div>
           ))}
         </div>
@@ -923,7 +842,15 @@ export default function App(): React.JSX.Element {
             rafRef.current = requestAnimationFrame(() => { rafRef.current = null; setScrollVersion(n => n + 1) })
           }}
         >
-          {!selectedDrive && (
+          {!scanning && (activeNav === 'archive' || activeNav === 'trash') && (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '12px', minHeight: '300px' }}>
+              <div style={{ fontSize: '64px', filter: 'drop-shadow(0 10px 20px rgba(0,0,0,0.3))' }}>{activeNav === 'archive' ? '🗄️' : '🗑️'}</div>
+              <div style={{ fontSize: '18px', fontWeight: 600, color: '#f0f0f2', letterSpacing: '-0.3px', marginTop: '8px' }}>{activeNav === 'archive' ? 'Archive' : 'Trash'}</div>
+              <div style={{ fontSize: '13px', color: '#5a5a72', background: 'rgba(255,255,255,0.03)', padding: '6px 16px', borderRadius: '20px', border: '0.5px solid rgba(255,255,255,0.05)' }}>Coming soon</div>
+            </div>
+          )}
+
+          {!selectedDrive && activeNav !== 'archive' && activeNav !== 'trash' && (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '10px' }}>
               <div style={{ fontSize: '48px' }}>💾</div>
               <div style={{ fontSize: '14px', color: '#5050a0' }}>Click a drive to scan</div>
@@ -931,7 +858,7 @@ export default function App(): React.JSX.Element {
             </div>
           )}
 
-          {scanning && (
+          {scanning && activeNav !== 'archive' && activeNav !== 'trash' && (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '12px' }}>
               <div style={{ fontSize: '14px', color: '#6c6cff' }}>Scanning {selectedDrive}...</div>
               <div style={{ fontSize: '12px', color: '#5a5a72' }}>{scanCount} files found</div>
@@ -956,13 +883,13 @@ export default function App(): React.JSX.Element {
             </div>
           )}
 
-          {!scanning && activeView === 'Map' && (
+          {!scanning && activeView === 'Map' && activeNav !== 'archive' && activeNav !== 'trash' && (
             <div style={{ height: 'calc(100vh - 120px)' }}>
               <MapView files={allFiles} onOpen={openLightbox} />
             </div>
           )}
 
-          {!scanning && activeView === 'Years' && activeNav !== 'favourites' && (
+          {!scanning && activeView === 'Years' && activeNav !== 'favourites' && activeNav !== 'archive' && activeNav !== 'trash' && (
             <div style={{ animation: transitioning ? 'slideOutLeft 0.28s forwards' : 'slideInRight 0.28s forwards' }}>
               <div style={{ fontSize: '13px', color: '#5050a0', marginBottom: '16px' }}>
                 <span style={{ color: '#d0d0e8', fontWeight: 600 }}>All Years</span>
@@ -978,7 +905,7 @@ export default function App(): React.JSX.Element {
             </div>
           )}
 
-          {!scanning && activeNav !== 'favourites' && (activeView === 'Grid' || activeView === 'Timeline') && (
+          {!scanning && activeNav !== 'favourites' && activeNav !== 'archive' && activeNav !== 'trash' && (activeView === 'Grid' || activeView === 'Timeline') && (
             <div style={{
               animation: transitioning && activeView === 'Grid' ? 'slideOutLeft 0.28s forwards'
                 : transitioning && activeView === 'Timeline' ? 'slideOutRight 0.28s forwards'
