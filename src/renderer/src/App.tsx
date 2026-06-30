@@ -85,9 +85,9 @@ function FileTile({
               <div style={{ width: '16px', height: '16px', border: '1.5px solid #2a2a3a', borderTop: '1.5px solid #6c6cff', borderRadius: '50%', animation: 'tileSpin 0.8s linear infinite' }} />
             </div>
           )}
-          <img key={imgKey} src={thumbUrl(file)} loading="lazy" decoding="async"
+          <img key={imgKey} src={thumbUrl(file)} loading="eager" decoding="async"
             onLoad={() => setLoaded(true)} onError={() => { setError(true); setLoaded(true) }}
-            style={{ width: '100%', height: '100%', objectFit: 'cover', display: loaded ? 'block' : 'none', transform: hovered ? 'scale(1.06)' : 'scale(1)', transition: 'transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)', willChange: 'transform' }}
+            style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: loaded ? 1 : 0, transform: hovered ? 'scale(1.06)' : 'scale(1)', transition: 'transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)', willChange: 'transform' }}
           />
         </>
       ) : isVideo ? (
@@ -99,9 +99,9 @@ function FileTile({
                   <div style={{ width: '16px', height: '16px', border: '1.5px solid #2a2a3a', borderTop: '1.5px solid #a060ff', borderRadius: '50%', animation: 'tileSpin 0.8s linear infinite' }} />
                 </div>
               )}
-              <img key={imgKey} src={thumbUrl(file)} loading="lazy" decoding="async"
+              <img key={imgKey} src={thumbUrl(file)} loading="eager" decoding="async"
                 onLoad={() => setLoaded(true)} onError={() => { setError(true); setLoaded(true) }}
-                style={{ width: '100%', height: '100%', objectFit: 'cover', display: loaded ? 'block' : 'none', transform: hovered ? 'scale(1.06)' : 'scale(1)', transition: 'transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)', willChange: 'transform' }}
+                style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: loaded ? 1 : 0, transform: hovered ? 'scale(1.06)' : 'scale(1)', transition: 'transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)', willChange: 'transform' }}
               />
               {loaded && (
                 <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.2)' }}>
@@ -177,6 +177,7 @@ function LightBox({
   const isPdf = file.ext === '.pdf'
   const [zoom, setZoom] = useState(1)
   const [imgError, setImgError] = useState(false)
+  const [videoError, setVideoError] = useState(false)
 
   // Pinch-to-zoom state
   const pinchStartDistRef = useRef<number | null>(null)
@@ -208,7 +209,7 @@ function LightBox({
   }, [])
 
   useEffect(() => {
-    setZoom(1); setImgError(false)
+    setZoom(1); setImgError(false); setVideoError(false)
     const handler = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') onClose()
       if (e.key === 'ArrowRight') onNext()
@@ -344,7 +345,7 @@ function LightBox({
             />
           )
         ) : isVideo ? (
-          file.ext.toLowerCase() === '.mp4' ? (
+          (file.ext.toLowerCase() === '.mp4') ? (
             <video
               key={file.path}
               src={toUrl(file.path)}
@@ -352,6 +353,20 @@ function LightBox({
               autoPlay
               style={{ maxWidth: '90vw', maxHeight: '82vh', display: 'block', background: '#000' }}
             />
+          ) : !videoError ? (
+            <video
+              key={file.path}
+              controls
+              autoPlay
+              style={{ maxWidth: '90vw', maxHeight: '82vh', display: 'block', background: '#000' }}
+              onError={() => setVideoError(true)}
+            >
+              <source
+                src={toUrl(file.path)}
+                type="video/mp4"
+                onError={() => setVideoError(true)}
+              />
+            </video>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '16px', padding: '40px', background: '#141420', borderRadius: '14px', border: '0.5px solid #2a2a3a' }}>
               <div style={{ fontSize: '72px' }}>🎬</div>
@@ -883,13 +898,13 @@ export default function App(): React.JSX.Element {
             </div>
           )}
 
-          {!scanning && activeView === 'Map' && activeNav !== 'archive' && activeNav !== 'trash' && (
+          {!scanning && (activeView === 'Map' || activeNav === 'places') && activeNav !== 'archive' && activeNav !== 'trash' && (
             <div style={{ height: 'calc(100vh - 120px)' }}>
-              <MapView files={allFiles} onOpen={openLightbox} />
+              <MapView files={activeNav === 'places' ? getFiltered(allFiles) : allFiles} onOpen={openLightbox} />
             </div>
           )}
 
-          {!scanning && activeView === 'Years' && activeNav !== 'favourites' && activeNav !== 'archive' && activeNav !== 'trash' && (
+          {!scanning && activeView === 'Years' && activeNav !== 'favourites' && activeNav !== 'places' && activeNav !== 'archive' && activeNav !== 'trash' && (
             <div style={{ animation: transitioning ? 'slideOutLeft 0.28s forwards' : 'slideInRight 0.28s forwards' }}>
               <div style={{ fontSize: '13px', color: '#5050a0', marginBottom: '16px' }}>
                 <span style={{ color: '#d0d0e8', fontWeight: 600 }}>All Years</span>
@@ -905,7 +920,7 @@ export default function App(): React.JSX.Element {
             </div>
           )}
 
-          {!scanning && activeNav !== 'favourites' && activeNav !== 'archive' && activeNav !== 'trash' && (activeView === 'Grid' || activeView === 'Timeline') && (
+          {!scanning && activeNav !== 'favourites' && activeNav !== 'places' && activeNav !== 'archive' && activeNav !== 'trash' && (activeView === 'Grid' || activeView === 'Timeline') && (
             <div style={{
               animation: transitioning && activeView === 'Grid' ? 'slideOutLeft 0.28s forwards'
                 : transitioning && activeView === 'Timeline' ? 'slideOutRight 0.28s forwards'
@@ -971,11 +986,10 @@ export default function App(): React.JSX.Element {
 
                   return (
                     <div key={monthKey + '_grid_' + files.filter(f => f.thumb).length} ref={ref} style={{ marginBottom: '28px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
-                        <div style={{ fontSize: '15px', fontWeight: 600, color: '#d0d0e8' }}>{month} {year}</div>
-                        <div style={{ fontSize: '11px', color: '#3a3a48' }}>· {files.length} files</div>
-                        <div style={{ flex: 1, height: '0.5px', background: '#1a1a22' }} />
+                      <div style={{ fontSize: '28px', fontWeight: 800, color: '#ffffff', letterSpacing: '-1px', marginBottom: '14px', lineHeight: 1 }}>
+                        {month} <span style={{ color: '#6c6cff' }}>{year}</span>
                       </div>
+                      <div style={{ fontSize: '11px', color: '#7070a0', marginBottom: '14px' }}>{files.length} files</div>
                       <div style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fill, minmax(${tileSize}px, 1fr))`, gap: '5px', transition: 'grid-template-columns 0.12s cubic-bezier(0.25, 0.46, 0.45, 0.94)' }}>
                         {files.slice(0, visible).map(file => (
                           <FileTile key={file.path} file={file} onOpen={f => openLightbox(f, files)} onFav={handleFav} isFav={favourites.has(file.path)} isSelected={selected.has(file.path)} onSelect={handleSelect} tileSize={tileSize} />
