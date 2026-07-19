@@ -1,6 +1,7 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
+import MediaViewer from './components/media-viewer/MediaViewer'
 
 interface DriveInfo {
   name: string
@@ -25,13 +26,11 @@ interface ScannedFile {
   thumb: string | null
 }
 
-const photoExts = ['.jpg', '.jpeg', '.png', '.webp']
+const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic']
 const videoExts = ['.mp4', '.mov', '.avi', '.mkv', '.wmv']
 const docExts = ['.pdf', '.docx', '.doc', '.txt', '.xlsx', '.pptx', '.csv']
-
-function toUrl(p: string): string {
-  return 'media:///' + p.replace(/\\/g, '/')
-}
+const MONTH_ORDER = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+const SHORT_MONTH_ORDER = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 function thumbUrl(file: ScannedFile): string {
   const src = file.thumb || file.path
@@ -39,14 +38,15 @@ function thumbUrl(file: ScannedFile): string {
 }
 
 function FileTile({
-  file, onOpen, onFav, isFav, isSelected, onSelect, tileSize
+  file, onOpen, onFav, isFav, isSelected, onSelect, onContextMenu, tileSize
 }: {
   file: ScannedFile
   onOpen: (f: ScannedFile) => void
   onFav: (f: ScannedFile) => void
   isFav: boolean
   isSelected: boolean
-  onSelect: (f: ScannedFile) => void
+  onSelect: (f: ScannedFile, e: React.MouseEvent) => void
+  onContextMenu: (f: ScannedFile, e: React.MouseEvent) => void
   tileSize: number
 }): React.JSX.Element {
   const [loaded, setLoaded] = useState(false)
@@ -66,57 +66,56 @@ function FileTile({
   return (
     <div
       onClick={() => onOpen(file)}
+      onContextMenu={(e) => onContextMenu(file, e)}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{
         borderRadius: tileSize < 80 ? '8px' : '12px', aspectRatio: '1', cursor: 'pointer',
-        overflow: 'hidden', background: '#141420', position: 'relative',
-        border: `1px solid ${isSelected ? '#6c6cff' : hovered ? '#4a4a7a' : '#1e1e2a'}`,
+        overflow: 'hidden', background: '#121215', position: 'relative',
+        border: `1px solid ${isSelected ? '#6c6cff' : hovered ? 'rgba(108,108,255,0.4)' : 'rgba(255,255,255,0.06)'}`,
         outline: isSelected ? '2px solid #6c6cff' : 'none', outlineOffset: '2px',
-        transform: hovered ? 'scale(1.03) translateY(-3px)' : 'scale(1) translateY(0)',
-        boxShadow: hovered ? '0 12px 24px rgba(108,108,255,0.15), 0 6px 12px rgba(0,0,0,0.4)' : '0 2px 8px rgba(0,0,0,0.1)',
-        transition: 'all 0.3s cubic-bezier(0.16, 1, 0.3, 1)', zIndex: hovered ? 2 : 1
+        transform: hovered ? 'scale(1.02) translateY(-2px)' : 'scale(1) translateY(0)',
+        boxShadow: hovered ? '0 12px 24px rgba(108,108,255,0.12), 0 6px 12px rgba(0,0,0,0.5)' : '0 2px 8px rgba(0,0,0,0.2)',
+        transition: 'all 0.25s cubic-bezier(0.16, 1, 0.3, 1)', zIndex: hovered ? 2 : 1
       }}
     >
       {isPhoto && !error ? (
         <>
           {!loaded && (
-            <div style={{ position: 'absolute', inset: 0, background: '#141420', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <div style={{ width: '16px', height: '16px', border: '1.5px solid #2a2a3a', borderTop: '1.5px solid #6c6cff', borderRadius: '50%', animation: 'tileSpin 0.8s linear infinite' }} />
+            <div style={{ position: 'absolute', inset: 0, background: '#121215', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <div style={{ width: '16px', height: '16px', border: '1.5px solid #202025', borderTop: '1.5px solid #6c6cff', borderRadius: '50%', animation: 'tileSpin 0.8s linear infinite' }} />
             </div>
           )}
           <img key={imgKey} src={thumbUrl(file)} loading="eager" decoding="async"
             onLoad={() => setLoaded(true)} onError={() => { setError(true); setLoaded(true) }}
-            style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: loaded ? 1 : 0, transform: hovered ? 'scale(1.06)' : 'scale(1)', transition: 'transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)', willChange: 'transform' }}
+            style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: loaded ? 1 : 0, transform: hovered ? 'scale(1.04)' : 'scale(1)', transition: 'transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s', willChange: 'transform' }}
           />
         </>
       ) : isVideo ? (
-        <>
-          {hasThumb && !error ? (
-            <>
-              {!loaded && (
-                <div style={{ position: 'absolute', inset: 0, background: '#1a1020', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <div style={{ width: '16px', height: '16px', border: '1.5px solid #2a2a3a', borderTop: '1.5px solid #a060ff', borderRadius: '50%', animation: 'tileSpin 0.8s linear infinite' }} />
-                </div>
-              )}
-              <img key={imgKey} src={thumbUrl(file)} loading="eager" decoding="async"
-                onLoad={() => setLoaded(true)} onError={() => { setError(true); setLoaded(true) }}
-                style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: loaded ? 1 : 0, transform: hovered ? 'scale(1.06)' : 'scale(1)', transition: 'transform 0.4s cubic-bezier(0.16, 1, 0.3, 1)', willChange: 'transform' }}
-              />
-              {loaded && (
-                <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.2)' }}>
-                  <div style={{ width: '26px', height: '26px', borderRadius: '50%', background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px' }}>▶</div>
-                </div>
-              )}
-            </>
-          ) : (
-            <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px', background: '#1a1020' }}>
-              <div style={{ fontSize }}>🎬</div>
-              <div style={{ fontSize: subFontSize, color: '#7070a0' }}>{file.ext}</div>
-              {tileSize >= 80 && <div style={{ fontSize: '8px', color: '#44444e', maxWidth: '90%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</div>}
-            </div>
-          )}
-        </>
+        hasThumb && !error ? (
+          <>
+            {!loaded && (
+              <div style={{ position: 'absolute', inset: 0, background: '#121215', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <div style={{ width: '16px', height: '16px', border: '1.5px solid #202025', borderTop: '1.5px solid #a060ff', borderRadius: '50%', animation: 'tileSpin 0.8s linear infinite' }} />
+              </div>
+            )}
+            <img key={imgKey} src={thumbUrl(file)} loading="eager" decoding="async"
+              onLoad={() => setLoaded(true)} onError={() => { setError(true); setLoaded(true) }}
+              style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: loaded ? 1 : 0, transform: hovered ? 'scale(1.04)' : 'scale(1)', transition: 'transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.2s', willChange: 'transform' }}
+            />
+            {loaded && (
+              <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.2)' }}>
+                <div style={{ width: '26px', height: '26px', borderRadius: '50%', background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px' }}>▶</div>
+              </div>
+            )}
+          </>
+        ) : (
+          <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px', background: '#1a1020' }}>
+            <div style={{ fontSize }}>🎬</div>
+            <div style={{ fontSize: subFontSize, color: '#7070a0' }}>{file.ext}</div>
+            {tileSize >= 80 && <div style={{ fontSize: '8px', color: '#44444e', maxWidth: '90%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.name}</div>}
+          </div>
+        )
       ) : isDoc ? (
         <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px', background: '#101a20' }}>
           <div style={{ fontSize }}>{file.ext === '.pdf' ? '📕' : '📄'}</div>
@@ -128,295 +127,33 @@ function FileTile({
           <div style={{ fontSize }}>🖼️</div>
           <div style={{ fontSize: subFontSize, color: '#44444e' }}>{file.ext}</div>
         </div>
-      )
-      }
+      )}
 
-      {
-        tileSize >= 70 && (
-          <div style={{
-            position: 'absolute', bottom: 0, left: 0, right: 0, padding: '20px 6px 5px',
-            background: 'linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.4) 50%, transparent 100%)',
-            display: 'flex', alignItems: 'flex-end',
-            opacity: hovered ? 1 : 0, transform: hovered ? 'translateY(0)' : 'translateY(8px)',
-            transition: 'all 0.25s cubic-bezier(0.16, 1, 0.3, 1)', pointerEvents: 'none'
-          }}>
-            <div style={{ fontSize: '9px', fontWeight: 500, color: '#e8e8f4', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', width: '100%' }}>{file.name}</div>
-          </div>
-        )
-      }
+      {tileSize >= 70 && (
+        <div style={{
+          position: 'absolute', bottom: 0, left: 0, right: 0, padding: '20px 6px 5px',
+          background: 'linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.4) 50%, transparent 100%)',
+          display: 'flex', alignItems: 'flex-end',
+          opacity: hovered ? 1 : 0, transform: hovered ? 'translateY(0)' : 'translateY(8px)',
+          transition: 'all 0.25s cubic-bezier(0.16, 1, 0.3, 1)', pointerEvents: 'none'
+        }}>
+          <div style={{ fontSize: '9px', fontWeight: 500, color: '#e8e8f4', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', width: '100%' }}>{file.name}</div>
+        </div>
+      )}
 
-      <div onClick={(e) => { e.stopPropagation(); onSelect(file) }}
+      <div onClick={(e) => { e.stopPropagation(); onSelect(file, e) }}
         style={{ position: 'absolute', top: '4px', left: '4px', width: '16px', height: '16px', borderRadius: '4px', background: isSelected ? '#6c6cff' : 'rgba(0,0,0,0.6)', border: `1.5px solid ${isSelected ? '#6c6cff' : 'rgba(255,255,255,0.3)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '9px', cursor: 'pointer', color: '#fff', opacity: hovered || isSelected ? 1 : 0, transition: 'opacity 0.15s' }}
       >{isSelected ? '✓' : ''}</div>
 
-      {
-        tileSize >= 70 && (
-          <div onClick={(e) => { e.stopPropagation(); onFav(file) }}
-            style={{ position: 'absolute', top: '4px', right: '4px', width: '20px', height: '20px', borderRadius: '50%', background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', cursor: 'pointer', opacity: hovered || isFav ? 1 : 0, transition: 'opacity 0.15s' }}
-          >{isFav ? '❤️' : '🤍'}</div>
-        )
-      }
-    </div >
-  )
-}
-
-// ─── PREMIUM LIGHTBOX ────────────────────────────────────────────────────────
-function LightBox({
-  file, onClose, onFav, isFav, onNext, onPrev, onReveal
-}: {
-  file: ScannedFile
-  onClose: () => void
-  onFav: (f: ScannedFile) => void
-  isFav: boolean
-  onNext: () => void
-  onPrev: () => void
-  onReveal: (f: ScannedFile) => void
-}): React.JSX.Element {
-  const isPhoto = photoExts.includes(file.ext.toLowerCase())
-  const isVideo = videoExts.includes(file.ext.toLowerCase())
-  const isPdf = file.ext === '.pdf'
-  const [zoom, setZoom] = useState(1)
-  const [imgError, setImgError] = useState(false)
-  const [videoError, setVideoError] = useState(false)
-
-  // Pinch-to-zoom state
-  const pinchStartDistRef = useRef<number | null>(null)
-  const pinchStartZoomRef = useRef(1)
-
-  // Pinch handlers
-  const handleTouchStart = useCallback((e: React.TouchEvent): void => {
-    if (e.touches.length === 2) {
-      const dx = e.touches[0].clientX - e.touches[1].clientX
-      const dy = e.touches[0].clientY - e.touches[1].clientY
-      pinchStartDistRef.current = Math.sqrt(dx * dx + dy * dy)
-      pinchStartZoomRef.current = zoom
-    }
-  }, [zoom])
-
-  const handleTouchMove = useCallback((e: React.TouchEvent): void => {
-    if (e.touches.length === 2 && pinchStartDistRef.current !== null) {
-      e.preventDefault()
-      const dx = e.touches[0].clientX - e.touches[1].clientX
-      const dy = e.touches[0].clientY - e.touches[1].clientY
-      const dist = Math.sqrt(dx * dx + dy * dy)
-      const scale = dist / pinchStartDistRef.current
-      setZoom(Math.max(0.5, Math.min(4, pinchStartZoomRef.current * scale)))
-    }
-  }, [])
-
-  const handleTouchEnd = useCallback((): void => {
-    pinchStartDistRef.current = null
-  }, [])
-
-  useEffect(() => {
-    setZoom(1); setImgError(false); setVideoError(false)
-    const handler = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onClose()
-      if (e.key === 'ArrowRight') onNext()
-      if (e.key === 'ArrowLeft') onPrev()
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [file.path])
-
-  useEffect(() => {
-    if (isPdf) { window.api.openFile(file.path); onClose() }
-  }, [file.path, isPdf, onClose])
-
-  const mediaSrc = 'media:///' + file.path.replace(/\\/g, '/')
-
-  // Premium icon button helper
-  const IconBtn = ({ onClick, title, children, active }: { onClick: (e: React.MouseEvent) => void; title?: string; children: React.ReactNode; active?: boolean }) => (
-    <button
-      onClick={onClick}
-      title={title}
-      style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        width: '34px', height: '34px', borderRadius: '10px', border: 'none', cursor: 'pointer',
-        background: active ? 'rgba(108,108,255,0.25)' : 'rgba(255,255,255,0.06)',
-        color: active ? '#a0a0ff' : '#d0d0e0', fontSize: '15px',
-        backdropFilter: 'blur(8px)',
-        transition: 'background 0.15s, transform 0.1s',
-        flexShrink: 0,
-      }}
-      onMouseEnter={e => (e.currentTarget.style.background = active ? 'rgba(108,108,255,0.35)' : 'rgba(255,255,255,0.12)')}
-      onMouseLeave={e => (e.currentTarget.style.background = active ? 'rgba(108,108,255,0.25)' : 'rgba(255,255,255,0.06)')}
-    >{children}</button>
-  )
-
-  return (
-    <div
-      onClick={onClose}
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.97)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-    >
-      {/* Prev/Next */}
-      <div onClick={(e) => { e.stopPropagation(); onPrev() }}
-        style={{ position: 'absolute', left: '16px', top: '50%', transform: 'translateY(-50%)', width: '44px', height: '44px', borderRadius: '50%', background: 'rgba(255,255,255,0.08)', border: '0.5px solid rgba(255,255,255,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: '22px', color: '#fff', zIndex: 10, backdropFilter: 'blur(12px)', transition: 'background 0.15s' }}
-        onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.16)')}
-        onMouseLeave={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.08)')}
-      >‹</div>
-      <div onClick={(e) => { e.stopPropagation(); onNext() }}
-        style={{ position: 'absolute', right: '16px', top: '50%', transform: 'translateY(-50%)', width: '44px', height: '44px', borderRadius: '50%', background: 'rgba(255,255,255,0.08)', border: '0.5px solid rgba(255,255,255,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', fontSize: '22px', color: '#fff', zIndex: 10, backdropFilter: 'blur(12px)', transition: 'background 0.15s' }}
-        onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.16)')}
-        onMouseLeave={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.08)')}
-      >›</div>
-
-      {/* ── PREMIUM TOP BAR ── */}
-      <div
-        onClick={e => e.stopPropagation()}
-        style={{
-          position: 'absolute', top: '12px', left: '50%', transform: 'translateX(-50%)',
-          display: 'flex', alignItems: 'center', gap: '6px',
-          background: 'rgba(18,18,28,0.72)', backdropFilter: 'blur(20px) saturate(1.4)',
-          border: '0.5px solid rgba(255,255,255,0.1)', borderRadius: '16px',
-          padding: '6px 10px', zIndex: 20,
-          boxShadow: '0 8px 32px rgba(0,0,0,0.5), 0 1px 0 rgba(255,255,255,0.05) inset',
-          maxWidth: 'calc(100vw - 160px)', minWidth: '320px',
-        }}
-      >
-        {/* Filename */}
-        <div style={{ fontSize: '12px', fontWeight: 500, color: '#b0b0c8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '240px', padding: '0 4px' }}
-          title={file.name}
-        >{file.name}</div>
-
-        <div style={{ width: '0.5px', height: '20px', background: 'rgba(255,255,255,0.1)', margin: '0 2px', flexShrink: 0 }} />
-
-        {/* Zoom controls — only for photos */}
-        {isPhoto && !imgError && (
-          <>
-            <IconBtn onClick={(e) => { e.stopPropagation(); setZoom(z => Math.max(0.5, z - 0.5)) }} title="Zoom out">－</IconBtn>
-            <div style={{ fontSize: '11px', color: '#7070a0', minWidth: '36px', textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}>{Math.round(zoom * 100)}%</div>
-            <IconBtn onClick={(e) => { e.stopPropagation(); setZoom(z => Math.min(4, z + 0.5)) }} title="Zoom in">＋</IconBtn>
-            <IconBtn onClick={(e) => { e.stopPropagation(); setZoom(1) }} title="Reset zoom" active={zoom !== 1}>
-              <span style={{ fontSize: '10px', fontWeight: 600 }}>1:1</span>
-            </IconBtn>
-            <div style={{ width: '0.5px', height: '20px', background: 'rgba(255,255,255,0.1)', margin: '0 2px', flexShrink: 0 }} />
-          </>
-        )}
-
-        {/* Fav */}
-        <IconBtn onClick={(e) => { e.stopPropagation(); onFav(file) }} title={isFav ? 'Unfavourite' : 'Favourite'} active={isFav}>
-          {isFav ? '❤️' : '🤍'}
-        </IconBtn>
-
-        {/* Show in folder */}
-        <button
-          onClick={(e) => { e.stopPropagation(); onReveal(file) }}
-          style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '0 10px', height: '34px', borderRadius: '10px', border: 'none', cursor: 'pointer', background: 'rgba(255,255,255,0.06)', color: '#b0b0c8', fontSize: '11px', fontWeight: 500, backdropFilter: 'blur(8px)', transition: 'background 0.15s', flexShrink: 0, whiteSpace: 'nowrap' }}
-          onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.12)')}
-          onMouseLeave={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.06)')}
-        >
-          <span style={{ fontSize: '13px' }}>📁</span> Show in folder
-        </button>
-
-        <div style={{ width: '0.5px', height: '20px', background: 'rgba(255,255,255,0.1)', margin: '0 2px', flexShrink: 0 }} />
-
-        {/* Close */}
-        <IconBtn onClick={(e) => { e.stopPropagation(); onClose() }} title="Close (Esc)">
-          <span style={{ fontSize: '13px', fontWeight: 300 }}>✕</span>
-        </IconBtn>
-      </div>
-
-      {/* Media */}
-      <div
-        onClick={(e) => e.stopPropagation()}
-        onTouchStart={isPhoto ? handleTouchStart : undefined}
-        onTouchMove={isPhoto ? handleTouchMove : undefined}
-        onTouchEnd={isPhoto ? handleTouchEnd : undefined}
-        style={{ maxWidth: '92vw', maxHeight: '88vh', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'auto' }}
-      >
-        {isPhoto ? (
-          imgError ? (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
-              <div style={{ fontSize: '48px' }}>🖼️</div>
-              <div style={{ fontSize: '13px', color: '#6060a0' }}>Cannot preview this image</div>
-              <div onClick={(e) => { e.stopPropagation(); onReveal(file) }} style={{ padding: '8px 20px', borderRadius: '8px', background: '#252535', cursor: 'pointer', fontSize: '12px', color: '#c0c0e0', border: '0.5px solid #3a3a5a' }}>📁 Open file location</div>
-            </div>
-          ) : (
-            <img
-              key={file.path}
-              src={mediaSrc}
-              onError={() => {
-                setImgError(true)
-                console.log('Error loading image, src:', mediaSrc)
-              }}
-              style={{ transform: `scale(${zoom})`, transformOrigin: 'center', maxWidth: '90vw', maxHeight: '86vh', objectFit: 'contain', display: 'block', transition: 'transform 0.2s', touchAction: 'none' }}
-            />
-          )
-        ) : isVideo ? (
-          (file.ext.toLowerCase() === '.mp4') ? (
-            <video
-              key={file.path}
-              src={toUrl(file.path)}
-              controls
-              autoPlay
-              style={{ maxWidth: '90vw', maxHeight: '82vh', display: 'block', background: '#000' }}
-            />
-          ) : !videoError ? (
-            <video
-              key={file.path}
-              controls
-              autoPlay
-              style={{ maxWidth: '90vw', maxHeight: '82vh', display: 'block', background: '#000' }}
-              onError={() => setVideoError(true)}
-            >
-              <source
-                src={toUrl(file.path)}
-                type="video/mp4"
-                onError={() => setVideoError(true)}
-              />
-            </video>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '16px', padding: '40px', background: '#141420', borderRadius: '14px', border: '0.5px solid #2a2a3a' }}>
-              <div style={{ fontSize: '72px' }}>🎬</div>
-              <div style={{ fontSize: '15px', fontWeight: 600, color: '#e8e8ea', textAlign: 'center' }}>{file.name}</div>
-              <div style={{ fontSize: '12px', color: '#7070a0', marginBottom: '8px' }}>This video format cannot be played directly in browser</div>
-              <button
-                onClick={() => window.electron.ipcRenderer.send('open-file', file.path)}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  padding: '10px 24px',
-                  borderRadius: '24px',
-                  border: 'none',
-                  background: '#6c6cff',
-                  color: '#fff',
-                  fontSize: '14px',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  boxShadow: '0 8px 16px rgba(108,108,255,0.3)',
-                  transition: 'background 0.2s, transform 0.1s'
-                }}
-                onMouseEnter={e => { e.currentTarget.style.background = '#8080ff'; e.currentTarget.style.transform = 'scale(1.02)' }}
-                onMouseLeave={e => { e.currentTarget.style.background = '#6c6cff'; e.currentTarget.style.transform = 'scale(1)' }}
-              >
-                <span style={{ fontSize: '16px' }}>▶</span> Open in Player
-              </button>
-            </div>
-          )
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '16px', padding: '40px' }}>
-            <div style={{ fontSize: '72px' }}>📄</div>
-            <div style={{ fontSize: '14px', color: '#8080a0', textAlign: 'center' }}>{file.name}</div>
-            <div onClick={(e) => { e.stopPropagation(); onReveal(file) }} style={{ padding: '8px 20px', borderRadius: '8px', background: '#252535', cursor: 'pointer', fontSize: '12px', color: '#c0c0e0', border: '0.5px solid #3a3a5a' }}>📁 Open file location</div>
-          </div>
-        )}
-      </div>
-
-      {/* Bottom bar */}
-      <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: '12px 16px', background: 'linear-gradient(to top, rgba(0,0,0,0.9), transparent)', display: 'flex', gap: '16px', fontSize: '11px', color: '#6060a0' }}>
-        <span>{file.date ? new Date(file.date).toLocaleDateString() : ''}</span>
-        <span>{(file.size / 1024 / 1024).toFixed(1)} MB</span>
-        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{file.path}</span>
-        {file.lat && file.lng && <span>📍 {file.lat.toFixed(3)}, {file.lng.toFixed(3)}</span>}
-      </div>
+      {tileSize >= 70 && (
+        <div onClick={(e) => { e.stopPropagation(); onFav(file) }}
+          style={{ position: 'absolute', top: '4px', right: '4px', width: '20px', height: '20px', borderRadius: '50%', background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', cursor: 'pointer', opacity: hovered || isFav ? 1 : 0, transition: 'opacity 0.15s' }}
+        >{isFav ? '❤️' : '🤍'}</div>
+      )}
     </div>
   )
 }
 
-// ─── YEARS VIEW (fixed thumbnails) ───────────────────────────────────────────
 function YearsView({ groupedFiles, onYearClick }: { groupedFiles: Record<string, ScannedFile[]>; onYearClick: (year: string) => void }): React.JSX.Element {
   const yearMap: Record<string, ScannedFile[]> = {}
   for (const [key, files] of Object.entries(groupedFiles)) {
@@ -424,44 +161,33 @@ function YearsView({ groupedFiles, onYearClick }: { groupedFiles: Record<string,
     if (!yearMap[year]) yearMap[year] = []
     yearMap[year].push(...files)
   }
-  const years = Object.keys(yearMap).sort((a, b) => b.localeCompare(a))
+  const years = Object.keys(yearMap).sort((a, b) => Number(b) - Number(a))
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '16px', padding: '8px 0' }}>
       {years.map(year => {
         const files = yearMap[year]
-        // FIX: use any file with a thumb OR any photo file — don't require thumb
-        const previewFiles = [
-          ...files.filter(f => f.thumb),
-          ...files.filter(f => photoExts.includes(f.ext) && !f.thumb)
-        ].slice(0, 4)
-
+        const previewFiles = [...files.filter(f => f.thumb), ...files.filter(f => photoExts.includes(f.ext.toLowerCase()) && !f.thumb)].slice(0, 4)
         return (
-          <div
-            key={year}
-            onClick={() => onYearClick(year)}
-            style={{ background: '#141420', borderRadius: '14px', border: '0.5px solid #2a2a3a', overflow: 'hidden', cursor: 'pointer', transition: 'transform 0.2s, border-color 0.2s, box-shadow 0.2s' }}
+          <div key={year} onClick={() => onYearClick(year)}
+            style={{ background: '#121215', borderRadius: '14px', border: '1px solid rgba(255,255,255,0.06)', overflow: 'hidden', cursor: 'pointer', transition: 'transform 0.25s, border-color 0.25s, box-shadow 0.25s' }}
             onMouseEnter={e => { const el = e.currentTarget as HTMLDivElement; el.style.borderColor = '#6c6cff'; el.style.transform = 'scale(1.02)'; el.style.boxShadow = '0 8px 24px rgba(108,108,255,0.15)' }}
-            onMouseLeave={e => { const el = e.currentTarget as HTMLDivElement; el.style.borderColor = '#2a2a3a'; el.style.transform = 'scale(1)'; el.style.boxShadow = 'none' }}
+            onMouseLeave={e => { const el = e.currentTarget as HTMLDivElement; el.style.borderColor = 'rgba(255,255,255,0.06)'; el.style.transform = 'scale(1)'; el.style.boxShadow = 'none' }}
           >
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr 1fr', height: '140px' }}>
               {[0, 1, 2, 3].map(i => {
                 const f = previewFiles[i]
                 const src = f ? ('media:///' + (f.thumb || f.path).replace(/\\/g, '/')) : null
                 return (
-                  <div key={i} style={{ background: '#1a1a28', overflow: 'hidden', borderRight: i % 2 === 0 ? '1px solid #0f0f10' : undefined, borderBottom: i < 2 ? '1px solid #0f0f10' : undefined, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    {src ? (
-                      <YearThumb src={src} />
-                    ) : (
-                      <div style={{ fontSize: '20px', opacity: 0.2 }}>📷</div>
-                    )}
+                  <div key={i} style={{ background: '#18181c', overflow: 'hidden', borderRight: i % 2 === 0 ? '1px solid #0f0f10' : undefined, borderBottom: i < 2 ? '1px solid #0f0f10' : undefined, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {src ? <YearThumb src={src} /> : <div style={{ fontSize: '20px', opacity: 0.15 }}>📷</div>}
                   </div>
                 )
               })}
             </div>
-            <div style={{ padding: '10px 14px 12px' }}>
-              <div style={{ fontSize: '22px', fontWeight: 700, color: '#e0e0f4', letterSpacing: '-0.5px' }}>{year}</div>
-              <div style={{ fontSize: '11px', color: '#5050a0', marginTop: '2px' }}>{files.length} files</div>
+            <div style={{ padding: '12px 14px 14px' }}>
+              <div style={{ fontSize: '20px', fontWeight: 700, color: '#f0f0f4', letterSpacing: '-0.3px' }}>{year}</div>
+              <div style={{ fontSize: '11px', color: '#606080', marginTop: '2px' }}>{files.length} files</div>
             </div>
           </div>
         )
@@ -470,14 +196,12 @@ function YearsView({ groupedFiles, onYearClick }: { groupedFiles: Record<string,
   )
 }
 
-// Separate component so each thumb has its own error state
 function YearThumb({ src }: { src: string }): React.JSX.Element {
   const [err, setErr] = useState(false)
-  if (err) return <div style={{ fontSize: '20px', opacity: 0.2 }}>📷</div>
+  if (err) return <div style={{ fontSize: '20px', opacity: 0.15 }}>📷</div>
   return <img src={src} onError={() => setErr(true)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
 }
 
-// ─── MAP VIEW ────────────────────────────────────────────────────────────────
 function MapView({ files, onOpen }: { files: ScannedFile[]; onOpen: (f: ScannedFile, list: ScannedFile[]) => void }): React.JSX.Element {
   const mapRef = useRef<HTMLDivElement>(null)
   const mapInstanceRef = useRef<L.Map | null>(null)
@@ -514,7 +238,15 @@ function MapView({ files, onOpen }: { files: ScannedFile[]; onOpen: (f: ScannedF
         return src ? `<img src="${src}" style="width:56px;height:56px;object-fit:cover;border-radius:4px;" />` : `<div style="width:56px;height:56px;background:#2a2a3a;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:18px;">${videoExts.includes(f.ext) ? '🎬' : '📄'}</div>`
       }).join('')
       marker.bindPopup(`<div style="font-size:12px;min-width:140px;font-family:system-ui,sans-serif;"><div style="font-weight:600;margin-bottom:6px;color:#e0e0f0;">${count} file${count > 1 ? 's' : ''}</div><div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px;">${thumbsHtml}</div><div style="font-size:10px;color:#8080a0;">${new Date(first.date).toLocaleDateString()}</div>${count > 4 ? `<div style="font-size:10px;color:#6c6cff;margin-top:2px;">+${count - 4} more</div>` : ''}</div>`, { maxWidth: 200 })
-      marker.on('click', () => onOpen(first, clusterFiles))
+      
+      // Zoom in on cluster click, open viewer on single photo click
+      marker.on('click', () => {
+        if (count > 1) {
+          map.setView([first.lat!, first.lng!], map.getZoom() + 2)
+        } else {
+          onOpen(first, clusterFiles)
+        }
+      })
       marker.addTo(map)
     })
 
@@ -529,15 +261,15 @@ function MapView({ files, onOpen }: { files: ScannedFile[]; onOpen: (f: ScannedF
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <div style={{ marginBottom: '10px', fontSize: '12px', color: '#7070a0', display: 'flex', alignItems: 'center', gap: '8px' }}>
-        <span>📍 {geoFiles.length} files with GPS location</span>
-        {geoFiles.length === 0 && <span style={{ color: '#3a3a48' }}>— scan photos with location data to see them here</span>}
+      <div style={{ marginBottom: '10px', fontSize: '12px', color: '#7070a0' }}>
+        📍 {geoFiles.length} files with GPS location
+        {geoFiles.length === 0 && <span style={{ color: '#3a3a48', marginLeft: '8px' }}>— photos need GPS EXIF data (usually from phone camera)</span>}
       </div>
       {geoFiles.length === 0 ? (
-        <div style={{ flex: 1, background: '#141420', borderRadius: '12px', border: '0.5px solid #1e1e2a', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
+        <div style={{ flex: 1, background: '#121214', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.06)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
           <div style={{ fontSize: '48px' }}>🗺️</div>
-          <div style={{ fontSize: '14px', color: '#5050a0' }}>No GPS data found</div>
-          <div style={{ fontSize: '11px', color: '#3a3a48' }}>Photos with location info will appear here</div>
+          <div style={{ fontSize: '14px', color: '#8888a0' }}>No location information available.</div>
+          <div style={{ fontSize: '11px', color: '#4a4a58' }}>Photos with GPS EXIF metadata will be plotted here.</div>
         </div>
       ) : (
         <div ref={mapRef} style={{ flex: 1, borderRadius: '12px', overflow: 'hidden', minHeight: '400px' }} />
@@ -546,7 +278,6 @@ function MapView({ files, onOpen }: { files: ScannedFile[]; onOpen: (f: ScannedF
   )
 }
 
-// ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function App(): React.JSX.Element {
   const [activeNav, setActiveNav] = useState('all')
   const [drives, setDrives] = useState<DriveInfo[]>([])
@@ -570,6 +301,16 @@ export default function App(): React.JSX.Element {
   const [yearFilter, setYearFilter] = useState<string | null>(null)
   const zoomTicksRef = useRef(0)
   const lastZoomDirRef = useRef<'in' | 'out' | null>(null)
+  const scrollTopRef = useRef(0)
+  const [scrollVersion, setScrollVersion] = useState(0)
+  const rafRef = useRef<number | null>(null)
+
+  // Redesign state
+  const [groupBy, setGroupBy] = useState<'day' | 'month' | 'year' | 'location' | 'favorites'>('day')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; file: ScannedFile; currentList: ScannedFile[] } | null>(null)
+  const [fileToDelete, setFileToDelete] = useState<ScannedFile | null>(null)
+  const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false)
 
   const getCenteredMonth = useCallback(() => {
     let closest = ''; let minDiff = Infinity
@@ -582,10 +323,6 @@ export default function App(): React.JSX.Element {
     }
     return closest
   }, [])
-
-  const scrollTopRef = useRef(0)
-  const [scrollVersion, setScrollVersion] = useState(0)
-  const rafRef = useRef<number | null>(null)
 
   useEffect(() => {
     const preventZoom = (e: WheelEvent): void => { if (e.ctrlKey) e.preventDefault() }
@@ -643,8 +380,11 @@ export default function App(): React.JSX.Element {
   useEffect(() => {
     if (listenersSet.current) return
     listenersSet.current = true
-    window.api.getDrives()
+
     window.api.onDrivesUpdated((d) => setDrives(d as DriveInfo[]))
+    window.api.onFavouritesUpdated((files) => {
+      setFavourites(new Set((files as Array<{ path: string }>).map(f => f.path)))
+    })
     window.api.onScanProgress((d) => setScanCount(d.count))
     window.api.onScanComplete((d) => {
       setScanning(false); setScanCount(d.count)
@@ -677,6 +417,9 @@ export default function App(): React.JSX.Element {
         return next
       })
     })
+
+    window.api.getDrives()
+    window.api.getFavourites()
   }, [])
 
   const handleDriveClick = (name: string): void => {
@@ -693,103 +436,277 @@ export default function App(): React.JSX.Element {
   }
 
   const handleFav = useCallback((file: ScannedFile): void => { window.api.toggleFavourite(file.path) }, [])
-  const handleSelect = useCallback((file: ScannedFile): void => {
-    setSelected(prev => { const next = new Set(prev); if (next.has(file.path)) next.delete(file.path); else next.add(file.path); return next })
-  }, [])
+
   const handleReveal = useCallback((file: ScannedFile): void => { window.electron.ipcRenderer.send('reveal-file', file.path) }, [])
   const openLightbox = useCallback((file: ScannedFile, list: ScannedFile[]): void => { setLightbox({ file, list }) }, [])
 
   const groupedFiles = selectedDrive && driveFiles[selectedDrive] ? driveFiles[selectedDrive] : {}
-  const months = Object.keys(groupedFiles).sort((a, b) => b.localeCompare(a))
+  const months = Object.keys(groupedFiles).sort((a, b) => {
+    const [ay, am] = a.split('-')
+    const [by, bm] = b.split('-')
+    const yearA = Number(ay)
+    const yearB = Number(by)
+    if (yearB !== yearA) return yearB - yearA
 
-  const getFiltered = (files: ScannedFile[]): ScannedFile[] => {
-    if (activeNav === 'photos') return files.filter(f => photoExts.includes(f.ext.toLowerCase()))
-    if (activeNav === 'videos') return files.filter(f => videoExts.includes(f.ext.toLowerCase()))
-    if (activeNav === 'docs') return files.filter(f => docExts.includes(f.ext.toLowerCase()))
-    if (activeNav === 'screenshots') {
-      return files.filter(f => {
-        const lp = f.path.toLowerCase()
-        return lp.includes('screenshot') || lp.includes('screen shot')
-      })
+    const getMonthIndex = (m: string): number => {
+      const clean = m.trim().toLowerCase()
+      const longIdx = MONTH_ORDER.findIndex(mo => mo.toLowerCase() === clean)
+      if (longIdx !== -1) return longIdx
+      const shortIdx = SHORT_MONTH_ORDER.findIndex(mo => mo.toLowerCase() === clean)
+      if (shortIdx !== -1) return shortIdx
+      const prefixIdx = SHORT_MONTH_ORDER.findIndex(mo => mo.toLowerCase().startsWith(clean.substring(0, 3)))
+      if (prefixIdx !== -1) return prefixIdx
+      return -1
     }
-    if (activeNav === 'places') {
-      return files.filter(f => f.lat !== null)
-    }
-    if (activeNav === 'archive' || activeNav === 'trash') {
+
+    return getMonthIndex(bm) - getMonthIndex(am)
+  })
+
+  // Close context menu helper
+  useEffect(() => {
+    const closeMenu = () => setContextMenu(null)
+    window.addEventListener('click', closeMenu)
+    return () => window.removeEventListener('click', closeMenu)
+  }, [])
+
+  const getFiltered = useCallback((files: ScannedFile[]): ScannedFile[] => {
+    let filtered = files
+
+    // Category routing
+    if (activeNav === 'photos') {
+      filtered = filtered.filter(f => photoExts.includes(f.ext.toLowerCase()))
+    } else if (activeNav === 'videos') {
+      filtered = filtered.filter(f => videoExts.includes(f.ext.toLowerCase()))
+    } else if (activeNav === 'docs') {
+      filtered = filtered.filter(f => docExts.includes(f.ext.toLowerCase()))
+    } else if (activeNav === 'screenshots') {
+      filtered = filtered.filter(f => f.path.toLowerCase().includes('screenshot') || f.path.toLowerCase().includes('screen shot'))
+    } else if (activeNav === 'places') {
+      filtered = filtered.filter(f => f.lat !== null && f.lng !== null)
+    } else if (activeNav === 'favourites') {
+      filtered = filtered.filter(f => favourites.has(f.path))
+    } else if (activeNav === 'archive' || activeNav === 'trash') {
       return []
     }
-    return files
-  }
+
+    // Advanced search query
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim()
+      if (q === 'is:fav' || q === 'fav:true') {
+        filtered = filtered.filter(f => favourites.has(f.path))
+      } else if (q.startsWith('ext:')) {
+        const targetExt = q.slice(4).trim()
+        filtered = filtered.filter(f => f.ext.toLowerCase() === targetExt || f.ext.toLowerCase() === '.' + targetExt)
+      } else if (q.startsWith('date:')) {
+        const targetDate = q.slice(5).trim()
+        filtered = filtered.filter(f => {
+          const d = new Date(f.date)
+          const year = d.getFullYear().toString()
+          const month = d.toLocaleString('default', { month: 'long' }).toLowerCase()
+          const day = d.getDate().toString()
+          return year.includes(targetDate) || month.includes(targetDate) || day === targetDate
+        })
+      } else if (q.startsWith('camera:')) {
+        const targetCamera = q.slice(7).trim()
+        filtered = filtered.filter(f => f.path.toLowerCase().includes(targetCamera))
+      } else if (q.startsWith('loc:')) {
+        const targetLoc = q.slice(4).trim()
+        filtered = filtered.filter(f => f.path.toLowerCase().includes(targetLoc))
+      } else {
+        filtered = filtered.filter(f => f.name.toLowerCase().includes(q) || f.path.toLowerCase().includes(q))
+      }
+    }
+
+    return filtered
+  }, [activeNav, favourites, searchQuery])
 
   const allFiles = Object.values(groupedFiles).flat()
   const allFavFiles = allFiles.filter(f => favourites.has(f.path))
   const totalFiles = allFiles.length
   const getVisible = (key: string): number => visibleCount[key] ?? 40
 
+  // Multi-selection range select and batch action handlers
+  const lastSelectedPathRef = useRef<string | null>(null)
+  
+  const handleSelect = useCallback((file: ScannedFile, e: React.MouseEvent): void => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      const isSelected = next.has(file.path)
+
+      if (e.shiftKey && lastSelectedPathRef.current) {
+        const allGridFiles = months.flatMap(monthKey => getFiltered(groupedFiles[monthKey] || []))
+        const lastIdx = allGridFiles.findIndex(f => f.path === lastSelectedPathRef.current)
+        const currentIdx = allGridFiles.findIndex(f => f.path === file.path)
+
+        if (lastIdx !== -1 && currentIdx !== -1) {
+          const start = Math.min(lastIdx, currentIdx)
+          const end = Math.max(lastIdx, currentIdx)
+          const rangeFiles = allGridFiles.slice(start, end + 1)
+          const shouldSelect = !isSelected
+          for (const f of rangeFiles) {
+            if (shouldSelect) next.add(f.path); else next.delete(f.path)
+          }
+        }
+      } else {
+        if (isSelected) next.delete(file.path); else next.add(file.path)
+      }
+
+      lastSelectedPathRef.current = file.path
+      return next
+    })
+  }, [months, groupedFiles, activeNav, getFiltered])
+
+  const handleTileOpen = useCallback((file: ScannedFile, currentList: ScannedFile[]): void => {
+    if (selected.size > 0 && selected.has(file.path)) {
+      const selectionList = allFiles.filter(f => selected.has(f.path))
+      openLightbox(file, selectionList)
+    } else {
+      openLightbox(file, currentList)
+    }
+  }, [selected, allFiles, openLightbox])
+
+  const handleFileDeleted = useCallback((deletedPath: string): void => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      next.delete(deletedPath)
+      return next
+    })
+    if (selectedDrive) {
+      window.api.getFiles(selectedDrive)
+    }
+  }, [selectedDrive])
+
+  const handleBatchFavorite = useCallback(async (): Promise<void> => {
+    for (const path of selected) {
+      window.api.toggleFavourite(path)
+    }
+    setSelected(new Set())
+  }, [selected])
+
+  const handleBatchDelete = useCallback((): void => {
+    if (selected.size > 0) {
+      setShowBatchDeleteConfirm(true)
+    }
+  }, [selected])
+
+  const handleTileContextMenu = useCallback((file: ScannedFile, currentList: ScannedFile[], e: React.MouseEvent) => {
+    e.preventDefault()
+    setContextMenu({
+      x: e.clientX,
+      y: e.clientY,
+      file,
+      currentList
+    })
+  }, [])
+
+  // Global Delete hotkey listener
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Delete' && selected.size > 0) {
+        handleBatchDelete()
+      }
+    }
+    window.addEventListener('keydown', handleGlobalKeyDown)
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown)
+  }, [selected, handleBatchDelete])
+
+  // Custom Grouping Logic (Year, Month, Day, Location, Favorites)
+  const getDayKey = (file: ScannedFile) => {
+    if (!file.date) return 'Unknown Date'
+    const d = new Date(file.date)
+    return d.toLocaleDateString('default', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+  }
+
+  const getMonthKey = (file: ScannedFile) => {
+    return `${file.month || 'Unknown'} ${file.year || ''}`.trim()
+  }
+
+  const getYearKey = (file: ScannedFile) => {
+    return file.year || 'Unknown Year'
+  }
+
+  const sortedGroupedData = useMemo(() => {
+    const filtered = getFiltered(allFiles)
+    const groups: Record<string, ScannedFile[]> = {}
+
+    filtered.forEach(file => {
+      let key = 'Other'
+      if (groupBy === 'day') {
+        key = getDayKey(file)
+      } else if (groupBy === 'month') {
+        key = getMonthKey(file)
+      } else if (groupBy === 'year') {
+        key = getYearKey(file)
+      } else if (groupBy === 'location') {
+        key = file.lat && file.lng 
+          ? `📍 Coords (${Math.round(file.lat * 2) / 2}, ${Math.round(file.lng * 2) / 2})` 
+          : 'No Location Info'
+      } else if (groupBy === 'favorites') {
+        key = favourites.has(file.path) ? '❤️ Favourites' : 'Other Files'
+      }
+      
+      if (!groups[key]) groups[key] = []
+      groups[key].push(file)
+    })
+
+    const keys = Object.keys(groups).sort((a, b) => {
+      const fileA = groups[a][0]
+      const fileB = groups[b][0]
+      if (!fileA || !fileB) return 0
+      return new Date(fileB.date).getTime() - new Date(fileA.date).getTime()
+    })
+
+    return { keys, data: groups }
+  }, [allFiles, groupBy, favourites, getFiltered])
+
   return (
-    <div style={{ display: 'flex', width: '100vw', height: '100vh', background: '#0f0f10', color: '#e8e8ea', fontFamily: 'system-ui, sans-serif', fontSize: '13px', overflow: 'hidden', position: 'fixed', inset: 0 }}>
+    <div style={{ display: 'flex', width: '100vw', height: '100vh', background: '#09090b', color: '#e4e4e7', fontFamily: 'system-ui, sans-serif', fontSize: '13px', overflow: 'hidden', position: 'fixed', inset: 0 }}>
       <style>{`
-        @keyframes tileSpin { to { transform: rotate(360deg); } }
-        @keyframes shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(250%); } }
-        @keyframes slideOutLeft { from { opacity:1; transform:translateX(0); } to { opacity:0; transform:translateX(-40px); } }
-        @keyframes slideInRight { from { opacity:0; transform:translateX(40px); } to { opacity:1; transform:translateX(0); } }
-        @keyframes slideOutRight { from { opacity:1; transform:translateX(0); } to { opacity:0; transform:translateX(40px); } }
-        @keyframes slideInLeft { from { opacity:0; transform:translateX(-40px); } to { opacity:1; transform:translateX(0); } }
-        ::-webkit-scrollbar { width: 4px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: #2a2a3a; border-radius: 2px; }
-        .leaflet-container { background: #141420 !important; }
-        .leaflet-popup-content-wrapper { background: #1a1a2a !important; border: 0.5px solid #2a2a3a !important; color: #e0e0f0 !important; border-radius: 10px !important; box-shadow: 0 4px 20px rgba(0,0,0,0.5) !important; }
-        .leaflet-popup-tip { background: #1a1a2a !important; }
-        .leaflet-popup-close-button { color: #7070a0 !important; }
-        input[type=range] { height: 4px; }
-        button:focus { outline: none; }
-        .sidebar-nav-item {
-          display: flex;
-          align-items: center;
-          padding: 7px 12px;
-          margin: 2px 8px;
-          border-radius: 24px;
-          cursor: pointer;
-          color: #9090a0;
-          background: transparent;
-          transition: background 0.15s, color 0.15s;
-        }
-        .sidebar-nav-item:hover {
-          background: rgba(255, 255, 255, 0.05);
-          color: #d0d0e0;
-        }
-        .sidebar-nav-item.active {
-          background: rgba(108, 108, 255, 0.15) !important;
-          color: #a0a0ff !important;
-        }
+        /* Embedded core visual parameters */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #09090b; }
+        ::-webkit-scrollbar-thumb { background: #1c1c22; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #2e2e38; }
       `}</style>
 
-      {/* Sidebar */}
-      <div style={{ width: '220px', minWidth: '220px', background: '#161618', borderRight: '0.5px solid #2a2a2e', display: 'flex', flexDirection: 'column', height: '100vh', overflowY: 'auto' }}>
-        <div style={{ padding: '18px 16px 12px', borderBottom: '0.5px solid #2a2a2e' }}>
-          <div style={{ fontSize: '16px', fontWeight: 600, color: '#f0f0f2', letterSpacing: '-0.3px' }}>DiskFrame</div>
-          <div style={{ fontSize: '11px', color: '#5a5a62', marginTop: '2px' }}>Smart file organiser</div>
+      {/* Sidebar (CRED Glassmorphism Card Style) */}
+      <div style={{ width: '230px', minWidth: '230px', background: '#0e0e11', borderRight: '1px solid rgba(255,255,255,0.06)', display: 'flex', flexDirection: 'column', height: '100vh', overflowY: 'auto' }}>
+        <div style={{ padding: '20px 22px 14px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+          <div style={{ fontSize: '15px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.3px' }}>DiskFrame</div>
+          <div style={{ fontSize: '10px', color: '#606070', marginTop: '3px' }}>Universal media indexing</div>
         </div>
 
+        {/* Drives section */}
         {drives.map(drive => {
           const pct = drive.total > 0 ? Math.round((drive.used / drive.total) * 100) : 0
           const sel = selectedDrive === drive.name
           return (
-            <div key={drive.name} onClick={() => handleDriveClick(drive.name)} style={{ margin: '8px 10px', background: sel ? '#1e1e32' : '#1a1a1e', borderRadius: '10px', padding: '10px 12px', border: `0.5px solid ${sel ? '#3a3a6a' : '#242428'}`, cursor: 'pointer' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', fontWeight: 500, color: '#c8c8d0' }}>
-                <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#4cd97b' }} />
+            <div key={drive.name} onClick={() => handleDriveClick(drive.name)} 
+              style={{ 
+                margin: '8px 12px', 
+                background: sel ? 'rgba(108,108,255,0.06)' : '#121215', 
+                borderRadius: '10px', 
+                padding: '12px', 
+                border: `1px solid ${sel ? 'rgba(108,108,255,0.3)' : 'rgba(255,255,255,0.05)'}`, 
+                cursor: 'pointer',
+                transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)'
+              }}
+              onMouseEnter={e => e.currentTarget.style.borderColor = sel ? 'rgba(108,108,255,0.5)' : 'rgba(255,255,255,0.12)'}
+              onMouseLeave={e => e.currentTarget.style.borderColor = sel ? 'rgba(108,108,255,0.3)' : 'rgba(255,255,255,0.05)'}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', fontWeight: 600, color: '#f4f4f5' }}>
+                <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#10b981' }} />
                 {drive.name}
               </div>
-              <div style={{ fontSize: '10px', color: '#5a5a62', marginTop: '3px' }}>{drive.total} GB · {drive.free} GB free</div>
-              <div style={{ height: '2px', background: '#222228', borderRadius: '2px', marginTop: '7px' }}>
-                <div style={{ height: '100%', width: `${pct}%`, background: '#6c6cff', borderRadius: '2px' }} />
+              <div style={{ fontSize: '10px', color: '#71717a', marginTop: '4px' }}>{drive.total} GB · {drive.free} GB free</div>
+              <div style={{ height: '3px', background: '#27272a', borderRadius: '3px', marginTop: '8px', overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: `${pct}%`, background: '#6c6cff', borderRadius: '3px' }} />
               </div>
               {sel && (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '5px' }}>
-                  <div style={{ fontSize: '10px', color: '#6c6cff' }}>{scanning ? `Scanning... ${scanCount}` : `${scanCount} files`}</div>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '6px' }}>
+                  <div style={{ fontSize: '10px', color: '#8b5cf6', fontWeight: 500 }}>{scanning ? `Indexing... ${scanCount}` : `${scanCount} files`}</div>
                   {!scanning && scanCount > 0 && (
-                    <div onClick={e => { e.stopPropagation(); handleRescan(drive.name) }} style={{ fontSize: '10px', color: '#4cd97b', cursor: 'pointer', padding: '1px 5px', borderRadius: '3px', background: 'rgba(76,217,123,0.1)' }}>↺ Rescan</div>
+                    <div onClick={e => { e.stopPropagation(); handleRescan(drive.name) }} style={{ fontSize: '10px', color: '#10b981', cursor: 'pointer', padding: '1px 6px', borderRadius: '4px', background: 'rgba(16,185,129,0.1)' }}>↺ Rescan</div>
                   )}
                 </div>
               )}
@@ -797,59 +714,94 @@ export default function App(): React.JSX.Element {
           )
         })}
 
-        <div style={{ height: '0.5px', background: '#2a2a2e', margin: '14px 16px' }} />
+        <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)', margin: '14px 16px' }} />
 
+        {/* Collections */}
         <div style={{ padding: '4px 0' }}>
-          <div style={{ fontSize: '10px', color: '#5a5a6a', textTransform: 'uppercase', letterSpacing: '0.8px', padding: '0 20px', marginBottom: '8px', fontWeight: 600 }}>Collections</div>
+          <div style={{ fontSize: '9px', color: '#52525b', textTransform: 'uppercase', letterSpacing: '1px', padding: '0 22px', marginBottom: '8px', fontWeight: 700 }}>Collections</div>
           {[
-            { id: 'all', label: 'All files', icon: '🗂' },
-            { id: 'photos', label: 'Photos', icon: '🖼' },
+            { id: 'all', label: 'All files', icon: '🗂️' },
+            { id: 'photos', label: 'Photos', icon: '🖼️' },
             { id: 'videos', label: 'Videos', icon: '🎬' },
             { id: 'docs', label: 'Documents', icon: '📄' },
             { id: 'screenshots', label: 'Screenshots', icon: '📸' },
             { id: 'places', label: 'Places', icon: '📍' },
             { id: 'favourites', label: 'Favourites', icon: '⭐' },
-            { id: 'archive', label: 'Archive', icon: '🗄' },
-            { id: 'trash', label: 'Trash', icon: '🗑' }
+            { id: 'archive', label: 'Archive', icon: '🗄️' },
+            { id: 'trash', label: 'Trash', icon: '🗑️' }
           ].map(item => (
-            <div
-              key={item.id}
-              onClick={() => setActiveNav(item.id)}
-              className={`sidebar-nav-item ${activeNav === item.id ? 'active' : ''}`}
-            >
-              <span style={{ fontSize: '18px', marginRight: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{item.icon}</span>
-              <span style={{ flex: 1, fontSize: '13px' }}>{item.label}</span>
+            <div key={item.id} onClick={() => setActiveNav(item.id)} className={`snav ${activeNav === item.id ? 'active' : ''}`}>
+              <span style={{ fontSize: '16px', marginRight: '12px' }}>{item.icon}</span>
+              <span style={{ flex: 1, fontSize: '12px' }}>{item.label}</span>
               {item.id === 'favourites' && allFavFiles.length > 0 && (
-                <span style={{ fontSize: '10px', color: '#5050a0', background: '#1a1a2e', borderRadius: '4px', padding: '1px 5px' }}>{allFavFiles.length}</span>
+                <span style={{ fontSize: '10px', color: '#a0a0ff', background: 'rgba(108,108,255,0.15)', borderRadius: '4px', padding: '1px 5px', fontWeight: 600 }}>{allFavFiles.length}</span>
               )}
             </div>
           ))}
         </div>
       </div>
 
-      {/* Main */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden', minWidth: 0 }}>
-        {/* Topbar */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 18px', borderBottom: '0.5px solid #1e1e24', background: '#0f0f10', flexShrink: 0 }}>
-          <div style={{ flex: 1, fontSize: '13px', color: '#5050a0' }}>
-            {selectedDrive ? <><span style={{ color: '#d0d0e8' }}>{selectedDrive}</span> › <span style={{ color: '#7070c0' }}>{activeNav}</span></> : 'Select a drive'}
+      {/* Main Container */}
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden', minWidth: 0, background: '#09090b' }}>
+        
+        {/* Top bar header */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '14px 22px', borderBottom: '1px solid rgba(255,255,255,0.06)', background: '#0e0e11', flexShrink: 0 }}>
+          
+          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <div style={{ fontSize: '13px', color: '#a1a1aa' }}>
+              {selectedDrive ? <><span style={{ color: '#ffffff', fontWeight: 600 }}>{selectedDrive}</span> · <span style={{ color: '#71717a' }}>{activeNav}</span></> : 'Select a drive'}
+            </div>
+            
+            {/* Search Input */}
+            {selectedDrive && (
+              <input
+                type="text"
+                placeholder="Search file, camera:, date:, ext:, loc: ..."
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+                className="cred-input"
+                style={{ width: '260px', padding: '4px 10px', fontSize: '11px', height: '24px' }}
+              />
+            )}
           </div>
+
           {selected.size > 0 && (
-            <div style={{ fontSize: '11px', color: '#e8e8f4', background: '#252535', border: '0.5px solid #3a3a5a', borderRadius: '6px', padding: '4px 12px' }}>
-              {selected.size} selected
-              <span onClick={() => setSelected(new Set())} style={{ marginLeft: '8px', cursor: 'pointer', color: '#7070a0' }}>✕</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: '#e4e4e7', background: 'rgba(108,108,255,0.08)', border: '1px solid rgba(108,108,255,0.3)', borderRadius: '6px', padding: '3px 10px' }}>
+              <span>{selected.size} selected</span>
+              <button onClick={handleBatchFavorite} style={{ background: 'transparent', border: 'none', color: '#a0a0ff', cursor: 'pointer', fontWeight: 600 }}>❤️ Fav</button>
+              <button onClick={handleBatchDelete} style={{ background: 'transparent', border: 'none', color: '#ff6c6c', cursor: 'pointer', fontWeight: 600 }}>🗑️ Delete</button>
+              <span onClick={() => setSelected(new Set())} style={{ cursor: 'pointer', color: '#71717a', marginLeft: '2px' }}>✕</span>
             </div>
           )}
-          {activeView === 'Grid' && <div style={{ fontSize: '10px', color: '#3a3a48' }}>Ctrl+Scroll to zoom</div>}
-          <div style={{ display: 'flex', gap: '1px', background: '#161618', borderRadius: '7px', padding: '2px', border: '0.5px solid #2a2a2e' }}>
+
+          {/* Group By selector */}
+          {selectedDrive && (activeView === 'Grid' || activeView === 'Timeline') && (
+            <select
+              value={groupBy}
+              onChange={e => setGroupBy(e.target.value as any)}
+              className="cred-input"
+              style={{ padding: '2px 8px', fontSize: '11px', background: '#16161a', border: '1px solid rgba(255,255,255,0.08)', height: '24px', cursor: 'pointer' }}
+            >
+              <option value="day">Group by Day</option>
+              <option value="month">Group by Month</option>
+              <option value="year">Group by Year</option>
+              <option value="location">Group by Location</option>
+              <option value="favorites">Group by Favorites</option>
+            </select>
+          )}
+
+          {activeView === 'Grid' && <div style={{ fontSize: '10px', color: '#52525b' }}>Ctrl+Scroll to resize</div>}
+
+          {/* Views selector tab */}
+          <div style={{ display: 'flex', gap: '2px', background: '#16161a', borderRadius: '8px', padding: '2px', border: '1px solid rgba(255,255,255,0.06)' }}>
             {['Grid', 'Timeline', 'Years', 'Map'].map(v => (
-              <div key={v} onClick={() => setActiveView(v)} style={{ padding: '4px 10px', borderRadius: '5px', cursor: 'pointer', fontSize: '11px', background: activeView === v ? '#252535' : 'transparent', color: activeView === v ? '#c0c0e8' : '#5a5a70' }}>{v}</div>
+              <div key={v} onClick={() => setActiveView(v)} style={{ padding: '3px 10px', borderRadius: '6px', cursor: 'pointer', fontSize: '11px', fontWeight: 500, background: activeView === v ? '#27272a' : 'transparent', color: activeView === v ? '#ffffff' : '#71717a', transition: 'all 0.15s ease' }}>{v}</div>
             ))}
           </div>
         </div>
 
-        <div
-          style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '18px 20px' }}
+        {/* Scroll Container */}
+        <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '20px' }}
           onWheel={handleWheel}
           onScroll={e => {
             scrollTopRef.current = (e.currentTarget as HTMLDivElement).scrollTop
@@ -857,104 +809,116 @@ export default function App(): React.JSX.Element {
             rafRef.current = requestAnimationFrame(() => { rafRef.current = null; setScrollVersion(n => n + 1) })
           }}
         >
+          {/* Coming soon components */}
           {!scanning && (activeNav === 'archive' || activeNav === 'trash') && (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '12px', minHeight: '300px' }}>
-              <div style={{ fontSize: '64px', filter: 'drop-shadow(0 10px 20px rgba(0,0,0,0.3))' }}>{activeNav === 'archive' ? '🗄️' : '🗑️'}</div>
-              <div style={{ fontSize: '18px', fontWeight: 600, color: '#f0f0f2', letterSpacing: '-0.3px', marginTop: '8px' }}>{activeNav === 'archive' ? 'Archive' : 'Trash'}</div>
-              <div style={{ fontSize: '13px', color: '#5a5a72', background: 'rgba(255,255,255,0.03)', padding: '6px 16px', borderRadius: '20px', border: '0.5px solid rgba(255,255,255,0.05)' }}>Coming soon</div>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '12px' }}>
+              <div style={{ fontSize: '48px' }}>{activeNav === 'archive' ? '🗄️' : '🗑️'}</div>
+              <div style={{ fontSize: '15px', fontWeight: 600, color: '#f4f4f5' }}>{activeNav === 'archive' ? 'Archive' : 'Trash'}</div>
+              <div style={{ fontSize: '11px', color: '#71717a', padding: '5px 12px', borderRadius: '14px', background: '#18181b', border: '1px solid rgba(255,255,255,0.04)' }}>Coming soon</div>
             </div>
           )}
 
+          {/* Prompt scan drive */}
           {!selectedDrive && activeNav !== 'archive' && activeNav !== 'trash' && (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '10px' }}>
               <div style={{ fontSize: '48px' }}>💾</div>
-              <div style={{ fontSize: '14px', color: '#5050a0' }}>Click a drive to scan</div>
-              <div style={{ fontSize: '11px', color: '#3a3a48' }}>DiskFrame reads EXIF and organises by date</div>
+              <div style={{ fontSize: '14px', color: '#a1a1aa' }}>Click a drive to scan and explore</div>
+              <div style={{ fontSize: '11px', color: '#52525b' }}>Smart EXIF-based local photo organizer</div>
             </div>
           )}
 
+          {/* Indexing scanner progress */}
           {scanning && activeNav !== 'archive' && activeNav !== 'trash' && (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '12px' }}>
-              <div style={{ fontSize: '14px', color: '#6c6cff' }}>Scanning {selectedDrive}...</div>
-              <div style={{ fontSize: '12px', color: '#5a5a72' }}>{scanCount} files found</div>
-              <div style={{ width: '220px', height: '3px', background: '#1e1e2a', borderRadius: '2px', overflow: 'hidden' }}>
-                <div style={{ height: '100%', width: '45%', background: 'linear-gradient(90deg, transparent, #6c6cff, transparent)', borderRadius: '2px', animation: 'shimmer 1.4s ease-in-out infinite' }} />
+              <div style={{ fontSize: '13px', color: '#6c6cff' }}>Indexing media on {selectedDrive}...</div>
+              <div style={{ fontSize: '11px', color: '#71717a' }}>{scanCount} files mapped</div>
+              <div style={{ width: '200px', height: '3px', background: '#1c1c22', borderRadius: '2px', overflow: 'hidden' }}>
+                <div style={{ height: '100%', width: '40%', background: 'linear-gradient(90deg, transparent, #6c6cff, transparent)', borderRadius: '2px', animation: 'shimmer 1.4s ease-in-out infinite' }} />
               </div>
             </div>
           )}
 
+          {/* Favourites Grid */}
           {!scanning && activeNav === 'favourites' && (
             <div>
-              <div style={{ fontSize: '15px', fontWeight: 600, color: '#e0e0f0', marginBottom: '16px' }}>❤️ Favourites · {allFavFiles.length} files</div>
+              <div style={{ fontSize: '24px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.5px', marginBottom: '8px' }}>
+                Favourites <span style={{ color: '#6c6cff', fontSize: '16px', fontWeight: 500 }}>{allFavFiles.length} items</span>
+              </div>
               {allFavFiles.length === 0 ? (
-                <div style={{ color: '#3a3a48', fontSize: '13px' }}>No favourites yet — hover a tile and tap 🤍 to add.</div>
+                <div style={{ color: '#52525b', fontSize: '13px', marginTop: '16px' }}>No favourites yet. Add items to your favorites.</div>
               ) : (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '5px' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '5px', marginTop: '16px' }}>
                   {allFavFiles.map(file => (
-                    <FileTile key={file.path} file={file} onOpen={f => openLightbox(f, allFavFiles)} onFav={handleFav} isFav={true} isSelected={selected.has(file.path)} onSelect={handleSelect} tileSize={100} />
+                    <FileTile key={file.path} file={file} onOpen={f => handleTileOpen(f, allFavFiles)} onFav={handleFav} isFav={true} isSelected={selected.has(file.path)} onSelect={handleSelect} onContextMenu={(f, e) => handleTileContextMenu(f, allFavFiles, e)} tileSize={100} />
                   ))}
                 </div>
               )}
             </div>
           )}
 
-          {!scanning && (activeView === 'Map' || activeNav === 'places') && activeNav !== 'archive' && activeNav !== 'trash' && (
+          {/* Places View map */}
+          {!scanning && activeNav === 'places' && (
             <div style={{ height: 'calc(100vh - 120px)' }}>
-              <MapView files={activeNav === 'places' ? getFiltered(allFiles) : allFiles} onOpen={openLightbox} />
+              <MapView files={allFiles.filter(f => f.lat !== null && f.lng !== null)} onOpen={handleTileOpen} />
             </div>
           )}
 
+          {/* Map View tab */}
+          {!scanning && activeView === 'Map' && activeNav !== 'places' && activeNav !== 'archive' && activeNav !== 'trash' && (
+            <div style={{ height: 'calc(100vh - 120px)' }}>
+              <MapView files={allFiles} onOpen={handleTileOpen} />
+            </div>
+          )}
+
+          {/* Years view */}
           {!scanning && activeView === 'Years' && activeNav !== 'favourites' && activeNav !== 'places' && activeNav !== 'archive' && activeNav !== 'trash' && (
             <div style={{ animation: transitioning ? 'slideOutLeft 0.28s forwards' : 'slideInRight 0.28s forwards' }}>
-              <div style={{ fontSize: '13px', color: '#5050a0', marginBottom: '16px' }}>
-                <span style={{ color: '#d0d0e8', fontWeight: 600 }}>All Years</span>
-                {yearFilter && <span onClick={() => setYearFilter(null)} style={{ marginLeft: '10px', cursor: 'pointer', color: '#6c6cff' }}>× {yearFilter}</span>}
+              <div style={{ fontSize: '24px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.5px', marginBottom: '14px' }}>
+                All Years {yearFilter && <span onClick={() => setYearFilter(null)} style={{ fontSize: '13px', color: '#6c6cff', cursor: 'pointer', fontWeight: 400, marginLeft: '10px' }}>× {yearFilter}</span>}
               </div>
               <YearsView groupedFiles={groupedFiles} onYearClick={year => {
                 setYearFilter(year); setActiveView('Timeline')
                 setTimeout(() => {
-                  const key = months.find(m => m.startsWith(year))
+                  const key = Object.keys(sortedGroupedData.data).find(m => m.includes(year))
                   if (key && monthRefs.current[key]) monthRefs.current[key]?.scrollIntoView({ behavior: 'smooth', block: 'start' })
                 }, 100)
               }} />
             </div>
           )}
 
+          {/* Dynamic Grid + Timeline view */}
           {!scanning && activeNav !== 'favourites' && activeNav !== 'places' && activeNav !== 'archive' && activeNav !== 'trash' && (activeView === 'Grid' || activeView === 'Timeline') && (
             <div style={{
               animation: transitioning && activeView === 'Grid' ? 'slideOutLeft 0.28s forwards'
                 : transitioning && activeView === 'Timeline' ? 'slideOutRight 0.28s forwards'
-                  : activeView === 'Timeline' ? 'slideInRight 0.28s forwards'
-                    : 'slideInLeft 0.28s forwards'
+                  : activeView === 'Timeline' ? 'slideInRight 0.28s forwards' : 'slideInLeft 0.28s forwards'
             }}>
+              {/* Timeline layout */}
               {activeView === 'Timeline' && (
-                <div style={{ paddingLeft: '24px', borderLeft: '1px solid #1e1e2a' }}>
-                  {months.map(monthKey => {
-                    const files = getFiltered(groupedFiles[monthKey] || [])
-                    if (files.length === 0) return null
-                    const [year, month] = monthKey.split('-')
+                <div style={{ paddingLeft: '24px', borderLeft: '1.5px solid rgba(255,255,255,0.06)' }}>
+                  {sortedGroupedData.keys.map(monthKey => {
+                    const files = sortedGroupedData.data[monthKey]
                     return (
                       <div key={monthKey} ref={el => { monthRefs.current[monthKey] = el }} style={{ marginBottom: '28px', position: 'relative' }}>
-                        <div style={{ position: 'absolute', left: '-28px', top: '4px', width: '8px', height: '8px', borderRadius: '50%', background: '#6c6cff', border: '2px solid #0f0f10' }} />
-                        <div style={{ fontSize: '13px', fontWeight: 600, color: '#c0c0e0', marginBottom: '8px' }}>
-                          {month} {year} <span style={{ fontWeight: 400, fontSize: '11px', color: '#44444e' }}>· {files.length} files</span>
+                        <div style={{ position: 'absolute', left: '-29px', top: '8px', width: '8px', height: '8px', borderRadius: '50%', background: '#6c6cff', border: '2px solid #09090b' }} />
+                        <div style={{ fontSize: '18px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.3px', lineHeight: 1 }}>
+                          {monthKey}
                         </div>
+                        <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '10px', marginTop: '4px' }}>{files.length} files</div>
                         <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
                           {files.slice(0, 12).map(file => (
-                            <div key={file.path} onClick={() => openLightbox(file, files)} style={{ width: '80px', height: '80px', borderRadius: '6px', overflow: 'hidden', cursor: 'pointer', background: '#141420', position: 'relative' }}>
-                              {(photoExts.includes(file.ext) || (videoExts.includes(file.ext) && file.thumb)) ? (
+                            <div key={file.path} onClick={() => handleTileOpen(file, files)} onContextMenu={(e) => handleTileContextMenu(file, files, e)} style={{ width: '80px', height: '80px', borderRadius: '6px', overflow: 'hidden', cursor: 'pointer', background: '#121215', position: 'relative' }}>
+                              {(photoExts.includes(file.ext.toLowerCase()) || (videoExts.includes(file.ext.toLowerCase()) && file.thumb)) ? (
                                 <>
                                   <img src={thumbUrl(file)} loading="lazy" decoding="async" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                                  {videoExts.includes(file.ext) && <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.3)' }}><div style={{ fontSize: '18px' }}>▶</div></div>}
+                                  {videoExts.includes(file.ext.toLowerCase()) && <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.3)' }}><div style={{ fontSize: '18px' }}>▶</div></div>}
                                 </>
                               ) : (
-                                <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px' }}>{videoExts.includes(file.ext) ? '🎬' : '📄'}</div>
+                                <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px' }}>{videoExts.includes(file.ext.toLowerCase()) ? '🎬' : '📄'}</div>
                               )}
                             </div>
                           ))}
-                          {files.length > 12 && (
-                            <div style={{ width: '80px', height: '80px', borderRadius: '6px', background: '#1a1a2a', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', color: '#5050a0', cursor: 'pointer' }}>+{files.length - 12} more</div>
-                          )}
+                          {files.length > 12 && <div style={{ width: '80px', height: '80px', borderRadius: '6px', background: '#18181c', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', color: '#6c6cff', cursor: 'pointer', fontWeight: 600 }}>+{files.length - 12} more</div>}
                         </div>
                       </div>
                     )
@@ -962,41 +926,41 @@ export default function App(): React.JSX.Element {
                 </div>
               )}
 
+              {/* Grid layout (with Viewport caching) */}
               {activeView === 'Grid' && (() => {
                 const tilesPerRow = Math.max(1, Math.floor((window.innerWidth - 260) / (tileSize + 5)))
                 const scrollTop = scrollTopRef.current
                 const winH = window.innerHeight
                 let offsetY = 0
                 void scrollVersion
-                return months.map(monthKey => {
-                  const files = getFiltered(groupedFiles[monthKey] || [])
-                  if (files.length === 0) return null
-                  const [year, month] = monthKey.split('-')
+                return sortedGroupedData.keys.map(monthKey => {
+                  const files = sortedGroupedData.data[monthKey]
                   const visible = getVisible(monthKey)
                   const rowCount = Math.ceil(Math.min(visible, files.length) / tilesPerRow)
-                  const estH = rowCount * (tileSize + 5) + 50
+                  const estH = rowCount * (tileSize + 5) + 80
                   const myOffset = offsetY
                   offsetY += estH + 28
                   const inView = myOffset < scrollTop + winH + 1000 && myOffset + estH > scrollTop - 1000
                   const ref = (el: HTMLDivElement | null): void => { monthRefs.current[monthKey] = el }
 
-                  if (!inView) {
-                    return <div key={monthKey + '_ph'} ref={ref} style={{ height: estH + 28 }} />
-                  }
+                  if (!inView) return <div key={monthKey + '_ph'} ref={ref} style={{ height: estH + 28 }} />
 
                   return (
                     <div key={monthKey + '_grid_' + files.filter(f => f.thumb).length} ref={ref} style={{ marginBottom: '28px' }}>
-                      <div style={{ fontSize: '28px', fontWeight: 800, color: '#ffffff', letterSpacing: '-1px', marginBottom: '14px', lineHeight: 1 }}>
-                        {month} <span style={{ color: '#6c6cff' }}>{year}</span>
+                      <div style={{ fontSize: '20px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.3px', lineHeight: 1 }}>
+                        {monthKey}
                       </div>
-                      <div style={{ fontSize: '11px', color: '#7070a0', marginBottom: '14px' }}>{files.length} files</div>
+                      <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '12px', marginTop: '4px' }}>{files.length} files</div>
                       <div style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fill, minmax(${tileSize}px, 1fr))`, gap: '5px', transition: 'grid-template-columns 0.12s cubic-bezier(0.25, 0.46, 0.45, 0.94)' }}>
                         {files.slice(0, visible).map(file => (
-                          <FileTile key={file.path} file={file} onOpen={f => openLightbox(f, files)} onFav={handleFav} isFav={favourites.has(file.path)} isSelected={selected.has(file.path)} onSelect={handleSelect} tileSize={tileSize} />
+                          <FileTile key={file.path} file={file} onOpen={f => handleTileOpen(f, files)} onFav={handleFav} isFav={favourites.has(file.path)} isSelected={selected.has(file.path)} onSelect={handleSelect} onContextMenu={(f, e) => handleTileContextMenu(f, files, e)} tileSize={tileSize} />
                         ))}
                       </div>
                       {files.length > visible && (
-                        <div onClick={() => setVisibleCount(prev => ({ ...prev, [monthKey]: visible + 40 }))} style={{ marginTop: '10px', padding: '8px', borderRadius: '8px', background: '#1a1a2a', border: '0.5px solid #2a2a3a', cursor: 'pointer', fontSize: '12px', color: '#6060a0', textAlign: 'center' }}>
+                        <div onClick={() => setVisibleCount(prev => ({ ...prev, [monthKey]: visible + 40 }))} style={{ marginTop: '10px', padding: '8px', borderRadius: '8px', background: '#141417', border: '1px solid rgba(255,255,255,0.06)', cursor: 'pointer', fontSize: '12px', color: '#a0a0ff', textAlign: 'center', fontWeight: 500 }}
+                          onMouseEnter={e => e.currentTarget.style.borderColor = 'rgba(255,255,255,0.12)'}
+                          onMouseLeave={e => e.currentTarget.style.borderColor = 'rgba(255,255,255,0.06)'}
+                        >
                           Show more ({files.length - visible} remaining)
                         </div>
                       )}
@@ -1009,27 +973,254 @@ export default function App(): React.JSX.Element {
         </div>
 
         {/* Status bar */}
-        <div style={{ borderTop: '0.5px solid #1a1a22', padding: '6px 18px', display: 'flex', alignItems: 'center', gap: '14px', background: '#0c0c0e', flexShrink: 0 }}>
-          <div style={{ fontSize: '11px', color: '#3a3a48' }}><span style={{ color: '#6060a0' }}>{drives.length}</span> drives</div>
-          <div style={{ fontSize: '11px', color: '#3a3a48' }}><span style={{ color: '#6060a0' }}>{totalFiles}</span> files</div>
-          <div style={{ fontSize: '11px', color: '#3a3a48' }}><span style={{ color: '#6060a0' }}>{months.length}</span> months</div>
-          <div style={{ fontSize: '11px', color: '#3a3a48' }}><span style={{ color: '#e060a0' }}>❤️ {allFavFiles.length}</span> favourites</div>
-          {selected.size > 0 && <div style={{ fontSize: '11px', color: '#6c6cff' }}>✓ {selected.size} selected</div>}
-          {activeView === 'Grid' && <div style={{ fontSize: '11px', color: '#3a3a48' }}>tile: <span style={{ color: '#6060a0' }}>{tileSize}px</span></div>}
-          <div style={{ marginLeft: 'auto', fontSize: '10px', color: '#4cd97b', background: 'rgba(76,217,123,0.08)', border: '0.5px solid rgba(76,217,123,0.2)', borderRadius: '4px', padding: '2px 7px' }}>● live</div>
+        <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', padding: '8px 22px', display: 'flex', alignItems: 'center', gap: '16px', background: '#0c0c0e', flexShrink: 0 }}>
+          <div style={{ fontSize: '11px', color: '#52525b' }}><span style={{ color: '#a1a1aa', fontWeight: 500 }}>{drives.length}</span> drives</div>
+          <div style={{ fontSize: '11px', color: '#52525b' }}><span style={{ color: '#a1a1aa', fontWeight: 500 }}>{totalFiles}</span> files</div>
+          <div style={{ fontSize: '11px', color: '#52525b' }}><span style={{ color: '#a1a1aa', fontWeight: 500 }}>{sortedGroupedData.keys.length}</span> groupings</div>
+          <div style={{ fontSize: '11px', color: '#52525b' }}><span style={{ color: '#ff6b8b', fontWeight: 500 }}>❤️ {allFavFiles.length}</span> favourites</div>
+          {selected.size > 0 && <div style={{ fontSize: '11px', color: '#6c6cff', fontWeight: 500 }}>✓ {selected.size} selected</div>}
+          {activeView === 'Grid' && <div style={{ fontSize: '11px', color: '#52525b' }}>tile: <span style={{ color: '#a1a1aa', fontWeight: 500 }}>{tileSize}px</span></div>}
+          <div style={{ marginLeft: 'auto', fontSize: '10px', color: '#10b981', background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.2)', borderRadius: '4px', padding: '1px 6px' }}>● index live</div>
         </div>
       </div>
 
+      {/* Main Image Viewer */}
       {lightbox && (
-        <LightBox
+        <MediaViewer
           file={lightbox.file}
+          list={lightbox.list}
           isFav={favourites.has(lightbox.file.path)}
           onFav={handleFav}
           onReveal={handleReveal}
           onClose={() => setLightbox(null)}
-          onNext={() => { const idx = lightbox.list.indexOf(lightbox.file); if (idx < lightbox.list.length - 1) setLightbox({ file: lightbox.list[idx + 1], list: lightbox.list }) }}
-          onPrev={() => { const idx = lightbox.list.indexOf(lightbox.file); if (idx > 0) setLightbox({ file: lightbox.list[idx - 1], list: lightbox.list }) }}
+          onNext={() => {
+            const idx = lightbox.list.indexOf(lightbox.file)
+            if (idx < lightbox.list.length - 1) {
+              setLightbox({ file: lightbox.list[idx + 1], list: lightbox.list })
+            }
+          }}
+          onPrev={() => {
+            const idx = lightbox.list.indexOf(lightbox.file)
+            if (idx > 0) {
+              setLightbox({ file: lightbox.list[idx - 1], list: lightbox.list })
+            }
+          }}
+          onDelete={handleFileDeleted}
         />
+      )}
+
+      {/* Custom Context Menu Overlay */}
+      {contextMenu && (
+        <div
+          className="cred-glass"
+          style={{
+            position: 'fixed',
+            top: `${contextMenu.y}px`,
+            left: `${contextMenu.x}px`,
+            zIndex: 9999,
+            borderRadius: '12px',
+            padding: '5px 0',
+            minWidth: '170px',
+            boxShadow: '0 12px 32px rgba(0,0,0,0.6)',
+            animation: 'fadeIn 0.15s ease-out'
+          }}
+        >
+          <div
+            onClick={() => handleTileOpen(contextMenu.file, contextMenu.currentList)}
+            style={{ padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' }}
+            onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'}
+            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+          >
+            <span>🖼️</span> Open in Viewer
+          </div>
+          <div
+            onClick={() => handleFav(contextMenu.file)}
+            style={{ padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' }}
+            onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'}
+            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+          >
+            <span>❤️</span> {favourites.has(contextMenu.file.path) ? 'Unfavourite' : 'Favourite'}
+          </div>
+          <div
+            onClick={() => handleReveal(contextMenu.file)}
+            style={{ padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' }}
+            onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'}
+            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+          >
+            <span>📁</span> Show in Folder
+          </div>
+          <div
+            onClick={() => navigator.clipboard.writeText(contextMenu.file.path)}
+            style={{ padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' }}
+            onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'}
+            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+          >
+            <span>📋</span> Copy Path
+          </div>
+          <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)', margin: '4px 0' }} />
+          <div
+            onClick={() => setFileToDelete(contextMenu.file)}
+            style={{ padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: '#ff4d4d' }}
+            onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'}
+            onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+          >
+            <span>🗑️</span> Move to Recycle Bin
+          </div>
+        </div>
+      )}
+
+      {/* Single File Recycle Bin Confirm Modal */}
+      {fileToDelete && (
+        <div
+          onClick={() => setFileToDelete(null)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.7)',
+            backdropFilter: 'blur(8px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 10000,
+            animation: 'fadeIn 0.2s ease-out'
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="cred-glass"
+            style={{
+              padding: '24px 32px',
+              borderRadius: '16px',
+              maxWidth: '400px',
+              width: '90%',
+              textAlign: 'center',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '20px',
+              animation: 'slideInUp 0.25s cubic-bezier(0.16, 1, 0.3, 1)'
+            }}
+          >
+            <div style={{ fontSize: '16px', fontWeight: 600, color: '#ffffff' }}>
+              Move this file to Recycle Bin?
+            </div>
+            <div style={{ fontSize: '12px', color: '#8a8a9e', lineHeight: 1.5 }}>
+              The file "{fileToDelete.name}" will be moved to your operating system's Recycle Bin. You can restore it from there later if needed.
+            </div>
+            <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '8px' }}>
+              <button
+                onClick={() => setFileToDelete(null)}
+                className="cred-button"
+                style={{ flex: 1, justifyContent: 'center', padding: '10px' }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  try {
+                    const result = await window.electron.ipcRenderer.invoke('delete-files', [fileToDelete.path]) as { success?: string[] }
+                    if (result && result.success && result.success.length > 0) {
+                      handleFileDeleted(fileToDelete.path)
+                    }
+                  } catch (err) {
+                    console.error(err)
+                  } finally {
+                    setFileToDelete(null)
+                  }
+                }}
+                className="cred-button"
+                style={{
+                  flex: 1,
+                  justifyContent: 'center',
+                  background: '#ff4d4d',
+                  borderColor: '#ff4d4d',
+                  color: '#ffffff',
+                  padding: '10px'
+                }}
+              >
+                Move to Recycle Bin
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Batch Files Recycle Bin Confirm Modal */}
+      {showBatchDeleteConfirm && (
+        <div
+          onClick={() => setShowBatchDeleteConfirm(false)}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.7)',
+            backdropFilter: 'blur(8px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 10000,
+            animation: 'fadeIn 0.2s ease-out'
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="cred-glass"
+            style={{
+              padding: '24px 32px',
+              borderRadius: '16px',
+              maxWidth: '400px',
+              width: '90%',
+              textAlign: 'center',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '20px',
+              animation: 'slideInUp 0.25s cubic-bezier(0.16, 1, 0.3, 1)'
+            }}
+          >
+            <div style={{ fontSize: '16px', fontWeight: 600, color: '#ffffff' }}>
+              Move this file to Recycle Bin?
+            </div>
+            <div style={{ fontSize: '12px', color: '#8a8a9e', lineHeight: 1.5 }}>
+              Are you sure you want to move the {selected.size} selected files to your operating system's Recycle Bin?
+            </div>
+            <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '8px' }}>
+              <button
+                onClick={() => setShowBatchDeleteConfirm(false)}
+                className="cred-button"
+                style={{ flex: 1, justifyContent: 'center', padding: '10px' }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  try {
+                    const paths = Array.from(selected)
+                    const result = await window.electron.ipcRenderer.invoke('delete-files', paths) as { success?: string[] }
+                    if (result && result.success) {
+                      setSelected(new Set())
+                      if (selectedDrive) {
+                        window.api.getFiles(selectedDrive)
+                      }
+                    }
+                  } catch (err) {
+                    console.error('Batch delete error', err)
+                  } finally {
+                    setShowBatchDeleteConfirm(false)
+                  }
+                }}
+                className="cred-button"
+                style={{
+                  flex: 1,
+                  justifyContent: 'center',
+                  background: '#ff4d4d',
+                  borderColor: '#ff4d4d',
+                  color: '#ffffff',
+                  padding: '10px'
+                }}
+              >
+                Move to Recycle Bin
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

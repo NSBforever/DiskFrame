@@ -1,1 +1,487 @@
-[{"filePath":"C:\\Users\\nagir\\diskframe\\electron.vite.config.ts","messages":[],"suppressedMessages":[],"errorCount":0,"fatalErrorCount":0,"warningCount":0,"fixableErrorCount":0,"fixableWarningCount":0,"usedDeprecatedRules":[]},{"filePath":"C:\\Users\\nagir\\diskframe\\eslint.config.mjs","messages":[],"suppressedMessages":[],"errorCount":0,"fatalErrorCount":0,"warningCount":0,"fixableErrorCount":0,"fixableWarningCount":0,"usedDeprecatedRules":[]},{"filePath":"C:\\Users\\nagir\\diskframe\\run-prettier.js","messages":[{"ruleId":"@typescript-eslint/no-require-imports","severity":2,"message":"A `require()` style import is forbidden.","line":1,"column":22,"nodeType":"CallExpression","messageId":"noRequireImports","endLine":1,"endColumn":46},{"ruleId":"@typescript-eslint/no-unused-vars","severity":2,"message":"'path' is assigned a value but never used.","line":2,"column":7,"nodeType":"Identifier","messageId":"unusedVar","endLine":2,"endColumn":11},{"ruleId":"@typescript-eslint/no-require-imports","severity":2,"message":"A `require()` style import is forbidden.","line":2,"column":14,"nodeType":"CallExpression","messageId":"noRequireImports","endLine":2,"endColumn":29},{"ruleId":"prettier/prettier","severity":1,"message":"Replace `f` with `(f)`","line":13,"column":15,"nodeType":null,"messageId":"replace","endLine":13,"endColumn":16,"fix":{"range":[269,270],"text":"(f)"}}],"suppressedMessages":[],"errorCount":3,"fatalErrorCount":0,"warningCount":1,"fixableErrorCount":0,"fixableWarningCount":1,"source":"const { execSync } = require('child_process')\nconst path = require('path')\n\nconst files = [\n  'src/renderer/src/App.tsx',\n  'src/main/index.ts',\n  'src/main/scanner.ts',\n  'src/preload/index.ts',\n  'src/preload/index.d.ts',\n  'electron.vite.config.ts'\n]\n\nfiles.forEach(f => {\n  try {\n    execSync(`node node_modules/prettier/bin/prettier.cjs --write \"${f}\"`, {\n      cwd: __dirname,\n      stdio: 'inherit'\n    })\n    console.log('✓', f)\n  } catch (e) {\n    console.error('✗', f, e.message)\n  }\n})\n","usedDeprecatedRules":[]},{"filePath":"C:\\Users\\nagir\\diskframe\\src\\main\\index.ts","messages":[],"suppressedMessages":[],"errorCount":0,"fatalErrorCount":0,"warningCount":0,"fixableErrorCount":0,"fixableWarningCount":0,"usedDeprecatedRules":[]},{"filePath":"C:\\Users\\nagir\\diskframe\\src\\main\\scanner.ts","messages":[],"suppressedMessages":[],"errorCount":0,"fatalErrorCount":0,"warningCount":0,"fixableErrorCount":0,"fixableWarningCount":0,"usedDeprecatedRules":[]},{"filePath":"C:\\Users\\nagir\\diskframe\\src\\preload\\index.d.ts","messages":[],"suppressedMessages":[],"errorCount":0,"fatalErrorCount":0,"warningCount":0,"fixableErrorCount":0,"fixableWarningCount":0,"usedDeprecatedRules":[]},{"filePath":"C:\\Users\\nagir\\diskframe\\src\\preload\\index.ts","messages":[],"suppressedMessages":[],"errorCount":0,"fatalErrorCount":0,"warningCount":0,"fixableErrorCount":0,"fixableWarningCount":0,"usedDeprecatedRules":[]},{"filePath":"C:\\Users\\nagir\\diskframe\\src\\renderer\\src\\App.tsx","messages":[],"suppressedMessages":[{"ruleId":"react-hooks/exhaustive-deps","severity":1,"message":"React Hook useEffect has missing dependencies: 'onClose', 'onNext', and 'onPrev'. Either include them or remove the dependency array. If 'onClose' changes too often, find the parent component that defines it and wrap that definition in useCallback.","line":418,"column":6,"nodeType":"ArrayExpression","endLine":418,"endColumn":17,"suggestions":[{"desc":"Update the dependencies array to be: [file.path, onClose, onNext, onPrev]","fix":{"range":[12154,12165],"text":"[file.path, onClose, onNext, onPrev]"}}],"suppressions":[{"kind":"directive","justification":""}]}],"errorCount":0,"fatalErrorCount":0,"warningCount":0,"fixableErrorCount":0,"fixableWarningCount":0,"usedDeprecatedRules":[]},{"filePath":"C:\\Users\\nagir\\diskframe\\src\\renderer\\src\\components\\Versions.tsx","messages":[],"suppressedMessages":[],"errorCount":0,"fatalErrorCount":0,"warningCount":0,"fixableErrorCount":0,"fixableWarningCount":0,"usedDeprecatedRules":[]},{"filePath":"C:\\Users\\nagir\\diskframe\\src\\renderer\\src\\env.d.ts","messages":[],"suppressedMessages":[],"errorCount":0,"fatalErrorCount":0,"warningCount":0,"fixableErrorCount":0,"fixableWarningCount":0,"usedDeprecatedRules":[]},{"filePath":"C:\\Users\\nagir\\diskframe\\src\\renderer\\src\\main.tsx","messages":[],"suppressedMessages":[],"errorCount":0,"fatalErrorCount":0,"warningCount":0,"fixableErrorCount":0,"fixableWarningCount":0,"usedDeprecatedRules":[]},{"filePath":"C:\\Users\\nagir\\diskframe\\test.js","messages":[{"ruleId":"prettier/prettier","severity":1,"message":"Delete `␍`","line":1,"column":59,"nodeType":null,"messageId":"delete","endLine":1,"endColumn":60,"fix":{"range":[58,59],"text":""}},{"ruleId":"prettier/prettier","severity":1,"message":"Delete `;␍`","line":2,"column":25,"nodeType":null,"messageId":"delete","endLine":2,"endColumn":27,"fix":{"range":[84,86],"text":""}},{"ruleId":"prettier/prettier","severity":1,"message":"Delete `;␍`","line":3,"column":29,"nodeType":null,"messageId":"delete","endLine":3,"endColumn":31,"fix":{"range":[115,117],"text":""}},{"ruleId":"prettier/prettier","severity":1,"message":"Delete `;␍`","line":4,"column":14,"nodeType":null,"messageId":"delete","endLine":4,"endColumn":16,"fix":{"range":[131,133],"text":""}},{"ruleId":"prettier/prettier","severity":1,"message":"Delete `␍`","line":5,"column":21,"nodeType":null,"messageId":"delete","endLine":5,"endColumn":22,"fix":{"range":[154,155],"text":""}},{"ruleId":"prettier/prettier","severity":1,"message":"Delete `␍`","line":6,"column":8,"nodeType":null,"messageId":"delete","endLine":6,"endColumn":9,"fix":{"range":[163,164],"text":""}},{"ruleId":"prettier/prettier","severity":1,"message":"Delete `;␍`","line":7,"column":65,"nodeType":null,"messageId":"delete","endLine":7,"endColumn":67,"fix":{"range":[229,231],"text":""}},{"ruleId":"prettier/prettier","severity":1,"message":"Delete `␍`","line":8,"column":31,"nodeType":null,"messageId":"delete","endLine":8,"endColumn":32,"fix":{"range":[262,263],"text":""}},{"ruleId":"prettier/prettier","severity":1,"message":"Replace `e.isFile()·&&·['.jpg','.jpeg','.png','.mp4','.mov'].includes(path.extname(e.name).toLowerCase()))·{␍` with `⏎········e.isFile()·&&⏎········['.jpg',·'.jpeg',·'.png',·'.mp4',·'.mov'].includes(path.extname(e.name).toLowerCase())⏎······)·{`","line":9,"column":11,"nodeType":null,"messageId":"replace","endLine":9,"endColumn":111,"fix":{"range":[274,374],"text":"\n        e.isFile() &&\n        ['.jpg', '.jpeg', '.png', '.mp4', '.mov'].includes(path.extname(e.name).toLowerCase())\n      ) {"}},{"ruleId":"prettier/prettier","severity":1,"message":"Delete `;␍`","line":10,"column":16,"nodeType":null,"messageId":"delete","endLine":10,"endColumn":18,"fix":{"range":[390,392],"text":""}},{"ruleId":"prettier/prettier","severity":1,"message":"Delete `;␍`","line":11,"column":60,"nodeType":null,"messageId":"delete","endLine":11,"endColumn":62,"fix":{"range":[452,454],"text":""}},{"ruleId":"prettier/prettier","severity":1,"message":"Replace `e.isDirectory()·&&·!['Windows','Program·Files','AppData','node_modules'].includes(e.name))·{␍` with `⏎········e.isDirectory()·&&⏎········!['Windows',·'Program·Files',·'AppData',·'node_modules'].includes(e.name)⏎······)·{`","line":12,"column":18,"nodeType":null,"messageId":"replace","endLine":12,"endColumn":111,"fix":{"range":[472,565],"text":"\n        e.isDirectory() &&\n        !['Windows', 'Program Files', 'AppData', 'node_modules'].includes(e.name)\n      ) {"}},{"ruleId":"prettier/prettier","severity":1,"message":"Replace `·walk(path.join(dir,·e.name));·}·catch·{·/*·ignore·*/·}␍` with `⏎··········walk(path.join(dir,·e.name))⏎········}·catch·{⏎··········/*·ignore·*/⏎········}`","line":13,"column":14,"nodeType":null,"messageId":"replace","endLine":13,"endColumn":70,"fix":{"range":[579,635],"text":"\n          walk(path.join(dir, e.name))\n        } catch {\n          /* ignore */\n        }"}},{"ruleId":"prettier/prettier","severity":1,"message":"Delete `␍`","line":14,"column":8,"nodeType":null,"messageId":"delete","endLine":14,"endColumn":9,"fix":{"range":[643,644],"text":""}},{"ruleId":"prettier/prettier","severity":1,"message":"Delete `␍`","line":15,"column":6,"nodeType":null,"messageId":"delete","endLine":15,"endColumn":7,"fix":{"range":[650,651],"text":""}},{"ruleId":"prettier/prettier","severity":1,"message":"Replace `·/*·ignore·*/·}␍` with `⏎····/*·ignore·*/⏎··}`","line":16,"column":12,"nodeType":null,"messageId":"replace","endLine":16,"endColumn":28,"fix":{"range":[663,679],"text":"\n    /* ignore */\n  }"}},{"ruleId":"prettier/prettier","severity":1,"message":"Delete `␍`","line":17,"column":2,"nodeType":null,"messageId":"delete","endLine":17,"endColumn":3,"fix":{"range":[681,682],"text":""}},{"ruleId":"prettier/prettier","severity":1,"message":"Delete `;␍`","line":18,"column":35,"nodeType":null,"messageId":"delete","endLine":18,"endColumn":37,"fix":{"range":[717,719],"text":""}},{"ruleId":"prettier/prettier","severity":1,"message":"Delete `;␍`","line":19,"column":36,"nodeType":null,"messageId":"delete","endLine":19,"endColumn":38,"fix":{"range":[755,757],"text":""}},{"ruleId":"prettier/prettier","severity":1,"message":"Delete `;␍`","line":20,"column":36,"nodeType":null,"messageId":"delete","endLine":20,"endColumn":38,"fix":{"range":[793,795],"text":""}},{"ruleId":"prettier/prettier","severity":1,"message":"Replace `;` with `⏎`","line":21,"column":35,"nodeType":null,"messageId":"replace","endLine":21,"endColumn":36,"fix":{"range":[830,831],"text":"\n"}}],"suppressedMessages":[{"ruleId":"@typescript-eslint/no-require-imports","severity":2,"message":"A `require()` style import is forbidden.","line":2,"column":12,"nodeType":"CallExpression","messageId":"noRequireImports","endLine":2,"endColumn":25,"suppressions":[{"kind":"directive","justification":""}]},{"ruleId":"@typescript-eslint/no-require-imports","severity":2,"message":"A `require()` style import is forbidden.","line":3,"column":14,"nodeType":"CallExpression","messageId":"noRequireImports","endLine":3,"endColumn":29,"suppressions":[{"kind":"directive","justification":""}]}],"errorCount":0,"fatalErrorCount":0,"warningCount":21,"fixableErrorCount":0,"fixableWarningCount":21,"source":"/* eslint-disable @typescript-eslint/no-require-imports */\r\nconst fs = require('fs');\r\nconst path = require('path');\r\nlet count = 0;\r\nfunction walk(dir) {\r\n  try {\r\n    const entries = fs.readdirSync(dir, { withFileTypes: true });\r\n    for (const e of entries) {\r\n      if (e.isFile() && ['.jpg','.jpeg','.png','.mp4','.mov'].includes(path.extname(e.name).toLowerCase())) {\r\n        count++;\r\n        if (count <= 5) console.log(path.join(dir, e.name));\r\n      } else if (e.isDirectory() && !['Windows','Program Files','AppData','node_modules'].includes(e.name)) {\r\n        try { walk(path.join(dir, e.name)); } catch { /* ignore */ }\r\n      }\r\n    }\r\n  } catch { /* ignore */ }\r\n}\r\nwalk('C:\\\\Users\\\\nagir\\\\Pictures');\r\nwalk('C:\\\\Users\\\\nagir\\\\Downloads');\r\nwalk('C:\\\\Users\\\\nagir\\\\Documents');\r\nconsole.log('Total found:', count);","usedDeprecatedRules":[]}]
+[
+  {
+    "filePath": "C:\\Users\\nagir\\diskframe\\electron.vite.config.ts",
+    "messages": [],
+    "suppressedMessages": [],
+    "errorCount": 0,
+    "fatalErrorCount": 0,
+    "warningCount": 0,
+    "fixableErrorCount": 0,
+    "fixableWarningCount": 0,
+    "usedDeprecatedRules": []
+  },
+  {
+    "filePath": "C:\\Users\\nagir\\diskframe\\eslint.config.mjs",
+    "messages": [],
+    "suppressedMessages": [],
+    "errorCount": 0,
+    "fatalErrorCount": 0,
+    "warningCount": 0,
+    "fixableErrorCount": 0,
+    "fixableWarningCount": 0,
+    "usedDeprecatedRules": []
+  },
+  {
+    "filePath": "C:\\Users\\nagir\\diskframe\\run-prettier.js",
+    "messages": [
+      {
+        "ruleId": "@typescript-eslint/no-require-imports",
+        "severity": 2,
+        "message": "A `require()` style import is forbidden.",
+        "line": 1,
+        "column": 22,
+        "nodeType": "CallExpression",
+        "messageId": "noRequireImports",
+        "endLine": 1,
+        "endColumn": 46
+      },
+      {
+        "ruleId": "@typescript-eslint/no-unused-vars",
+        "severity": 2,
+        "message": "'path' is assigned a value but never used.",
+        "line": 2,
+        "column": 7,
+        "nodeType": "Identifier",
+        "messageId": "unusedVar",
+        "endLine": 2,
+        "endColumn": 11
+      },
+      {
+        "ruleId": "@typescript-eslint/no-require-imports",
+        "severity": 2,
+        "message": "A `require()` style import is forbidden.",
+        "line": 2,
+        "column": 14,
+        "nodeType": "CallExpression",
+        "messageId": "noRequireImports",
+        "endLine": 2,
+        "endColumn": 29
+      },
+      {
+        "ruleId": "prettier/prettier",
+        "severity": 1,
+        "message": "Replace `f` with `(f)`",
+        "line": 13,
+        "column": 15,
+        "nodeType": null,
+        "messageId": "replace",
+        "endLine": 13,
+        "endColumn": 16,
+        "fix": { "range": [269, 270], "text": "(f)" }
+      }
+    ],
+    "suppressedMessages": [],
+    "errorCount": 3,
+    "fatalErrorCount": 0,
+    "warningCount": 1,
+    "fixableErrorCount": 0,
+    "fixableWarningCount": 1,
+    "source": "const { execSync } = require('child_process')\nconst path = require('path')\n\nconst files = [\n  'src/renderer/src/App.tsx',\n  'src/main/index.ts',\n  'src/main/scanner.ts',\n  'src/preload/index.ts',\n  'src/preload/index.d.ts',\n  'electron.vite.config.ts'\n]\n\nfiles.forEach(f => {\n  try {\n    execSync(`node node_modules/prettier/bin/prettier.cjs --write \"${f}\"`, {\n      cwd: __dirname,\n      stdio: 'inherit'\n    })\n    console.log('✓', f)\n  } catch (e) {\n    console.error('✗', f, e.message)\n  }\n})\n",
+    "usedDeprecatedRules": []
+  },
+  {
+    "filePath": "C:\\Users\\nagir\\diskframe\\src\\main\\index.ts",
+    "messages": [],
+    "suppressedMessages": [],
+    "errorCount": 0,
+    "fatalErrorCount": 0,
+    "warningCount": 0,
+    "fixableErrorCount": 0,
+    "fixableWarningCount": 0,
+    "usedDeprecatedRules": []
+  },
+  {
+    "filePath": "C:\\Users\\nagir\\diskframe\\src\\main\\scanner.ts",
+    "messages": [],
+    "suppressedMessages": [],
+    "errorCount": 0,
+    "fatalErrorCount": 0,
+    "warningCount": 0,
+    "fixableErrorCount": 0,
+    "fixableWarningCount": 0,
+    "usedDeprecatedRules": []
+  },
+  {
+    "filePath": "C:\\Users\\nagir\\diskframe\\src\\preload\\index.d.ts",
+    "messages": [],
+    "suppressedMessages": [],
+    "errorCount": 0,
+    "fatalErrorCount": 0,
+    "warningCount": 0,
+    "fixableErrorCount": 0,
+    "fixableWarningCount": 0,
+    "usedDeprecatedRules": []
+  },
+  {
+    "filePath": "C:\\Users\\nagir\\diskframe\\src\\preload\\index.ts",
+    "messages": [],
+    "suppressedMessages": [],
+    "errorCount": 0,
+    "fatalErrorCount": 0,
+    "warningCount": 0,
+    "fixableErrorCount": 0,
+    "fixableWarningCount": 0,
+    "usedDeprecatedRules": []
+  },
+  {
+    "filePath": "C:\\Users\\nagir\\diskframe\\src\\renderer\\src\\App.tsx",
+    "messages": [],
+    "suppressedMessages": [
+      {
+        "ruleId": "react-hooks/exhaustive-deps",
+        "severity": 1,
+        "message": "React Hook useEffect has missing dependencies: 'onClose', 'onNext', and 'onPrev'. Either include them or remove the dependency array. If 'onClose' changes too often, find the parent component that defines it and wrap that definition in useCallback.",
+        "line": 418,
+        "column": 6,
+        "nodeType": "ArrayExpression",
+        "endLine": 418,
+        "endColumn": 17,
+        "suggestions": [
+          {
+            "desc": "Update the dependencies array to be: [file.path, onClose, onNext, onPrev]",
+            "fix": { "range": [12154, 12165], "text": "[file.path, onClose, onNext, onPrev]" }
+          }
+        ],
+        "suppressions": [{ "kind": "directive", "justification": "" }]
+      }
+    ],
+    "errorCount": 0,
+    "fatalErrorCount": 0,
+    "warningCount": 0,
+    "fixableErrorCount": 0,
+    "fixableWarningCount": 0,
+    "usedDeprecatedRules": []
+  },
+  {
+    "filePath": "C:\\Users\\nagir\\diskframe\\src\\renderer\\src\\components\\Versions.tsx",
+    "messages": [],
+    "suppressedMessages": [],
+    "errorCount": 0,
+    "fatalErrorCount": 0,
+    "warningCount": 0,
+    "fixableErrorCount": 0,
+    "fixableWarningCount": 0,
+    "usedDeprecatedRules": []
+  },
+  {
+    "filePath": "C:\\Users\\nagir\\diskframe\\src\\renderer\\src\\env.d.ts",
+    "messages": [],
+    "suppressedMessages": [],
+    "errorCount": 0,
+    "fatalErrorCount": 0,
+    "warningCount": 0,
+    "fixableErrorCount": 0,
+    "fixableWarningCount": 0,
+    "usedDeprecatedRules": []
+  },
+  {
+    "filePath": "C:\\Users\\nagir\\diskframe\\src\\renderer\\src\\main.tsx",
+    "messages": [],
+    "suppressedMessages": [],
+    "errorCount": 0,
+    "fatalErrorCount": 0,
+    "warningCount": 0,
+    "fixableErrorCount": 0,
+    "fixableWarningCount": 0,
+    "usedDeprecatedRules": []
+  },
+  {
+    "filePath": "C:\\Users\\nagir\\diskframe\\test.js",
+    "messages": [
+      {
+        "ruleId": "prettier/prettier",
+        "severity": 1,
+        "message": "Delete `␍`",
+        "line": 1,
+        "column": 59,
+        "nodeType": null,
+        "messageId": "delete",
+        "endLine": 1,
+        "endColumn": 60,
+        "fix": { "range": [58, 59], "text": "" }
+      },
+      {
+        "ruleId": "prettier/prettier",
+        "severity": 1,
+        "message": "Delete `;␍`",
+        "line": 2,
+        "column": 25,
+        "nodeType": null,
+        "messageId": "delete",
+        "endLine": 2,
+        "endColumn": 27,
+        "fix": { "range": [84, 86], "text": "" }
+      },
+      {
+        "ruleId": "prettier/prettier",
+        "severity": 1,
+        "message": "Delete `;␍`",
+        "line": 3,
+        "column": 29,
+        "nodeType": null,
+        "messageId": "delete",
+        "endLine": 3,
+        "endColumn": 31,
+        "fix": { "range": [115, 117], "text": "" }
+      },
+      {
+        "ruleId": "prettier/prettier",
+        "severity": 1,
+        "message": "Delete `;␍`",
+        "line": 4,
+        "column": 14,
+        "nodeType": null,
+        "messageId": "delete",
+        "endLine": 4,
+        "endColumn": 16,
+        "fix": { "range": [131, 133], "text": "" }
+      },
+      {
+        "ruleId": "prettier/prettier",
+        "severity": 1,
+        "message": "Delete `␍`",
+        "line": 5,
+        "column": 21,
+        "nodeType": null,
+        "messageId": "delete",
+        "endLine": 5,
+        "endColumn": 22,
+        "fix": { "range": [154, 155], "text": "" }
+      },
+      {
+        "ruleId": "prettier/prettier",
+        "severity": 1,
+        "message": "Delete `␍`",
+        "line": 6,
+        "column": 8,
+        "nodeType": null,
+        "messageId": "delete",
+        "endLine": 6,
+        "endColumn": 9,
+        "fix": { "range": [163, 164], "text": "" }
+      },
+      {
+        "ruleId": "prettier/prettier",
+        "severity": 1,
+        "message": "Delete `;␍`",
+        "line": 7,
+        "column": 65,
+        "nodeType": null,
+        "messageId": "delete",
+        "endLine": 7,
+        "endColumn": 67,
+        "fix": { "range": [229, 231], "text": "" }
+      },
+      {
+        "ruleId": "prettier/prettier",
+        "severity": 1,
+        "message": "Delete `␍`",
+        "line": 8,
+        "column": 31,
+        "nodeType": null,
+        "messageId": "delete",
+        "endLine": 8,
+        "endColumn": 32,
+        "fix": { "range": [262, 263], "text": "" }
+      },
+      {
+        "ruleId": "prettier/prettier",
+        "severity": 1,
+        "message": "Replace `e.isFile()·&&·['.jpg','.jpeg','.png','.mp4','.mov'].includes(path.extname(e.name).toLowerCase()))·{␍` with `⏎········e.isFile()·&&⏎········['.jpg',·'.jpeg',·'.png',·'.mp4',·'.mov'].includes(path.extname(e.name).toLowerCase())⏎······)·{`",
+        "line": 9,
+        "column": 11,
+        "nodeType": null,
+        "messageId": "replace",
+        "endLine": 9,
+        "endColumn": 111,
+        "fix": {
+          "range": [274, 374],
+          "text": "\n        e.isFile() &&\n        ['.jpg', '.jpeg', '.png', '.mp4', '.mov'].includes(path.extname(e.name).toLowerCase())\n      ) {"
+        }
+      },
+      {
+        "ruleId": "prettier/prettier",
+        "severity": 1,
+        "message": "Delete `;␍`",
+        "line": 10,
+        "column": 16,
+        "nodeType": null,
+        "messageId": "delete",
+        "endLine": 10,
+        "endColumn": 18,
+        "fix": { "range": [390, 392], "text": "" }
+      },
+      {
+        "ruleId": "prettier/prettier",
+        "severity": 1,
+        "message": "Delete `;␍`",
+        "line": 11,
+        "column": 60,
+        "nodeType": null,
+        "messageId": "delete",
+        "endLine": 11,
+        "endColumn": 62,
+        "fix": { "range": [452, 454], "text": "" }
+      },
+      {
+        "ruleId": "prettier/prettier",
+        "severity": 1,
+        "message": "Replace `e.isDirectory()·&&·!['Windows','Program·Files','AppData','node_modules'].includes(e.name))·{␍` with `⏎········e.isDirectory()·&&⏎········!['Windows',·'Program·Files',·'AppData',·'node_modules'].includes(e.name)⏎······)·{`",
+        "line": 12,
+        "column": 18,
+        "nodeType": null,
+        "messageId": "replace",
+        "endLine": 12,
+        "endColumn": 111,
+        "fix": {
+          "range": [472, 565],
+          "text": "\n        e.isDirectory() &&\n        !['Windows', 'Program Files', 'AppData', 'node_modules'].includes(e.name)\n      ) {"
+        }
+      },
+      {
+        "ruleId": "prettier/prettier",
+        "severity": 1,
+        "message": "Replace `·walk(path.join(dir,·e.name));·}·catch·{·/*·ignore·*/·}␍` with `⏎··········walk(path.join(dir,·e.name))⏎········}·catch·{⏎··········/*·ignore·*/⏎········}`",
+        "line": 13,
+        "column": 14,
+        "nodeType": null,
+        "messageId": "replace",
+        "endLine": 13,
+        "endColumn": 70,
+        "fix": {
+          "range": [579, 635],
+          "text": "\n          walk(path.join(dir, e.name))\n        } catch {\n          /* ignore */\n        }"
+        }
+      },
+      {
+        "ruleId": "prettier/prettier",
+        "severity": 1,
+        "message": "Delete `␍`",
+        "line": 14,
+        "column": 8,
+        "nodeType": null,
+        "messageId": "delete",
+        "endLine": 14,
+        "endColumn": 9,
+        "fix": { "range": [643, 644], "text": "" }
+      },
+      {
+        "ruleId": "prettier/prettier",
+        "severity": 1,
+        "message": "Delete `␍`",
+        "line": 15,
+        "column": 6,
+        "nodeType": null,
+        "messageId": "delete",
+        "endLine": 15,
+        "endColumn": 7,
+        "fix": { "range": [650, 651], "text": "" }
+      },
+      {
+        "ruleId": "prettier/prettier",
+        "severity": 1,
+        "message": "Replace `·/*·ignore·*/·}␍` with `⏎····/*·ignore·*/⏎··}`",
+        "line": 16,
+        "column": 12,
+        "nodeType": null,
+        "messageId": "replace",
+        "endLine": 16,
+        "endColumn": 28,
+        "fix": { "range": [663, 679], "text": "\n    /* ignore */\n  }" }
+      },
+      {
+        "ruleId": "prettier/prettier",
+        "severity": 1,
+        "message": "Delete `␍`",
+        "line": 17,
+        "column": 2,
+        "nodeType": null,
+        "messageId": "delete",
+        "endLine": 17,
+        "endColumn": 3,
+        "fix": { "range": [681, 682], "text": "" }
+      },
+      {
+        "ruleId": "prettier/prettier",
+        "severity": 1,
+        "message": "Delete `;␍`",
+        "line": 18,
+        "column": 35,
+        "nodeType": null,
+        "messageId": "delete",
+        "endLine": 18,
+        "endColumn": 37,
+        "fix": { "range": [717, 719], "text": "" }
+      },
+      {
+        "ruleId": "prettier/prettier",
+        "severity": 1,
+        "message": "Delete `;␍`",
+        "line": 19,
+        "column": 36,
+        "nodeType": null,
+        "messageId": "delete",
+        "endLine": 19,
+        "endColumn": 38,
+        "fix": { "range": [755, 757], "text": "" }
+      },
+      {
+        "ruleId": "prettier/prettier",
+        "severity": 1,
+        "message": "Delete `;␍`",
+        "line": 20,
+        "column": 36,
+        "nodeType": null,
+        "messageId": "delete",
+        "endLine": 20,
+        "endColumn": 38,
+        "fix": { "range": [793, 795], "text": "" }
+      },
+      {
+        "ruleId": "prettier/prettier",
+        "severity": 1,
+        "message": "Replace `;` with `⏎`",
+        "line": 21,
+        "column": 35,
+        "nodeType": null,
+        "messageId": "replace",
+        "endLine": 21,
+        "endColumn": 36,
+        "fix": { "range": [830, 831], "text": "\n" }
+      }
+    ],
+    "suppressedMessages": [
+      {
+        "ruleId": "@typescript-eslint/no-require-imports",
+        "severity": 2,
+        "message": "A `require()` style import is forbidden.",
+        "line": 2,
+        "column": 12,
+        "nodeType": "CallExpression",
+        "messageId": "noRequireImports",
+        "endLine": 2,
+        "endColumn": 25,
+        "suppressions": [{ "kind": "directive", "justification": "" }]
+      },
+      {
+        "ruleId": "@typescript-eslint/no-require-imports",
+        "severity": 2,
+        "message": "A `require()` style import is forbidden.",
+        "line": 3,
+        "column": 14,
+        "nodeType": "CallExpression",
+        "messageId": "noRequireImports",
+        "endLine": 3,
+        "endColumn": 29,
+        "suppressions": [{ "kind": "directive", "justification": "" }]
+      }
+    ],
+    "errorCount": 0,
+    "fatalErrorCount": 0,
+    "warningCount": 21,
+    "fixableErrorCount": 0,
+    "fixableWarningCount": 21,
+    "source": "/* eslint-disable @typescript-eslint/no-require-imports */\r\nconst fs = require('fs');\r\nconst path = require('path');\r\nlet count = 0;\r\nfunction walk(dir) {\r\n  try {\r\n    const entries = fs.readdirSync(dir, { withFileTypes: true });\r\n    for (const e of entries) {\r\n      if (e.isFile() && ['.jpg','.jpeg','.png','.mp4','.mov'].includes(path.extname(e.name).toLowerCase())) {\r\n        count++;\r\n        if (count <= 5) console.log(path.join(dir, e.name));\r\n      } else if (e.isDirectory() && !['Windows','Program Files','AppData','node_modules'].includes(e.name)) {\r\n        try { walk(path.join(dir, e.name)); } catch { /* ignore */ }\r\n      }\r\n    }\r\n  } catch { /* ignore */ }\r\n}\r\nwalk('C:\\\\Users\\\\nagir\\\\Pictures');\r\nwalk('C:\\\\Users\\\\nagir\\\\Downloads');\r\nwalk('C:\\\\Users\\\\nagir\\\\Documents');\r\nconsole.log('Total found:', count);",
+    "usedDeprecatedRules": []
+  }
+]

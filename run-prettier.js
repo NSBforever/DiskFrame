@@ -10,7 +10,7 @@ const files = [
   'electron.vite.config.ts'
 ]
 
-files.forEach(f => {
+files.forEach((f) => {
   try {
     execSync(`node node_modules/prettier/bin/prettier.cjs --write "${f}"`, {
       cwd: __dirname,

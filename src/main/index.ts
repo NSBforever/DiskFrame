@@ -7,34 +7,60 @@ import icon from '../../resources/icon.png?asset'
 import { getDiskInfo } from 'node-disk-info'
 import ffmpegPath from 'ffmpeg-static'
 import {
-  scanDrive, getGroupedFiles, toggleFavourite, getFavourites,
-  getFileCount, getFilesWithoutThumbs, generateThumbForFile, updateThumb,
+  scanDrive,
+  getGroupedFiles,
+  toggleFavourite,
+  getFavourites,
+  getFileCount,
+  getFilesWithoutThumbs,
+  generateThumbForFile,
+  updateThumb,
   deleteMultipleToRecycleBin,
-  hideFile, unhideFile,
-  getPin, setPin, verifyPin,
-  getSkipConfirm, setSkipConfirm
+  hideFile,
+  unhideFile,
+  getPin,
+  setPin,
+  verifyPin,
+  getSkipConfirm,
+  setSkipConfirm
 } from './scanner'
 
-const ffmpegExe = ffmpegPath
-  ? ffmpegPath.replace('app.asar', 'app.asar.unpacked')
-  : 'ffmpeg'
+const ffmpegExe = ffmpegPath ? ffmpegPath.replace('app.asar', 'app.asar.unpacked') : 'ffmpeg'
 
 let mainWindow: BrowserWindow
 let driveInterval: ReturnType<typeof setInterval> | null = null
 
-protocol.registerSchemesAsPrivileged([{
-  scheme: 'media',
-  privileges: { secure: true, supportFetchAPI: true, bypassCSP: true, stream: true, corsEnabled: true }
-}])
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'media',
+    privileges: {
+      secure: true,
+      supportFetchAPI: true,
+      bypassCSP: true,
+      stream: true,
+      corsEnabled: true
+    }
+  }
+])
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
-    width: 1280, height: 800, show: false, autoHideMenuBar: true,
+    width: 1280,
+    height: 800,
+    show: false,
+    autoHideMenuBar: true,
     ...(process.platform === 'linux' ? { icon } : {}),
-    webPreferences: { preload: join(__dirname, '../preload/index.js'), sandbox: false, webSecurity: false }
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      sandbox: false,
+      webSecurity: false
+    }
   })
   mainWindow.on('ready-to-show', () => mainWindow.show())
-  mainWindow.webContents.setWindowOpenHandler((details) => { shell.openExternal(details.url); return { action: 'deny' } })
+  mainWindow.webContents.setWindowOpenHandler((details) => {
+    shell.openExternal(details.url)
+    return { action: 'deny' }
+  })
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
@@ -45,14 +71,17 @@ function createWindow(): void {
 async function sendDrives(): Promise<void> {
   try {
     const disks = await getDiskInfo()
-    const drives = disks.map(disk => ({
-      name: disk.mounted, filesystem: disk.filesystem,
+    const drives = disks.map((disk) => ({
+      name: disk.mounted,
+      filesystem: disk.filesystem,
       total: Math.round(disk.blocks / 1024 / 1024 / 1024),
       used: Math.round((disk.blocks - disk.available) / 1024 / 1024 / 1024),
       free: Math.round(disk.available / 1024 / 1024 / 1024)
     }))
     if (mainWindow) mainWindow.webContents.send('drives-updated', drives)
-  } catch (err) { console.error('Error getting disk info:', err) }
+  } catch (err) {
+    console.error('Error getting disk info:', err)
+  }
 }
 
 async function generateThumbsForDrive(drivePath: string): Promise<void> {
@@ -74,17 +103,24 @@ app.whenReady().then(() => {
   })
 
   electronApp.setAppUserModelId('com.electron')
-  app.on('browser-window-created', (_, window) => { optimizer.watchWindowShortcuts(window) })
+  app.on('browser-window-created', (_, window) => {
+    optimizer.watchWindowShortcuts(window)
+  })
 
   // ── DRIVE / SCAN ──
   ipcMain.on('get-drives', () => sendDrives())
-  ipcMain.on('reveal-file', (_event, filePath: string) => { shell.showItemInFolder(filePath) })
-  ipcMain.on('open-file', (_event, filePath: string) => { shell.openPath(filePath) })
+  ipcMain.on('reveal-file', (_event, filePath: string) => {
+    shell.showItemInFolder(filePath)
+  })
+  ipcMain.on('open-file', (_event, filePath: string) => {
+    shell.openPath(filePath)
+  })
 
   ipcMain.on('scan-drive', async (_event, drivePath: string) => {
     const existing = getFileCount(drivePath)
     if (existing > 0) {
-      if (mainWindow) mainWindow.webContents.send('scan-complete', { count: existing, drive: drivePath })
+      if (mainWindow)
+        mainWindow.webContents.send('scan-complete', { count: existing, drive: drivePath })
       generateThumbsForDrive(drivePath)
       return
     }
@@ -94,13 +130,15 @@ app.whenReady().then(() => {
     // Pass 1 completes fast (sync walk, no EXIF) — sends scan-complete immediately
     // Pass 2 (EXIF enrichment) runs in background, sends exif-progress
     await scanDrive(
-      drivePath, scanPath,
+      drivePath,
+      scanPath,
       (progress) => {
         count = progress
         if (mainWindow) mainWindow.webContents.send('scan-progress', { count, drive: drivePath })
       },
       (enriched, total) => {
-        if (mainWindow) mainWindow.webContents.send('exif-progress', { enriched, total, drive: drivePath })
+        if (mainWindow)
+          mainWindow.webContents.send('exif-progress', { enriched, total, drive: drivePath })
       }
     )
     if (mainWindow) mainWindow.webContents.send('scan-complete', { count, drive: drivePath })
@@ -112,13 +150,15 @@ app.whenReady().then(() => {
     const scanPath = drivePath === 'C:' ? homedir() : drivePath
     let count = 0
     await scanDrive(
-      drivePath, scanPath,
+      drivePath,
+      scanPath,
       (progress) => {
         count = progress
         if (mainWindow) mainWindow.webContents.send('scan-progress', { count, drive: drivePath })
       },
       (enriched, total) => {
-        if (mainWindow) mainWindow.webContents.send('exif-progress', { enriched, total, drive: drivePath })
+        if (mainWindow)
+          mainWindow.webContents.send('exif-progress', { enriched, total, drive: drivePath })
       }
     )
     if (mainWindow) mainWindow.webContents.send('scan-complete', { count, drive: drivePath })
@@ -147,7 +187,10 @@ app.whenReady().then(() => {
 
   // ── SKIP CONFIRM PREF ──
   ipcMain.handle('get-skip-confirm', () => getSkipConfirm())
-  ipcMain.handle('set-skip-confirm', (_event, skip: boolean) => { setSkipConfirm(skip); return true })
+  ipcMain.handle('set-skip-confirm', (_event, skip: boolean) => {
+    setSkipConfirm(skip)
+    return true
+  })
 
   // ── VAULT / HIDE ──
   ipcMain.handle('hide-files', (_event, filePaths: string[]) => {
@@ -164,7 +207,10 @@ app.whenReady().then(() => {
   })
 
   ipcMain.handle('get-pin', () => getPin())
-  ipcMain.handle('set-pin', (_event, pin: string) => { setPin(pin); return true })
+  ipcMain.handle('set-pin', (_event, pin: string) => {
+    setPin(pin)
+    return true
+  })
   ipcMain.handle('verify-pin', (_event, pin: string) => verifyPin(pin))
 
   // ── TRANSCODE (improved: parse duration, reliable spawn) ──
@@ -181,19 +227,39 @@ app.whenReady().then(() => {
     }
 
     // Remove partial output if exists
-    if (fs.existsSync(outPath)) { try { fs.unlinkSync(outPath) } catch {} }
+    if (fs.existsSync(outPath)) {
+      try {
+        fs.unlinkSync(outPath)
+      } catch {}
+    }
 
     const ff = spawn(ffmpegExe, [
-      '-i', inputPath,
-      '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '32',
-      '-vf', 'scale=trunc(iw/4)*2:trunc(ih/4)*2',
-      '-c:a', 'aac', '-b:a', '64k',
-      '-threads', '2',
-      '-tune', 'fastdecode',
-      '-bufsize', '1M',
-      '-maxrate', '4M',
-      '-movflags', '+faststart',
-      '-y', outPath
+      '-i',
+      inputPath,
+      '-c:v',
+      'libx264',
+      '-preset',
+      'ultrafast',
+      '-crf',
+      '32',
+      '-vf',
+      'scale=trunc(iw/4)*2:trunc(ih/4)*2',
+      '-c:a',
+      'aac',
+      '-b:a',
+      '64k',
+      '-threads',
+      '2',
+      '-tune',
+      'fastdecode',
+      '-bufsize',
+      '1M',
+      '-maxrate',
+      '4M',
+      '-movflags',
+      '+faststart',
+      '-y',
+      outPath
     ])
 
     let totalSecs = 0
@@ -207,15 +273,18 @@ app.whenReady().then(() => {
       if (!totalSecs) {
         const durMatch = stderrBuf.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/)
         if (durMatch) {
-          totalSecs = parseInt(durMatch[1]) * 3600 + parseInt(durMatch[2]) * 60 + parseFloat(durMatch[3])
+          totalSecs =
+            parseInt(durMatch[1]) * 3600 + parseInt(durMatch[2]) * 60 + parseFloat(durMatch[3])
         }
       }
 
       // Parse current time
       const timeMatch = str.match(/time=(\d+):(\d+):(\d+(?:\.\d+)?)/)
       if (timeMatch) {
-        const secs = parseInt(timeMatch[1]) * 3600 + parseInt(timeMatch[2]) * 60 + parseFloat(timeMatch[3])
-        if (mainWindow) mainWindow.webContents.send('transcode-progress', { inputPath, secs, totalSecs })
+        const secs =
+          parseInt(timeMatch[1]) * 3600 + parseInt(timeMatch[2]) * 60 + parseFloat(timeMatch[3])
+        if (mainWindow)
+          mainWindow.webContents.send('transcode-progress', { inputPath, secs, totalSecs })
       }
     })
 
@@ -236,7 +305,9 @@ app.whenReady().then(() => {
 
   createWindow()
   driveInterval = setInterval(() => sendDrives(), 3000)
-  app.on('activate', function () { if (BrowserWindow.getAllWindows().length === 0) createWindow() })
+  app.on('activate', function () {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  })
 })
 
 app.on('window-all-closed', () => {
