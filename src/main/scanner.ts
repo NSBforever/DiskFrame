@@ -47,7 +47,8 @@ db.exec(`
     thumb TEXT,
     locked INTEGER DEFAULT 0,
     hidden INTEGER DEFAULT 0,
-    vault_path TEXT
+    vault_path TEXT,
+    trashed_at TEXT
   );
 
   CREATE TABLE IF NOT EXISTS vault_pin (
@@ -68,6 +69,7 @@ if (!cols.includes('locked'))
 if (!cols.includes('hidden'))
   db.prepare('ALTER TABLE files ADD COLUMN hidden INTEGER DEFAULT 0').run()
 if (!cols.includes('vault_path')) db.prepare('ALTER TABLE files ADD COLUMN vault_path TEXT').run()
+if (!cols.includes('trashed_at')) db.prepare('ALTER TABLE files ADD COLUMN trashed_at TEXT').run()
 
 export interface ScannedFile {
   path: string
@@ -85,6 +87,7 @@ export interface ScannedFile {
   locked: number
   hidden: number
   vault_path: string | null
+  trashed_at: string | null
 }
 
 // ─── PIN MANAGEMENT ───────────────────────────────────────────────────────────
@@ -181,13 +184,126 @@ export function deleteMultipleToRecycleBin(filePaths: string[]): {
   return { success, failed }
 }
 
-// ─── GROUPED FILES (exclude hidden) ──────────────────────────────────────────
+// ─── TRASH / RECYCLE BIN LIFECYCLE ───────────────────────────────────────────
+export function getTrashedFiles(): ScannedFile[] {
+  return db
+    .prepare('SELECT * FROM files WHERE trashed_at IS NOT NULL ORDER BY trashed_at DESC')
+    .all() as ScannedFile[]
+}
+
+export function getTrashCount(): number {
+  const row = db.prepare('SELECT COUNT(*) as count FROM files WHERE trashed_at IS NOT NULL').get() as { count: number }
+  return row?.count ?? 0
+}
+
+export function softDeleteFiles(filePaths: string[]): void {
+  const stmt = db.prepare('UPDATE files SET trashed_at = ? WHERE path = ?')
+  const now = new Date().toISOString()
+  const tx = db.transaction(() => {
+    for (const p of filePaths) {
+      stmt.run(now, p)
+    }
+  })
+  tx()
+}
+
+export function restoreFiles(filePaths: string[]): void {
+  const stmt = db.prepare('UPDATE files SET trashed_at = NULL WHERE path = ?')
+  const tx = db.transaction(() => {
+    for (const p of filePaths) {
+      stmt.run(p)
+    }
+  })
+  tx()
+}
+
+export function deleteFilesPermanently(filePaths: string[]): { success: string[]; failed: string[] } {
+  const success: string[] = []
+  const failed: string[] = []
+  for (const p of filePaths) {
+    try {
+      const file = db.prepare('SELECT * FROM files WHERE path = ?').get(p) as ScannedFile | undefined
+      if (file) {
+        if (fs.existsSync(p)) {
+          fs.unlinkSync(p)
+        }
+        if (file.vault_path && fs.existsSync(file.vault_path)) {
+          fs.unlinkSync(file.vault_path)
+        }
+        if (file.thumb && fs.existsSync(file.thumb)) {
+          fs.unlinkSync(file.thumb)
+        }
+      }
+      db.prepare('DELETE FROM files WHERE path = ?').run(p)
+      success.push(p)
+    } catch (e) {
+      console.error('[deletePermanent] failed for', p, e)
+      failed.push(p)
+    }
+  }
+  return { success, failed }
+}
+
+export function emptyTrash(): { success: boolean; count: number } {
+  const toPurge = db.prepare('SELECT * FROM files WHERE trashed_at IS NOT NULL').all() as ScannedFile[]
+  let count = 0
+  for (const file of toPurge) {
+    try {
+      if (fs.existsSync(file.path)) {
+        fs.unlinkSync(file.path)
+      }
+      if (file.vault_path && fs.existsSync(file.vault_path)) {
+        fs.unlinkSync(file.vault_path)
+      }
+      if (file.thumb && fs.existsSync(file.thumb)) {
+        fs.unlinkSync(file.thumb)
+      }
+      db.prepare('DELETE FROM files WHERE path = ?').run(file.path)
+      count++
+    } catch (err) {
+      console.error(`[emptyTrash] Failed to permanently delete ${file.path}:`, err)
+    }
+  }
+  return { success: true, count }
+}
+
+export function autoPurgeTrash(): void {
+  const cutoff = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString()
+  const toPurge = db.prepare('SELECT * FROM files WHERE trashed_at IS NOT NULL AND trashed_at < ?').all(cutoff) as ScannedFile[]
+  
+  if (toPurge.length > 0) {
+    console.log(`[auto-purge] Purging ${toPurge.length} files older than 30 days...`)
+    let count = 0
+    for (const file of toPurge) {
+      try {
+        if (fs.existsSync(file.path)) {
+          fs.unlinkSync(file.path)
+        }
+        if (file.vault_path && fs.existsSync(file.vault_path)) {
+          fs.unlinkSync(file.vault_path)
+        }
+        if (file.thumb && fs.existsSync(file.thumb)) {
+          fs.unlinkSync(file.thumb)
+        }
+        db.prepare('DELETE FROM files WHERE path = ?').run(file.path)
+        count++
+      } catch (err) {
+        console.error(`[auto-purge] Failed to permanently delete ${file.path}:`, err)
+      }
+    }
+    console.log(`[auto-purge] Purged ${count} files successfully.`)
+  } else {
+    console.log('[auto-purge] No files older than 30 days to purge.')
+  }
+}
+
+// ─── GROUPED FILES (exclude hidden and trashed) ──────────────────────────────
 export function getGroupedFiles(drivePath?: string): Record<string, ScannedFile[]> {
   const files = drivePath
     ? (db
-        .prepare('SELECT * FROM files WHERE drive = ? AND hidden = 0 ORDER BY date DESC')
+        .prepare('SELECT * FROM files WHERE drive = ? AND hidden = 0 AND trashed_at IS NULL ORDER BY date DESC')
         .all(drivePath) as ScannedFile[])
-    : (db.prepare('SELECT * FROM files WHERE hidden = 0 ORDER BY date DESC').all() as ScannedFile[])
+    : (db.prepare('SELECT * FROM files WHERE hidden = 0 AND trashed_at IS NULL ORDER BY date DESC').all() as ScannedFile[])
 
   const grouped: Record<string, ScannedFile[]> = {}
   for (const file of files) {
@@ -202,7 +318,7 @@ export function getGroupedFiles(drivePath?: string): Record<string, ScannedFile[
 
 export function getFavourites(): ScannedFile[] {
   return db
-    .prepare('SELECT * FROM files WHERE favourited = 1 AND hidden = 0 ORDER BY date DESC')
+    .prepare('SELECT * FROM files WHERE favourited = 1 AND hidden = 0 AND trashed_at IS NULL ORDER BY date DESC')
     .all() as ScannedFile[]
 }
 
@@ -215,17 +331,17 @@ export function toggleFavourite(filePath: string): void {
 export function getFileCount(drivePath?: string): number {
   if (drivePath) {
     const row = db
-      .prepare('SELECT COUNT(*) as count FROM files WHERE drive = ?')
+      .prepare('SELECT COUNT(*) as count FROM files WHERE drive = ? AND trashed_at IS NULL')
       .get(drivePath) as { count: number }
     return row.count
   }
-  const row = db.prepare('SELECT COUNT(*) as count FROM files').get() as { count: number }
+  const row = db.prepare('SELECT COUNT(*) as count FROM files WHERE trashed_at IS NULL').get() as { count: number }
   return row.count
 }
 
 export function getFilesWithoutThumbs(drivePath: string): ScannedFile[] {
   return db
-    .prepare('SELECT * FROM files WHERE drive = ? AND (thumb IS NULL OR thumb = "")')
+    .prepare('SELECT * FROM files WHERE drive = ? AND (thumb IS NULL OR thumb = "") AND trashed_at IS NULL')
     .all(drivePath) as ScannedFile[]
 }
 

@@ -31,6 +31,7 @@ interface MediaViewerProps {
   onNext: () => void
   onPrev: () => void
   onDelete: (path: string) => void
+  rect?: DOMRect
 }
 
 export const MediaViewer: React.FC<MediaViewerProps> = ({
@@ -42,7 +43,8 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
   onClose,
   onNext,
   onPrev,
-  onDelete
+  onDelete,
+  rect
 }) => {
   const containerRef = useRef<HTMLDivElement>(null)
   const [imgDimensions, setImgDimensions] = useState<{ width: number; height: number } | null>(null)
@@ -52,6 +54,10 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [controlsVisible, setControlsVisible] = useState(true)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+
+  // Zoom-in / zoom-out transition animations
+  const [isOpening, setIsOpening] = useState(!!rect)
+  const [isClosing, setIsClosing] = useState(false)
 
   const lastMouseMoveRef = useRef(Date.now())
 
@@ -68,6 +74,25 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
     velocityRef,
     lastTimeRef
   } = useZoomPan(containerRef, imgDimensions)
+
+  // Trigger opening animation
+  useEffect(() => {
+    if (rect) {
+      setIsOpening(true)
+      const timer = setTimeout(() => {
+        setIsOpening(false)
+      }, 20)
+      return () => clearTimeout(timer)
+    }
+    return undefined
+  }, [rect])
+
+  const handleClose = useCallback(() => {
+    setIsClosing(true)
+    setTimeout(() => {
+      onClose()
+    }, 320)
+  }, [onClose])
 
   // Reset transforms when image file changes
   useEffect(() => {
@@ -89,13 +114,7 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
 
   const handleFirst = useCallback(() => {
     reset()
-    const first = list[0]
-    if (first && first.path !== file.path) {
-      // Find current index and trigger next/prev repeatedly or jump
-      // Since list is passed, we can navigate directly. To integrate with parent, we just jump index.
-      // We will handle jump in App.tsx by implementing index jumping. For now, we call Prev/Next.
-    }
-  }, [list, file, reset])
+  }, [reset])
 
   const handleLast = useCallback(() => {
     reset()
@@ -172,7 +191,7 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
     onPrev: handlePrev,
     onFirst: handleFirst,
     onLast: handleLast,
-    onClose,
+    onClose: handleClose,
     onZoomIn: () => zoomTo(scale + 0.5),
     onZoomOut: () => zoomTo(scale - 0.5),
     onZoomReset: reset,
@@ -241,11 +260,12 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
       const result = await window.electron.ipcRenderer.invoke('delete-files', [file.path]) as { success?: string[] }
       if (result && result.success && result.success.length > 0) {
         onDelete(file.path)
+        handleClose()
       } else {
-        alert('Failed to delete file.')
+        alert('Failed to trash file.')
       }
     } catch (err) {
-      console.error('Delete error', err)
+      console.error('Trash error', err)
     }
   }
 
@@ -257,30 +277,73 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
     }
   }
 
+  // Calculate inline transition styles
+  const animationStyle = (() => {
+    if (isOpening && rect) {
+      return {
+        position: 'fixed' as const,
+        top: rect.top,
+        left: rect.left,
+        width: rect.width,
+        height: rect.height,
+        background: 'rgba(10, 10, 12, 0)',
+        opacity: 0,
+        transform: 'scale(1)',
+        transition: 'all 0.35s cubic-bezier(0.22, 1, 0.36, 1)'
+      }
+    }
+    if (isClosing) {
+      return rect ? {
+        position: 'fixed' as const,
+        top: rect.top,
+        left: rect.left,
+        width: rect.width,
+        height: rect.height,
+        background: 'rgba(10, 10, 12, 0)',
+        opacity: 0,
+        transform: 'scale(0.8)',
+        transition: 'all 0.35s cubic-bezier(0.22, 1, 0.36, 1)'
+      } : {
+        position: 'fixed' as const,
+        inset: 0,
+        background: 'rgba(10, 10, 12, 0)',
+        opacity: 0,
+        transform: 'scale(0.95)',
+        transition: 'all 0.35s cubic-bezier(0.22, 1, 0.36, 1)'
+      }
+    }
+    return {
+      position: 'fixed' as const,
+      inset: 0,
+      background: 'rgba(10, 10, 12, 0.98)',
+      opacity: 1,
+      transform: 'scale(1)',
+      transition: 'all 0.35s cubic-bezier(0.22, 1, 0.36, 1)'
+    }
+  })()
+
   return (
     <div
       ref={containerRef}
       style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(0,0,0,0.98)',
         zIndex: 1000,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
         overflow: 'hidden',
-        userSelect: 'none'
+        userSelect: 'none',
+        ...animationStyle
       }}
     >
       {/* Top toolbar */}
-      {controlsVisible && (
+      {controlsVisible && !isOpening && !isClosing && (
         <MediaViewerToolbar
           fileName={file.name}
           filePath={file.path}
           isFav={isFav}
           onFav={() => onFav(file)}
           onReveal={() => onReveal(file)}
-          onClose={onClose}
+          onClose={handleClose}
           onRotateLeft={handleRotateLeft}
           onRotateRight={handleRotateRight}
           onFlip={handleFlip}
@@ -298,7 +361,7 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
       )}
 
       {/* Slide Navigation Left */}
-      {controlsVisible && list.indexOf(file) > 0 && (
+      {controlsVisible && !isOpening && !isClosing && list.indexOf(file) > 0 && (
         <div
           onClick={handlePrev}
           style={{
@@ -309,25 +372,27 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
             width: '44px',
             height: '44px',
             borderRadius: '50%',
-            background: 'rgba(255,255,255,0.08)',
-            border: '1px solid rgba(255,255,255,0.12)',
+            background: 'rgba(255,255,255,0.06)',
+            border: '1px solid rgba(255,255,255,0.1)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             cursor: 'pointer',
             fontSize: '24px',
-            color: '#fff',
+            color: '#f2f2f0',
             zIndex: 100,
             backdropFilter: 'blur(12px)',
-            transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)'
+            transition: 'all 0.3s cubic-bezier(0.22, 1, 0.36, 1)'
           }}
           onMouseEnter={(e) => {
-            e.currentTarget.style.background = 'rgba(255,255,255,0.18)'
+            e.currentTarget.style.background = 'rgba(255,255,255,0.15)'
             e.currentTarget.style.transform = 'translateY(-50%) scale(1.05)'
+            e.currentTarget.style.borderColor = '#e11d2e'
           }}
           onMouseLeave={(e) => {
-            e.currentTarget.style.background = 'rgba(255,255,255,0.08)'
+            e.currentTarget.style.background = 'rgba(255,255,255,0.06)'
             e.currentTarget.style.transform = 'translateY(-50%) scale(1)'
+            e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'
           }}
         >
           ‹
@@ -335,7 +400,7 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
       )}
 
       {/* Slide Navigation Right */}
-      {controlsVisible && list.indexOf(file) < list.length - 1 && (
+      {controlsVisible && !isOpening && !isClosing && list.indexOf(file) < list.length - 1 && (
         <div
           onClick={handleNext}
           style={{
@@ -346,25 +411,27 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
             width: '44px',
             height: '44px',
             borderRadius: '50%',
-            background: 'rgba(255,255,255,0.08)',
-            border: '1px solid rgba(255,255,255,0.12)',
+            background: 'rgba(255,255,255,0.06)',
+            border: '1px solid rgba(255,255,255,0.1)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             cursor: 'pointer',
             fontSize: '24px',
-            color: '#fff',
+            color: '#f2f2f0',
             zIndex: 100,
             backdropFilter: 'blur(12px)',
-            transition: 'all 0.2s cubic-bezier(0.16, 1, 0.3, 1)'
+            transition: 'all 0.3s cubic-bezier(0.22, 1, 0.36, 1)'
           }}
           onMouseEnter={(e) => {
-            e.currentTarget.style.background = 'rgba(255,255,255,0.18)'
+            e.currentTarget.style.background = 'rgba(255,255,255,0.15)'
             e.currentTarget.style.transform = 'translateY(-50%) scale(1.05)'
+            e.currentTarget.style.borderColor = '#e11d2e'
           }}
           onMouseLeave={(e) => {
-            e.currentTarget.style.background = 'rgba(255,255,255,0.08)'
+            e.currentTarget.style.background = 'rgba(255,255,255,0.06)'
             e.currentTarget.style.transform = 'translateY(-50%) scale(1)'
+            e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'
           }}
         >
           ›
@@ -375,13 +442,13 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
       <div
         onDoubleClick={handleDoubleClick}
         style={{
-          width: isInfoOpen ? 'calc(100% - 320px)' : '100%',
+          width: isInfoOpen && !isOpening && !isClosing ? 'calc(100% - 320px)' : '100%',
           height: '100%',
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
           transform: `translateX(${swipeOffset}px)`,
-          transition: swipeOffset === 0 ? 'width 0.3s cubic-bezier(0.16, 1, 0.3, 1)' : 'none'
+          transition: swipeOffset === 0 ? 'width 0.3s cubic-bezier(0.22, 1, 0.36, 1)' : 'none'
         }}
       >
         <ImageLoader
@@ -399,13 +466,13 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
       {/* EXIF Metadata Right Panel */}
       <MetadataPanel
         file={file}
-        isOpen={isInfoOpen}
+        isOpen={isInfoOpen && !isOpening && !isClosing}
         onClose={() => setIsInfoOpen(false)}
         naturalDimensions={imgDimensions}
       />
 
-      {/* Bottom Bar Info Overlay (Visible in non-fullscreen / non-EXIF open) */}
-      {controlsVisible && !isInfoOpen && (
+      {/* Bottom Bar Info Overlay */}
+      {controlsVisible && !isOpening && !isClosing && !isInfoOpen && (
         <div
           style={{
             position: 'absolute',
@@ -413,11 +480,11 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
             left: 0,
             right: 0,
             padding: '16px 20px',
-            background: 'linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.3) 70%, transparent 100%)',
+            background: 'linear-gradient(to top, rgba(10,10,12,0.9) 0%, rgba(10,10,12,0.3) 70%, transparent 100%)',
             display: 'flex',
             gap: '24px',
             fontSize: '11px',
-            color: '#8a8a9e',
+            color: '#8a8a8f',
             zIndex: 10,
             pointerEvents: 'none'
           }}
@@ -435,14 +502,14 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
         </div>
       )}
 
-      {/* Custom Recycle Bin Confirm Modal */}
+      {/* Custom Soft-Trash Confirm Modal */}
       {showDeleteConfirm && (
         <div
           onClick={() => setShowDeleteConfirm(false)}
           style={{
             position: 'absolute',
             inset: 0,
-            background: 'rgba(0,0,0,0.7)',
+            background: 'rgba(0,0,0,0.75)',
             backdropFilter: 'blur(8px)',
             display: 'flex',
             alignItems: 'center',
@@ -463,14 +530,14 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
               display: 'flex',
               flexDirection: 'column',
               gap: '20px',
-              animation: 'slideInUp 0.25s cubic-bezier(0.16, 1, 0.3, 1)'
+              animation: 'slideInUp 0.25s cubic-bezier(0.22, 1, 0.36, 1)'
             }}
           >
             <div style={{ fontSize: '16px', fontWeight: 600, color: '#ffffff' }}>
-              Move this file to Recycle Bin?
+              Move this file to Trash?
             </div>
-            <div style={{ fontSize: '12px', color: '#8a8a9e', lineHeight: 1.5 }}>
-              The file "{file.name}" will be moved to your operating system's Recycle Bin. You can restore it from there later if needed.
+            <div style={{ fontSize: '12px', color: '#8a8a8f', lineHeight: 1.5 }}>
+              The file "{file.name}" will be moved to DiskFrame Trash. It will be permanently deleted after 30 days.
             </div>
             <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '8px' }}>
               <button
@@ -486,13 +553,13 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
                 style={{
                   flex: 1,
                   justifyContent: 'center',
-                  background: '#ff4d4d',
-                  borderColor: '#ff4d4d',
+                  background: '#e11d2e',
+                  borderColor: '#e11d2e',
                   color: '#ffffff',
                   padding: '10px'
                 }}
               >
-                Move to Recycle Bin
+                Move to Trash
               </button>
             </div>
           </div>

@@ -156,7 +156,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
             width: '40px',
             height: '40px',
             border: '3px solid rgba(255,255,255,0.1)',
-            borderTop: '3px solid #6c6cff',
+            borderTop: '3px solid #e11d2e',
             borderRadius: '50%',
             animation: 'tileSpin 0.8s linear infinite'
           }}
@@ -179,49 +179,43 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
           }}
         >
           {imgError ? (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
-              <div style={{ fontSize: '48px' }}>🖼️</div>
-              <div style={{ fontSize: '13px', color: '#6060a0' }}>Cannot preview this image</div>
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
+              <div style={{ fontSize: '64px' }}>⚠️</div>
+              <div style={{ fontSize: '14px', color: '#8a8a8f' }}>Failed to load image</div>
             </div>
           ) : (
-            <div style={{ position: 'relative', display: 'block' }}>
-              {/* Blurred Thumbnail Placeholder (progressive enhancement) */}
-              {thumbSrc && !highResSrc && (
+            <>
+              {/* Blur placeholder thumb first */}
+              {loading && thumbSrc && (
                 <img
                   src={thumbSrc}
-                  alt="placeholder"
                   style={{
-                    maxWidth: '90vw',
-                    maxHeight: '86vh',
+                    position: 'absolute',
+                    maxWidth: '100%',
+                    maxHeight: '100%',
                     objectFit: 'contain',
-                    filter: 'blur(8px)',
-                    transform: 'scale(1.05)',
-                    display: 'block'
+                    filter: 'blur(10px)'
                   }}
                 />
               )}
-
-              {/* High Resolution Image */}
               {highResSrc && (
                 <img
                   src={highResSrc}
-                  alt={file.name}
                   style={{
-                    maxWidth: '90vw',
-                    maxHeight: '86vh',
+                    maxWidth: '100%',
+                    maxHeight: '100%',
                     objectFit: 'contain',
-                    display: 'block',
                     opacity: loading ? 0 : 1,
-                    transition: 'opacity 0.25s ease-in'
+                    transition: 'opacity 0.25s ease'
                   }}
                 />
               )}
-            </div>
+            </>
           )}
         </div>
       )}
 
-      {/* Render Video */}
+      {/* Render HTML5 Video */}
       {isVideo && (
         <div
           style={{
@@ -231,48 +225,41 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
             maxHeight: '100%',
             display: 'flex',
             alignItems: 'center',
-            justifyContent: 'center',
-            willChange: 'transform'
+            justifyContent: 'center'
           }}
         >
-          {isMp4 ? (
+          {isMp4 && !videoError ? (
             <video
               ref={videoRef}
-              key={file.path}
               src={mediaSrc}
               controls
               autoPlay
               onLoadedMetadata={handleVideoMetadata}
-              style={{ maxWidth: '90vw', maxHeight: '82vh', display: 'block', background: '#000', borderRadius: '8px' }}
-            />
-          ) : !videoError ? (
-            <video
-              ref={videoRef}
-              key={file.path}
-              controls
-              autoPlay
-              onLoadedMetadata={handleVideoMetadata}
               onError={() => setVideoError(true)}
-              style={{ maxWidth: '90vw', maxHeight: '82vh', display: 'block', background: '#000', borderRadius: '8px' }}
-            >
-              <source src={mediaSrc} type="video/mp4" />
-            </video>
+              style={{
+                maxWidth: '100%',
+                maxHeight: '100%',
+                objectFit: 'contain'
+              }}
+            />
           ) : (
+            /* Transcode trigger placeholder */
             <div
               style={{
                 display: 'flex',
                 flexDirection: 'column',
                 alignItems: 'center',
+                justifyContent: 'center',
                 gap: '16px',
                 padding: '40px',
-                background: '#141420',
-                borderRadius: '14px',
-                border: '0.5px solid #2a2a3a'
+                background: '#111114',
+                borderRadius: '12px',
+                border: '1px solid rgba(255, 255, 255, 0.04)'
               }}
             >
               <div style={{ fontSize: '64px' }}>🎬</div>
-              <div style={{ fontSize: '15px', fontWeight: 600, color: '#e8e8ea' }}>{file.name}</div>
-              <div style={{ fontSize: '12px', color: '#7070a0' }}>This format cannot play in-app</div>
+              <div style={{ fontSize: '15px', fontWeight: 600, color: '#f2f2f0' }}>{file.name}</div>
+              <div style={{ fontSize: '12px', color: '#8a8a8f' }}>This format cannot play in-app</div>
               <button
                 onClick={() => window.electron.ipcRenderer.send('open-file', file.path)}
                 style={{
@@ -282,13 +269,16 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
                   padding: '10px 24px',
                   borderRadius: '24px',
                   border: 'none',
-                  background: '#6c6cff',
+                  background: '#e11d2e',
                   color: '#fff',
                   fontSize: '14px',
                   fontWeight: 600,
                   cursor: 'pointer',
-                  boxShadow: '0 8px 16px rgba(108,108,255,0.3)'
+                  boxShadow: '0 8px 16px rgba(225,29,46,0.3)',
+                  transition: 'background 0.2s'
                 }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = '#ff2b3d')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = '#e11d2e')}
               >
                 ▶ Open in System Player
               </button>
@@ -298,17 +288,22 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
       )}
 
       {/* Render Document / Pdf */}
+      {!isPhoto && !isVideo && isPdf && (
+        <div style={{ width: '90%', height: '90%', display: 'flex', background: '#fff', borderRadius: '8px', overflow: 'hidden' }}>
+          <embed src={mediaSrc} type="application/pdf" width="100%" height="100%" />
+        </div>
+      )}
+
       {!isPhoto && !isVideo && !isPdf && (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px', padding: '40px' }}>
           <div style={{ fontSize: '72px' }}>📄</div>
-          <div style={{ fontSize: '14px', color: '#8080a0' }}>{file.name}</div>
+          <div style={{ fontSize: '14px', color: '#8a8a8f' }}>{file.name}</div>
         </div>
       )}
     </div>
   )
 }
 
-// Helper to determine transition override (prevent delay during user dragging)
 function isDraggingRefActive(): boolean {
-  return false // Will be customized if we need dynamic transition control
+  return false
 }

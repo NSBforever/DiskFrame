@@ -15,14 +15,20 @@ import {
   getFilesWithoutThumbs,
   generateThumbForFile,
   updateThumb,
-  deleteMultipleToRecycleBin,
   hideFile,
   unhideFile,
   getPin,
   setPin,
   verifyPin,
   getSkipConfirm,
-  setSkipConfirm
+  setSkipConfirm,
+  getTrashedFiles,
+  getTrashCount,
+  softDeleteFiles,
+  restoreFiles,
+  deleteFilesPermanently,
+  emptyTrash,
+  autoPurgeTrash
 } from './scanner'
 
 const ffmpegExe = ffmpegPath ? ffmpegPath.replace('app.asar', 'app.asar.unpacked') : 'ffmpeg'
@@ -96,6 +102,13 @@ async function generateThumbsForDrive(drivePath: string): Promise<void> {
 }
 
 app.whenReady().then(() => {
+  // Run auto-purge on startup
+  try {
+    autoPurgeTrash()
+  } catch (err) {
+    console.error('Error running auto-purge on startup:', err)
+  }
+
   protocol.handle('media', (request) => {
     const url = request.url.replace('media:///', '')
     const filePath = decodeURIComponent(url).replace(/\//g, '\\')
@@ -180,9 +193,32 @@ app.whenReady().then(() => {
     if (mainWindow) mainWindow.webContents.send('favourites-updated', files)
   })
 
-  // ── DELETE TO RECYCLE BIN ──
+  // ── SOFT DELETE (TRASH) ──
   ipcMain.handle('delete-files', (_event, filePaths: string[]) => {
-    return deleteMultipleToRecycleBin(filePaths)
+    softDeleteFiles(filePaths)
+    return { success: filePaths, failed: [] }
+  })
+
+  // ── TRASH IPC HANDLERS ──
+  ipcMain.handle('restore-files', (_event, filePaths: string[]) => {
+    restoreFiles(filePaths)
+    return { success: true }
+  })
+
+  ipcMain.handle('delete-files-permanently', (_event, filePaths: string[]) => {
+    return deleteFilesPermanently(filePaths)
+  })
+
+  ipcMain.handle('empty-trash', () => {
+    return emptyTrash()
+  })
+
+  ipcMain.handle('get-trashed-files', () => {
+    return getTrashedFiles()
+  })
+
+  ipcMain.handle('get-trash-count', () => {
+    return getTrashCount()
   })
 
   // ── SKIP CONFIRM PREF ──
