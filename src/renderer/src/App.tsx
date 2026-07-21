@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import MediaViewer from './components/media-viewer/MediaViewer'
@@ -32,15 +32,13 @@ export interface ScannedFile {
 const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic']
 const videoExts = ['.mp4', '.mov', '.avi', '.mkv', '.wmv']
 const docExts = ['.pdf', '.docx', '.doc', '.txt', '.xlsx', '.pptx', '.csv']
-const MONTH_ORDER = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
-const SHORT_MONTH_ORDER = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 function thumbUrl(file: ScannedFile): string {
   const src = file.thumb || file.path
   return 'media:///' + src.replace(/\\/g, '/')
 }
 
-export function FileTile({
+export const FileTile = React.memo(({
   file, onOpen, onFav, isFav, isSelected, onSelect, onContextMenu, tileSize, isTrashView, onRestore, onDeletePermanently, isDeleting
 }: {
   file: ScannedFile
@@ -55,7 +53,7 @@ export function FileTile({
   onRestore?: (f: ScannedFile) => void
   onDeletePermanently?: (f: ScannedFile) => void
   isDeleting?: boolean
-}): React.JSX.Element {
+}): React.JSX.Element => {
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState(false)
   const [hovered, setHovered] = useState(false)
@@ -102,7 +100,7 @@ export function FileTile({
               <div style={{ width: '16px', height: '16px', border: '1.5px solid #202025', borderTop: '1.5px solid #e11d2e', borderRadius: '50%', animation: 'tileSpin 0.8s linear infinite' }} />
             </div>
           )}
-          <img key={imgKey} src={thumbUrl(file)} loading="eager" decoding="async"
+          <img key={imgKey} src={thumbUrl(file)} loading="lazy" decoding="async"
             onLoad={() => setLoaded(true)} onError={() => { setError(true); setLoaded(true) }}
             style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: loaded ? 1 : 0, transform: hovered ? 'scale(1.04)' : 'scale(1)', transition: 'transform 0.4s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.2s', willChange: 'transform' }}
           />
@@ -115,7 +113,7 @@ export function FileTile({
                 <div style={{ width: '16px', height: '16px', border: '1.5px solid #202025', borderTop: '1.5px solid #e11d2e', borderRadius: '50%', animation: 'tileSpin 0.8s linear infinite' }} />
               </div>
             )}
-            <img key={imgKey} src={thumbUrl(file)} loading="eager" decoding="async"
+            <img key={imgKey} src={thumbUrl(file)} loading="lazy" decoding="async"
               onLoad={() => setLoaded(true)} onError={() => { setError(true); setLoaded(true) }}
               style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: loaded ? 1 : 0, transform: hovered ? 'scale(1.04)' : 'scale(1)', transition: 'transform 0.4s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.2s', willChange: 'transform' }}
             />
@@ -201,7 +199,7 @@ export function FileTile({
       )}
     </div>
   )
-}
+})
 
 function YearsView({ groupedFiles, onYearClick }: { groupedFiles: Record<string, ScannedFile[]>; onYearClick: (year: string) => void }): React.JSX.Element {
   const yearMap: Record<string, ScannedFile[]> = {}
@@ -326,32 +324,458 @@ function MapView({ files, onOpen }: { files: ScannedFile[]; onOpen: (f: ScannedF
   )
 }
 
+// ─── MEMOIZED INDIVIDUAL MONTH GRID SECTION ──────────────────────────────────
+const MonthGridSection = React.memo(({
+  monthKey,
+  files,
+  tileSize,
+  visible,
+  onShowMore,
+  handleTileOpen,
+  handleFav,
+  isFav,
+  selected,
+  handleSelect,
+  handleTileContextMenu,
+  deletingPaths,
+  tilesPerRow,
+  scrollTop,
+  winH,
+  offsetY,
+  onRegisterRef
+}: {
+  monthKey: string
+  files: ScannedFile[]
+  tileSize: number
+  visible: number
+  onShowMore: () => void
+  handleTileOpen: (file: ScannedFile, currentList: ScannedFile[], e?: React.MouseEvent) => void
+  handleFav: (file: ScannedFile) => void
+  isFav: Set<string>
+  selected: Set<string>
+  handleSelect: (file: ScannedFile, e: React.MouseEvent) => void
+  handleTileContextMenu: (file: ScannedFile, currentList: ScannedFile[], e: React.MouseEvent) => void
+  deletingPaths: Set<string>
+  tilesPerRow: number
+  scrollTop: number
+  winH: number
+  offsetY: number
+  onRegisterRef: (key: string, el: HTMLDivElement | null) => void
+}) => {
+  const rowCount = Math.ceil(Math.min(visible, files.length) / tilesPerRow)
+  const estH = rowCount * (tileSize + 5) + 80
+  const inView = offsetY < scrollTop + winH + 1200 && offsetY + estH > scrollTop - 1200
+
+  const ref = useCallback((el: HTMLDivElement | null) => {
+    onRegisterRef(monthKey, el)
+  }, [monthKey, onRegisterRef])
+
+  if (!inView) {
+    return <div ref={ref} style={{ height: `${estH + 28}px`, marginBottom: '28px' }} />
+  }
+
+  return (
+    <div ref={ref} style={{ marginBottom: '28px' }}>
+      <div style={{ fontSize: '20px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.3px', lineHeight: 1 }}>
+        {monthKey}
+      </div>
+      <div style={{ fontSize: '11px', color: '#8a8a8f', marginBottom: '12px', marginTop: '4px' }}>{files.length} files</div>
+      <div style={{
+        display: 'grid',
+        gridTemplateColumns: `repeat(auto-fill, minmax(${tileSize}px, 1fr))`,
+        gap: '5px',
+        transition: 'grid-template-columns 0.12s cubic-bezier(0.25, 0.46, 0.45, 0.94)'
+      }}>
+        {files.slice(0, visible).map(file => (
+          <FileTile
+            key={file.path}
+            file={file}
+            onOpen={(f, e) => handleTileOpen(f, files, e)}
+            onFav={handleFav}
+            isFav={isFav.has(file.path)}
+            isSelected={selected.has(file.path)}
+            onSelect={handleSelect}
+            onContextMenu={(f, e) => handleTileContextMenu(f, files, e)}
+            tileSize={tileSize}
+            isDeleting={deletingPaths.has(file.path)}
+          />
+        ))}
+      </div>
+      {files.length > visible && (
+        <div
+          onClick={onShowMore}
+          style={{
+            marginTop: '10px',
+            padding: '8px',
+            borderRadius: '8px',
+            background: '#111113',
+            border: '1px solid rgba(255,255,255,0.04)',
+            cursor: 'pointer',
+            fontSize: '12px',
+            color: '#e11d2e',
+            textAlign: 'center',
+            fontWeight: 500
+          }}
+          onMouseEnter={e => e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'}
+          onMouseLeave={e => e.currentTarget.style.borderColor = 'rgba(255,255,255,0.04)'}
+        >
+          Show more ({files.length - visible} remaining)
+        </div>
+      )}
+    </div>
+  )
+})
+
+// ─── MEMOIZED SCROLL CONTENT AREA TO ISOLATE RE-RENDERS ───────────────────────
+const MainContentArea: React.FC<{
+  activeNav: string
+  activeView: string
+  scanning: boolean
+  scanCount: number
+  selectedDrive: string | null
+  allFiles: ScannedFile[]
+  favourites: Set<string>
+  selected: Set<string>
+  deletingPaths: Set<string>
+  handleTileOpen: (file: ScannedFile, currentList: ScannedFile[], e?: React.MouseEvent) => void
+  handleFav: (file: ScannedFile) => void
+  handleSelect: (file: ScannedFile, e: React.MouseEvent) => void
+  handleTileContextMenu: (file: ScannedFile, currentList: ScannedFile[], e: React.MouseEvent) => void
+  trashedFiles: ScannedFile[]
+  handleRestore: (file: ScannedFile) => void
+  setShowEmptyTrashConfirm: (show: boolean) => void
+  setFileToDeletePermanently: (file: ScannedFile) => void
+  yearFilter: string | null
+  setYearFilter: (year: string | null) => void
+  tileSize: number
+  setTileSize: (size: number) => void
+  transitioning: boolean
+  setTransitioning: (transitioning: boolean) => void
+  sortedGroupedData: { keys: string[]; data: Record<string, ScannedFile[]> }
+  handleWheel: (e: React.WheelEvent) => void
+}> = React.memo(({
+  activeNav,
+  activeView,
+  scanning,
+  scanCount,
+  selectedDrive,
+  allFiles,
+  favourites,
+  selected,
+  deletingPaths,
+  handleTileOpen,
+  handleFav,
+  handleSelect,
+  handleTileContextMenu,
+  trashedFiles,
+  handleRestore,
+  setShowEmptyTrashConfirm,
+  setFileToDeletePermanently,
+  yearFilter,
+  setYearFilter,
+  tileSize,
+  setTileSize,
+  transitioning,
+  setTransitioning,
+  sortedGroupedData,
+  handleWheel
+}) => {
+  const [scrollVersion, setScrollVersion] = useState(0)
+  const [visibleCount, setVisibleCount] = useState<Record<string, number>>({})
+
+  const scrollTopRef = useRef(0)
+  const rafRef = useRef<number | null>(null)
+  const monthRefs = useRef<Record<string, HTMLDivElement | null>>({})
+
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    scrollTopRef.current = e.currentTarget.scrollTop
+    if (rafRef.current) return
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null
+      setScrollVersion(v => v + 1)
+    })
+  }, [])
+
+  const handleRegisterRef = useCallback((key: string, el: HTMLDivElement | null) => {
+    monthRefs.current[key] = el
+  }, [])
+
+  const getVisible = useCallback((key: string): number => visibleCount[key] ?? 40, [visibleCount])
+  const handleShowMore = useCallback((key: string, visible: number) => {
+    setVisibleCount(prev => ({ ...prev, [key]: visible + 40 }))
+  }, [])
+
+  const allFavFiles = useMemo(() => allFiles.filter(f => favourites.has(f.path)), [allFiles, favourites])
+
+  // Explicitly reference scrollVersion to avoid TS TS6133 warning while forcing re-renders on scroll
+  void scrollVersion
+
+  return (
+    <div
+      style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '20px' }}
+      onWheel={handleWheel}
+      onScroll={handleScroll}
+    >
+      {/* Coming soon components */}
+      {!scanning && activeNav === 'archive' && (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '12px' }} className="view-transition-enter">
+          <div style={{ fontSize: '48px' }}>🗄️</div>
+          <div style={{ fontSize: '15px', fontWeight: 600, color: '#f2f2f0' }}>Archive</div>
+          <div style={{ fontSize: '11px', color: '#8a8a8f', padding: '5px 12px', borderRadius: '14px', background: '#111114', border: '1px solid rgba(255,255,255,0.04)' }}>Coming soon</div>
+        </div>
+      )}
+
+      {/* AI Search Agent Navigation Route */}
+      {!scanning && activeNav === 'ai-agent' && (
+        <SearchAgent 
+          files={allFiles} 
+          favourites={favourites} 
+          onOpen={(f, list) => handleTileOpen(f, list)} 
+          onFav={handleFav}
+          selectedPaths={selected}
+          onSelect={handleSelect}
+          onContextMenu={handleTileContextMenu}
+        />
+      )}
+
+      {/* 3D Places Globe Navigation Route */}
+      {!scanning && activeNav === 'globe' && (
+        <div style={{ height: 'calc(100vh - 120px)' }} className="view-transition-enter">
+          <GlobeView files={allFiles} onOpen={(f, list) => handleTileOpen(f, list)} />
+        </div>
+      )}
+
+      {/* Trash Lifecycle Bin View */}
+      {!scanning && activeNav === 'trash' && (
+        <div className="view-transition-enter">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+            <div>
+              <h2 style={{ fontSize: '24px', fontWeight: 700, color: '#f2f2f0', letterSpacing: '-0.5px', margin: 0 }}>
+                Trash Collection
+              </h2>
+              <div style={{ fontSize: '11px', color: '#8a8a8f', marginTop: '4px' }}>
+                Items in trash are soft-deleted and permanently purged after 30 days.
+              </div>
+            </div>
+            {trashedFiles.length > 0 && (
+              <button
+                onClick={() => setShowEmptyTrashConfirm(true)}
+                className="cred-button"
+                style={{ background: '#e11d2e', color: '#f2f2f0', border: 'none', fontWeight: 600 }}
+              >
+                Empty Trash ({trashedFiles.length})
+              </button>
+            )}
+          </div>
+          
+          {trashedFiles.length === 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '50vh', gap: '12px' }}>
+              <div style={{ fontSize: '48px' }}>🗑️</div>
+              <div style={{ fontSize: '14px', color: '#8a8a8f' }}>Trash is empty.</div>
+              <div style={{ fontSize: '11px', color: '#52525b' }}>Soft-deleted photos and videos will appear here.</div>
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '5px' }}>
+              {trashedFiles.map(file => (
+                <FileTile 
+                  key={file.path} 
+                  file={file} 
+                  onOpen={(f, e) => handleTileOpen(f, trashedFiles, e)} 
+                  onFav={handleFav} 
+                  isFav={false} 
+                  isSelected={false} 
+                  onSelect={handleSelect} 
+                  onContextMenu={(f, e) => handleTileContextMenu(f, trashedFiles, e)} 
+                  tileSize={100}
+                  isTrashView={true}
+                  onRestore={handleRestore}
+                  onDeletePermanently={f => setFileToDeletePermanently(f)}
+                  isDeleting={deletingPaths.has(file.path)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Prompt scan drive */}
+      {!selectedDrive && activeNav !== 'archive' && activeNav !== 'trash' && activeNav !== 'globe' && activeNav !== 'ai-agent' && (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '10px' }} className="view-transition-enter">
+          <div style={{ fontSize: '48px' }}>💾</div>
+          <div style={{ fontSize: '14px', color: '#8a8a8f' }}>Click a drive to scan and explore</div>
+          <div style={{ fontSize: '11px', color: '#52525b' }}>Smart EXIF-based local photo organizer</div>
+        </div>
+      )}
+
+      {/* Indexing scanner progress */}
+      {scanning && activeNav !== 'archive' && activeNav !== 'trash' && activeNav !== 'globe' && activeNav !== 'ai-agent' && (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '12px' }} className="view-transition-enter">
+          <div style={{ fontSize: '13px', color: '#e11d2e' }}>Indexing media on {selectedDrive}...</div>
+          <div style={{ fontSize: '11px', color: '#8a8a8f' }}>{scanCount} files mapped</div>
+          <div style={{ width: '200px', height: '3px', background: '#1c1c22', borderRadius: '2px', overflow: 'hidden' }}>
+            <div style={{ height: '100%', width: '40%', background: 'linear-gradient(90deg, transparent, #e11d2e, transparent)', borderRadius: '2px', animation: 'shimmer 1.4s ease-in-out infinite' }} />
+          </div>
+        </div>
+      )}
+
+      {/* Favourites Grid */}
+      {!scanning && activeNav === 'favourites' && (
+        <div className="view-transition-enter">
+          <div style={{ fontSize: '24px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.5px', marginBottom: '8px' }}>
+            Favourites <span style={{ color: '#e11d2e', fontSize: '16px', fontWeight: 500 }}>{allFavFiles.length} items</span>
+          </div>
+          {allFavFiles.length === 0 ? (
+            <div style={{ color: '#8a8a8f', fontSize: '13px', marginTop: '16px' }}>No favourites yet. Add items to your favorites.</div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '5px', marginTop: '16px' }}>
+              {allFavFiles.map(file => (
+                <FileTile key={file.path} file={file} onOpen={(f, e) => handleTileOpen(f, allFavFiles, e)} onFav={handleFav} isFav={true} isSelected={selected.has(file.path)} onSelect={handleSelect} onContextMenu={(f, e) => handleTileContextMenu(f, allFavFiles, e)} tileSize={100} isDeleting={deletingPaths.has(file.path)} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Places Map View */}
+      {!scanning && activeNav === 'places' && (
+        <div style={{ height: 'calc(100vh - 120px)' }} className="view-transition-enter">
+          <MapView files={allFiles.filter(f => f.lat !== null && f.lng !== null)} onOpen={(f, list, e) => handleTileOpen(f, list, e)} />
+        </div>
+      )}
+
+      {/* Map View tab */}
+      {!scanning && activeView === 'Map' && activeNav !== 'places' && activeNav !== 'archive' && activeNav !== 'trash' && activeNav !== 'globe' && activeNav !== 'ai-agent' && (
+        <div style={{ height: 'calc(100vh - 120px)' }} className="view-transition-enter">
+          <MapView files={allFiles} onOpen={(f, list, e) => handleTileOpen(f, list, e)} />
+        </div>
+      )}
+
+      {/* Years view */}
+      {!scanning && activeView === 'Years' && activeNav !== 'favourites' && activeNav !== 'places' && activeNav !== 'archive' && activeNav !== 'trash' && activeNav !== 'globe' && activeNav !== 'ai-agent' && (
+        <div style={{ animation: transitioning ? 'slideOutLeft 0.28s forwards' : 'slideInRight 0.28s forwards' }} className="view-transition-enter">
+          <div style={{ fontSize: '24px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.5px', marginBottom: '14px' }}>
+            All Years {yearFilter && <span onClick={() => setYearFilter(null)} style={{ fontSize: '13px', color: '#e11d2e', cursor: 'pointer', fontWeight: 400, marginLeft: '10px' }}>× {yearFilter}</span>}
+          </div>
+          <YearsView groupedFiles={sortedGroupedData.data} onYearClick={year => {
+            setYearFilter(year); setTileSize(100)
+            setTransitioning(true)
+            setTimeout(() => {
+              const key = Object.keys(sortedGroupedData.data).find(m => m.includes(year))
+              if (key && monthRefs.current[key]) monthRefs.current[key]?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+              setTransitioning(false)
+            }, 100)
+          }} />
+        </div>
+      )}
+
+      {/* Dynamic Grid + Timeline view */}
+      {!scanning && activeNav !== 'favourites' && activeNav !== 'places' && activeNav !== 'archive' && activeNav !== 'trash' && activeNav !== 'globe' && activeNav !== 'ai-agent' && (activeView === 'Grid' || activeView === 'Timeline') && (
+        <div style={{
+          animation: transitioning && activeView === 'Grid' ? 'slideOutLeft 0.28s forwards'
+            : transitioning && activeView === 'Timeline' ? 'slideOutRight 0.28s forwards'
+              : activeView === 'Timeline' ? 'slideInRight 0.28s forwards' : 'slideInLeft 0.28s forwards'
+        }} className="view-transition-enter">
+          {/* Timeline layout */}
+          {activeView === 'Timeline' && (
+            <div style={{ paddingLeft: '24px', borderLeft: '1.5px solid rgba(255,255,255,0.04)' }}>
+              {sortedGroupedData.keys.map(monthKey => {
+                const files = sortedGroupedData.data[monthKey]
+                return (
+                  <div key={monthKey} ref={el => { monthRefs.current[monthKey] = el }} style={{ marginBottom: '28px', position: 'relative' }}>
+                    <div style={{ position: 'absolute', left: '-28.5px', top: '8px', width: '8px', height: '8px', borderRadius: '50%', background: '#e11d2e', border: '2px solid #0a0a0c' }} />
+                    <div style={{ fontSize: '18px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.3px', lineHeight: 1 }}>
+                      {monthKey}
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#8a8a8f', marginBottom: '10px', marginTop: '4px' }}>{files.length} files</div>
+                    <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
+                      {files.slice(0, 12).map(file => (
+                        <div key={file.path} onClick={(e) => handleTileOpen(file, files, e)} onContextMenu={(e) => handleTileContextMenu(file, files, e)} style={{ width: '80px', height: '80px', borderRadius: '6px', overflow: 'hidden', cursor: 'pointer', background: '#111114', position: 'relative', opacity: deletingPaths.has(file.path) ? 0 : 1, transform: deletingPaths.has(file.path) ? 'scale(0.1)' : 'none', transition: 'all 0.35s' }}>
+                          {(photoExts.includes(file.ext.toLowerCase()) || (videoExts.includes(file.ext.toLowerCase()) && file.thumb)) ? (
+                            <>
+                              <img src={thumbUrl(file)} loading="lazy" decoding="async" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                              {videoExts.includes(file.ext.toLowerCase()) && <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.3)' }}><div style={{ fontSize: '18px' }}>▶</div></div>}
+                            </>
+                          ) : (
+                            <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px' }}>{videoExts.includes(file.ext.toLowerCase()) ? '🎬' : '📄'}</div>
+                          )}
+                        </div>
+                      ))}
+                      {files.length > 12 && <div style={{ width: '80px', height: '80px', borderRadius: '6px', background: '#161619', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', color: '#e11d2e', cursor: 'pointer', fontWeight: 600 }}>+{files.length - 12} more</div>}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+
+          {/* Grid layout */}
+          {activeView === 'Grid' && (() => {
+            const tilesPerRow = Math.max(1, Math.floor((window.innerWidth - 260) / (tileSize + 5)))
+            const scrollTop = scrollTopRef.current
+            const winH = window.innerHeight
+            let offsetY = 0
+            
+            return sortedGroupedData.keys.map(monthKey => {
+              const files = sortedGroupedData.data[monthKey]
+              const visible = getVisible(monthKey)
+              
+              const rowCount = Math.ceil(Math.min(visible, files.length) / tilesPerRow)
+              const estH = rowCount * (tileSize + 5) + 80
+              const myOffset = offsetY
+              offsetY += estH + 28
+
+              return (
+                <MonthGridSection
+                  key={`${monthKey}_section_${files.length}`}
+                  monthKey={monthKey}
+                  files={files}
+                  tileSize={tileSize}
+                  visible={visible}
+                  onShowMore={() => handleShowMore(monthKey, visible)}
+                  handleTileOpen={handleTileOpen}
+                  handleFav={handleFav}
+                  isFav={favourites}
+                  selected={selected}
+                  handleSelect={handleSelect}
+                  handleTileContextMenu={handleTileContextMenu}
+                  deletingPaths={deletingPaths}
+                  tilesPerRow={tilesPerRow}
+                  scrollTop={scrollTop}
+                  winH={winH}
+                  offsetY={myOffset}
+                  onRegisterRef={handleRegisterRef}
+                />
+              )
+            })
+          })()}
+        </div>
+      )}
+    </div>
+  )
+})
+
+// ─── ROOT COMPONENT ──────────────────────────────────────────────────────────
 export default function App(): React.JSX.Element {
   const [activeNav, setActiveNav] = useState('all')
   const [drives, setDrives] = useState<DriveInfo[]>([])
   const [selectedDrive, setSelectedDrive] = useState<string | null>(null)
   const [scanning, setScanning] = useState(false)
   const [scanCount, setScanCount] = useState(0)
+  
+  // Pruned state: keeps ONLY the active drive files to release previous drive allocations
   const [driveFiles, setDriveFiles] = useState<Record<string, Record<string, ScannedFile[]>>>({})
   const currentDriveRef = useRef<string | null>(null)
+
   const [favourites, setFavourites] = useState<Set<string>>(new Set())
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [lightbox, setLightbox] = useState<{ file: ScannedFile; list: ScannedFile[]; rect?: DOMRect } | null>(null)
   const [activeView, setActiveView] = useState('Grid')
-  const [visibleCount, setVisibleCount] = useState<Record<string, number>>({})
-  const listenersSet = useRef(false)
 
   const zoomLevelRef = useRef(1.0)
   const [tileSize, setTileSize] = useState(100)
   const [transitioning, setTransitioning] = useState(false)
-  const monthRefs = useRef<Record<string, HTMLDivElement | null>>({})
-  const lastCenteredMonth = useRef<string | null>(null)
-  const [yearFilter, setYearFilter] = useState<string | null>(null)
   const zoomTicksRef = useRef(0)
   const lastZoomDirRef = useRef<'in' | 'out' | null>(null)
-  const scrollTopRef = useRef(0)
-  const [scrollVersion, setScrollVersion] = useState(0)
-  const rafRef = useRef<number | null>(null)
 
   // Redesign / Trash / AI State
   const [groupBy, setGroupBy] = useState<'day' | 'month' | 'year' | 'location' | 'favorites'>('day')
@@ -367,7 +791,9 @@ export default function App(): React.JSX.Element {
   const [showEmptyTrashConfirm, setShowEmptyTrashConfirm] = useState(false)
   const [deletingPaths, setDeletingPaths] = useState<Set<string>>(new Set())
 
-  // Dynamic Trash Refresher
+  // Queue to buffer thumbnail ready events, preventing multiple full re-renders
+  const thumbQueueRef = useRef<{ filePath: string; thumbPath: string }[]>([])
+
   const refreshTrash = useCallback(async () => {
     try {
       const list = await window.electron.ipcRenderer.invoke('get-trashed-files')
@@ -379,30 +805,130 @@ export default function App(): React.JSX.Element {
     }
   }, [])
 
-  const getCenteredMonth = useCallback(() => {
-    let closest = ''; let minDiff = Infinity
-    const center = window.innerHeight / 2
-    for (const [key, el] of Object.entries(monthRefs.current)) {
-      if (!el) continue
-      const rect = el.getBoundingClientRect()
-      const diff = Math.abs(rect.top - center)
-      if (diff < minDiff) { minDiff = diff; closest = key }
-    }
-    return closest
+  // Process buffered thumbnails queue on a interval (once every 300ms)
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (thumbQueueRef.current.length === 0) return
+      const batch = [...thumbQueueRef.current]
+      thumbQueueRef.current = []
+
+      const batchMap = new Map(batch.map(item => [item.filePath, item.thumbPath]))
+
+      setDriveFiles(prev => {
+        const updated: Record<string, Record<string, ScannedFile[]>> = {}
+        for (const drive in prev) {
+          updated[drive] = {}
+          for (const month in prev[drive]) {
+            let hasChanges = false
+            const newFiles = prev[drive][month].map(f => {
+              const t = batchMap.get(f.path)
+              if (t) {
+                hasChanges = true
+                return { ...f, thumb: t }
+              }
+              return f
+            })
+            // Only update month mapping array if there are actual thumbnail changes
+            updated[drive][month] = hasChanges ? newFiles : prev[drive][month]
+          }
+        }
+        return updated
+      })
+
+      setTrashedFiles(prev => {
+        let hasChanges = false
+        const newFiles = prev.map(f => {
+          const t = batchMap.get(f.path)
+          if (t) {
+            hasChanges = true
+            return { ...f, thumb: t }
+          }
+          return f
+        })
+        return hasChanges ? newFiles : prev
+      })
+    }, 300)
+
+    return () => clearInterval(timer)
   }, [])
 
+  // Setup fully cleanable IPC listeners on mount and return cleanup callbacks
   useEffect(() => {
-    const preventZoom = (e: WheelEvent): void => { if (e.ctrlKey) e.preventDefault() }
-    window.addEventListener('wheel', preventZoom, { passive: false })
-    return () => window.removeEventListener('wheel', preventZoom)
+    const unsubDrives = window.api.onDrivesUpdated((d) => setDrives(d as DriveInfo[]))
+    const unsubFavs = window.api.onFavouritesUpdated((files) => {
+      setFavourites(new Set((files as Array<{ path: string }>).map(f => f.path)))
+    })
+    const unsubProgress = window.api.onScanProgress((d) => setScanCount(d.count))
+    const unsubComplete = window.api.onScanComplete((d) => {
+      setScanning(false); setScanCount(d.count)
+      currentDriveRef.current = d.drive
+      window.api.getFiles(d.drive)
+    })
+    const unsubFiles = window.api.onFilesUpdated((g) => {
+      if (currentDriveRef.current) {
+        // Enforce active drive caching only, replacing any previous caches completely
+        setDriveFiles({ [currentDriveRef.current!]: g as Record<string, ScannedFile[]> })
+      }
+      refreshTrash()
+    })
+    const unsubThumb = window.api.onThumbReady((d) => {
+      thumbQueueRef.current.push(d)
+    })
+    const unsubToggled = window.api.onFavouriteToggled((p) => {
+      setFavourites(prev => {
+        const next = new Set(prev)
+        if (next.has(p as string)) next.delete(p as string); else next.add(p as string)
+        return next
+      })
+    })
+
+    window.api.getDrives()
+    window.api.getFavourites()
+    refreshTrash()
+
+    return () => {
+      unsubDrives()
+      unsubFavs()
+      unsubProgress()
+      unsubComplete()
+      unsubFiles()
+      unsubThumb()
+      unsubToggled()
+    }
+  }, [refreshTrash])
+
+  // Trigger reload when navigating
+  useEffect(() => {
+    if (activeNav === 'trash') {
+      refreshTrash()
+    }
+  }, [activeNav, refreshTrash])
+
+  const handleDriveClick = (name: string): void => {
+    setSelectedDrive(name); currentDriveRef.current = name
+    setScanning(true); setScanCount(0); setActiveNav('all'); setActiveView('Grid')
+    zoomLevelRef.current = 1.0; setTileSize(100); setSelected(new Set())
+    
+    // Force prune previous drive files cache immediately on click
+    setDriveFiles({ [name]: {} })
+    
+    window.api.scanDrive(name)
+  }
+
+  const handleRescan = useCallback((name: string): void => {
+    setScanning(true); setScanCount(0); currentDriveRef.current = name
+    setSelected(new Set())
+    window.electron.ipcRenderer.send('rescan-drive', name)
   }, [])
 
-  useEffect(() => {
-    if (!transitioning && lastCenteredMonth.current && monthRefs.current[lastCenteredMonth.current]) {
-      monthRefs.current[lastCenteredMonth.current]?.scrollIntoView({ behavior: 'instant', block: 'start' })
-      lastCenteredMonth.current = null
-    }
-  }, [activeView, transitioning])
+  const handleFav = useCallback((file: ScannedFile): void => { window.api.toggleFavourite(file.path) }, [])
+  const handleReveal = useCallback((file: ScannedFile): void => { window.electron.ipcRenderer.send('reveal-file', file.path) }, [])
+  const openLightbox = useCallback((file: ScannedFile, list: ScannedFile[], rect?: DOMRect): void => { setLightbox({ file, list, rect }) }, [])
+
+  const groupedFiles = selectedDrive && driveFiles[selectedDrive] ? driveFiles[selectedDrive] : {}
+  const allFiles = useMemo(() => Object.values(groupedFiles).flat(), [groupedFiles])
+  const allFavFiles = useMemo(() => allFiles.filter(f => favourites.has(f.path)), [allFiles, favourites])
+  const totalFiles = allFiles.length
 
   const handleWheel = useCallback((e: React.WheelEvent): void => {
     if (!e.ctrlKey) return
@@ -421,13 +947,11 @@ export default function App(): React.JSX.Element {
     if (transitioning) return
 
     if (activeView === 'Grid' && newTileSize <= 58 && zoomTicksRef.current >= 3) {
-      lastCenteredMonth.current = getCenteredMonth()
       setTransitioning(true); zoomTicksRef.current = 0
       setTimeout(() => { setActiveView('Timeline'); zoomLevelRef.current = 1.0; setTileSize(100); setTransitioning(false) }, 320)
       return
     }
     if (activeView === 'Timeline' && dir === 'in' && zoomTicksRef.current >= 3) {
-      lastCenteredMonth.current = getCenteredMonth()
       setTransitioning(true); zoomTicksRef.current = 0
       setTimeout(() => { setActiveView('Grid'); zoomLevelRef.current = 1.0; setTileSize(100); setTransitioning(false) }, 320)
       return
@@ -442,109 +966,7 @@ export default function App(): React.JSX.Element {
       setTimeout(() => { setActiveView('Timeline'); zoomLevelRef.current = 1.0; setTileSize(100); setTransitioning(false) }, 320)
       return
     }
-  }, [activeView, transitioning, getCenteredMonth])
-
-  useEffect(() => {
-    if (listenersSet.current) return
-    listenersSet.current = true
-
-    window.api.onDrivesUpdated((d) => setDrives(d as DriveInfo[]))
-    window.api.onFavouritesUpdated((files) => {
-      setFavourites(new Set((files as Array<{ path: string }>).map(f => f.path)))
-    })
-    window.api.onScanProgress((d) => setScanCount(d.count))
-    window.api.onScanComplete((d) => {
-      setScanning(false); setScanCount(d.count)
-      currentDriveRef.current = d.drive
-      window.api.getFiles(d.drive)
-    })
-    window.api.onFilesUpdated((g) => {
-      if (currentDriveRef.current) {
-        setDriveFiles(prev => ({ ...prev, [currentDriveRef.current!]: g as Record<string, ScannedFile[]> }))
-      }
-      refreshTrash()
-    })
-    window.api.onThumbReady(({ filePath, thumbPath }) => {
-      setDriveFiles(prev => {
-        const updated: Record<string, Record<string, ScannedFile[]>> = {}
-        for (const drive in prev) {
-          updated[drive] = {}
-          for (const month in prev[drive]) {
-            updated[drive][month] = prev[drive][month].map(f =>
-              f.path === filePath ? { ...f, thumb: thumbPath } : f
-            )
-          }
-        }
-        return updated
-      })
-      setTrashedFiles(prev => prev.map(f => f.path === filePath ? { ...f, thumb: thumbPath } : f))
-    })
-    window.api.onFavouriteToggled((p) => {
-      setFavourites(prev => {
-        const next = new Set(prev)
-        if (next.has(p as string)) next.delete(p as string); else next.add(p as string)
-        return next
-      })
-    })
-
-    window.api.getDrives()
-    window.api.getFavourites()
-    refreshTrash()
-  }, [refreshTrash])
-
-  // Trigger reload when navigating
-  useEffect(() => {
-    if (activeNav === 'trash') {
-      refreshTrash()
-    }
-  }, [activeNav, refreshTrash])
-
-  const handleDriveClick = (name: string): void => {
-    setSelectedDrive(name); currentDriveRef.current = name
-    setScanning(true); setScanCount(0); setActiveNav('all'); setActiveView('Grid')
-    zoomLevelRef.current = 1.0; setTileSize(100); setSelected(new Set()); setVisibleCount({})
-    window.api.scanDrive(name)
-  }
-
-  const handleRescan = (name: string): void => {
-    setScanning(true); setScanCount(0); currentDriveRef.current = name
-    setSelected(new Set()); setVisibleCount({})
-    window.electron.ipcRenderer.send('rescan-drive', name)
-  }
-
-  const handleFav = useCallback((file: ScannedFile): void => { window.api.toggleFavourite(file.path) }, [])
-
-  const handleReveal = useCallback((file: ScannedFile): void => { window.electron.ipcRenderer.send('reveal-file', file.path) }, [])
-  const openLightbox = useCallback((file: ScannedFile, list: ScannedFile[], rect?: DOMRect): void => { setLightbox({ file, list, rect }) }, [])
-
-  const groupedFiles = selectedDrive && driveFiles[selectedDrive] ? driveFiles[selectedDrive] : {}
-  const months = Object.keys(groupedFiles).sort((a, b) => {
-    const [ay, am] = a.split('-')
-    const [by, bm] = b.split('-')
-    const yearA = Number(ay)
-    const yearB = Number(by)
-    if (yearB !== yearA) return yearB - yearA
-
-    const getMonthIndex = (m: string): number => {
-      const clean = m.trim().toLowerCase()
-      const longIdx = MONTH_ORDER.findIndex(mo => mo.toLowerCase() === clean)
-      if (longIdx !== -1) return longIdx
-      const shortIdx = SHORT_MONTH_ORDER.findIndex(mo => mo.toLowerCase() === clean)
-      if (shortIdx !== -1) return shortIdx
-      const prefixIdx = SHORT_MONTH_ORDER.findIndex(mo => mo.toLowerCase().startsWith(clean.substring(0, 3)))
-      if (prefixIdx !== -1) return prefixIdx
-      return -1
-    }
-
-    return getMonthIndex(bm) - getMonthIndex(am)
-  })
-
-  // Close context menu helper
-  useEffect(() => {
-    const closeMenu = () => setContextMenu(null)
-    window.addEventListener('click', closeMenu)
-    return () => window.removeEventListener('click', closeMenu)
-  }, [])
+  }, [activeView, transitioning])
 
   const getFiltered = useCallback((files: ScannedFile[]): ScannedFile[] => {
     let filtered = files
@@ -597,21 +1019,15 @@ export default function App(): React.JSX.Element {
     return filtered
   }, [activeNav, favourites, searchQuery])
 
-  const allFiles = Object.values(groupedFiles).flat()
-  const allFavFiles = allFiles.filter(f => favourites.has(f.path))
-  const totalFiles = allFiles.length
-  const getVisible = (key: string): number => visibleCount[key] ?? 40
-
-  // Multi-selection range select and batch action handlers
-  const lastSelectedPathRef = useRef<string | null>(null)
-  
   const handleSelect = useCallback((file: ScannedFile, e: React.MouseEvent): void => {
     setSelected(prev => {
       const next = new Set(prev)
       const isSelected = next.has(file.path)
 
       if (e.shiftKey && lastSelectedPathRef.current) {
-        const allGridFiles = months.flatMap(monthKey => getFiltered(groupedFiles[monthKey] || []))
+        const allGridFiles = Object.keys(groupedFiles)
+          .sort()
+          .flatMap(monthKey => getFiltered(groupedFiles[monthKey] || []))
         const lastIdx = allGridFiles.findIndex(f => f.path === lastSelectedPathRef.current)
         const currentIdx = allGridFiles.findIndex(f => f.path === file.path)
 
@@ -631,7 +1047,9 @@ export default function App(): React.JSX.Element {
       lastSelectedPathRef.current = file.path
       return next
     })
-  }, [months, groupedFiles, activeNav, getFiltered])
+  }, [groupedFiles, getFiltered])
+
+  const lastSelectedPathRef = useRef<string | null>(null)
 
   const handleTileOpen = useCallback((file: ScannedFile, currentList: ScannedFile[], e?: React.MouseEvent): void => {
     const rect = e?.currentTarget?.getBoundingClientRect()
@@ -643,7 +1061,6 @@ export default function App(): React.JSX.Element {
     }
   }, [selected, allFiles, openLightbox])
 
-  // Custom soft-delete UI triggers with 350ms shrink-and-fade animation
   const handleFileDeleted = useCallback((deletedPath: string): void => {
     setDeletingPaths(prev => {
       const next = new Set(prev)
@@ -776,6 +1193,15 @@ export default function App(): React.JSX.Element {
       }
     }, 350)
   }, [selectedDrive, refreshTrash])
+
+  // Close context menu helper
+  useEffect(() => {
+    const closeMenu = () => setContextMenu(null)
+    window.addEventListener('click', closeMenu)
+    return () => window.removeEventListener('click', closeMenu)
+  }, [])
+
+  const [yearFilter, setYearFilter] = useState<string | null>(null)
 
   return (
     <div style={{ display: 'flex', width: '100vw', height: '100vh', background: '#0a0a0c', color: '#f2f2f0', fontFamily: 'system-ui, sans-serif', fontSize: '13px', overflow: 'hidden', position: 'fixed', inset: 0 }}>
@@ -924,250 +1350,34 @@ export default function App(): React.JSX.Element {
           )}
         </div>
 
-        {/* Scroll Container */}
-        <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '20px' }}
-          onWheel={handleWheel}
-          onScroll={e => {
-            scrollTopRef.current = (e.currentTarget as HTMLDivElement).scrollTop
-            if (rafRef.current) return
-            rafRef.current = requestAnimationFrame(() => { rafRef.current = null; setScrollVersion(n => n + 1) })
-          }}
-        >
-          {/* Coming soon components */}
-          {!scanning && activeNav === 'archive' && (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '12px' }} className="view-transition-enter">
-              <div style={{ fontSize: '48px' }}>🗄️</div>
-              <div style={{ fontSize: '15px', fontWeight: 600, color: '#f2f2f0' }}>Archive</div>
-              <div style={{ fontSize: '11px', color: '#8a8a8f', padding: '5px 12px', borderRadius: '14px', background: '#111114', border: '1px solid rgba(255,255,255,0.04)' }}>Coming soon</div>
-            </div>
-          )}
-
-          {/* AI Search Agent Navigation Route */}
-          {!scanning && activeNav === 'ai-agent' && (
-            <SearchAgent 
-              files={allFiles} 
-              favourites={favourites} 
-              onOpen={(f, list) => handleTileOpen(f, list)} 
-              onFav={handleFav}
-              selectedPaths={selected}
-              onSelect={handleSelect}
-              onContextMenu={handleTileContextMenu}
-            />
-          )}
-
-          {/* 3D Places Globe Navigation Route */}
-          {!scanning && activeNav === 'globe' && (
-            <div style={{ height: 'calc(100vh - 120px)' }} className="view-transition-enter">
-              <GlobeView files={allFiles} onOpen={(f, list) => handleTileOpen(f, list)} />
-            </div>
-          )}
-
-          {/* Trash Lifecycle Bin View */}
-          {!scanning && activeNav === 'trash' && (
-            <div className="view-transition-enter">
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                <div>
-                  <h2 style={{ fontSize: '24px', fontWeight: 700, color: '#f2f2f0', letterSpacing: '-0.5px', margin: 0 }}>
-                    Trash Collection
-                  </h2>
-                  <div style={{ fontSize: '11px', color: '#8a8a8f', marginTop: '4px' }}>
-                    Items in trash are soft-deleted and permanently purged after 30 days.
-                  </div>
-                </div>
-                {trashedFiles.length > 0 && (
-                  <button
-                    onClick={() => setShowEmptyTrashConfirm(true)}
-                    className="cred-button"
-                    style={{ background: '#e11d2e', color: '#f2f2f0', border: 'none', fontWeight: 600 }}
-                  >
-                    Empty Trash ({trashedFiles.length})
-                  </button>
-                )}
-              </div>
-              
-              {trashedFiles.length === 0 ? (
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '50vh', gap: '12px' }}>
-                  <div style={{ fontSize: '48px' }}>🗑️</div>
-                  <div style={{ fontSize: '14px', color: '#8a8a8f' }}>Trash is empty.</div>
-                  <div style={{ fontSize: '11px', color: '#52525b' }}>Soft-deleted photos and videos will appear here.</div>
-                </div>
-              ) : (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '5px' }}>
-                  {trashedFiles.map(file => (
-                    <FileTile 
-                      key={file.path} 
-                      file={file} 
-                      onOpen={(f, e) => handleTileOpen(f, trashedFiles, e)} 
-                      onFav={handleFav} 
-                      isFav={false} 
-                      isSelected={false} 
-                      onSelect={handleSelect} 
-                      onContextMenu={(f, e) => handleTileContextMenu(f, trashedFiles, e)} 
-                      tileSize={100}
-                      isTrashView={true}
-                      onRestore={handleRestore}
-                      onDeletePermanently={f => setFileToDeletePermanently(f)}
-                      isDeleting={deletingPaths.has(file.path)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Prompt scan drive */}
-          {!selectedDrive && activeNav !== 'archive' && activeNav !== 'trash' && activeNav !== 'globe' && activeNav !== 'ai-agent' && (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '10px' }} className="view-transition-enter">
-              <div style={{ fontSize: '48px' }}>💾</div>
-              <div style={{ fontSize: '14px', color: '#8a8a8f' }}>Click a drive to scan and explore</div>
-              <div style={{ fontSize: '11px', color: '#52525b' }}>Smart EXIF-based local photo organizer</div>
-            </div>
-          )}
-
-          {/* Indexing scanner progress */}
-          {scanning && activeNav !== 'archive' && activeNav !== 'trash' && activeNav !== 'globe' && activeNav !== 'ai-agent' && (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '12px' }} className="view-transition-enter">
-              <div style={{ fontSize: '13px', color: '#e11d2e' }}>Indexing media on {selectedDrive}...</div>
-              <div style={{ fontSize: '11px', color: '#8a8a8f' }}>{scanCount} files mapped</div>
-              <div style={{ width: '200px', height: '3px', background: '#1c1c22', borderRadius: '2px', overflow: 'hidden' }}>
-                <div style={{ height: '100%', width: '40%', background: 'linear-gradient(90deg, transparent, #e11d2e, transparent)', borderRadius: '2px', animation: 'shimmer 1.4s ease-in-out infinite' }} />
-              </div>
-            </div>
-          )}
-
-          {/* Favourites Grid */}
-          {!scanning && activeNav === 'favourites' && (
-            <div className="view-transition-enter">
-              <div style={{ fontSize: '24px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.5px', marginBottom: '8px' }}>
-                Favourites <span style={{ color: '#e11d2e', fontSize: '16px', fontWeight: 500 }}>{allFavFiles.length} items</span>
-              </div>
-              {allFavFiles.length === 0 ? (
-                <div style={{ color: '#8a8a8f', fontSize: '13px', marginTop: '16px' }}>No favourites yet. Add items to your favorites.</div>
-              ) : (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '5px', marginTop: '16px' }}>
-                  {allFavFiles.map(file => (
-                    <FileTile key={file.path} file={file} onOpen={(f, e) => handleTileOpen(f, allFavFiles, e)} onFav={handleFav} isFav={true} isSelected={selected.has(file.path)} onSelect={handleSelect} onContextMenu={(f, e) => handleTileContextMenu(f, allFavFiles, e)} tileSize={100} isDeleting={deletingPaths.has(file.path)} />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Places Map View */}
-          {!scanning && activeNav === 'places' && (
-            <div style={{ height: 'calc(100vh - 120px)' }} className="view-transition-enter">
-              <MapView files={allFiles.filter(f => f.lat !== null && f.lng !== null)} onOpen={(f, list, e) => handleTileOpen(f, list, e)} />
-            </div>
-          )}
-
-          {/* Map View tab */}
-          {!scanning && activeView === 'Map' && activeNav !== 'places' && activeNav !== 'archive' && activeNav !== 'trash' && activeNav !== 'globe' && activeNav !== 'ai-agent' && (
-            <div style={{ height: 'calc(100vh - 120px)' }} className="view-transition-enter">
-              <MapView files={allFiles} onOpen={(f, list, e) => handleTileOpen(f, list, e)} />
-            </div>
-          )}
-
-          {/* Years view */}
-          {!scanning && activeView === 'Years' && activeNav !== 'favourites' && activeNav !== 'places' && activeNav !== 'archive' && activeNav !== 'trash' && activeNav !== 'globe' && activeNav !== 'ai-agent' && (
-            <div style={{ animation: transitioning ? 'slideOutLeft 0.28s forwards' : 'slideInRight 0.28s forwards' }} className="view-transition-enter">
-              <div style={{ fontSize: '24px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.5px', marginBottom: '14px' }}>
-                All Years {yearFilter && <span onClick={() => setYearFilter(null)} style={{ fontSize: '13px', color: '#e11d2e', cursor: 'pointer', fontWeight: 400, marginLeft: '10px' }}>× {yearFilter}</span>}
-              </div>
-              <YearsView groupedFiles={groupedFiles} onYearClick={year => {
-                setYearFilter(year); setActiveView('Timeline')
-                setTimeout(() => {
-                  const key = Object.keys(sortedGroupedData.data).find(m => m.includes(year))
-                  if (key && monthRefs.current[key]) monthRefs.current[key]?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-                }, 100)
-              }} />
-            </div>
-          )}
-
-          {/* Dynamic Grid + Timeline view */}
-          {!scanning && activeNav !== 'favourites' && activeNav !== 'places' && activeNav !== 'archive' && activeNav !== 'trash' && activeNav !== 'globe' && activeNav !== 'ai-agent' && (activeView === 'Grid' || activeView === 'Timeline') && (
-            <div style={{
-              animation: transitioning && activeView === 'Grid' ? 'slideOutLeft 0.28s forwards'
-                : transitioning && activeView === 'Timeline' ? 'slideOutRight 0.28s forwards'
-                  : activeView === 'Timeline' ? 'slideInRight 0.28s forwards' : 'slideInLeft 0.28s forwards'
-            }} className="view-transition-enter">
-              {/* Timeline layout */}
-              {activeView === 'Timeline' && (
-                <div style={{ paddingLeft: '24px', borderLeft: '1.5px solid rgba(255,255,255,0.04)' }}>
-                  {sortedGroupedData.keys.map(monthKey => {
-                    const files = sortedGroupedData.data[monthKey]
-                    return (
-                      <div key={monthKey} ref={el => { monthRefs.current[monthKey] = el }} style={{ marginBottom: '28px', position: 'relative' }}>
-                        <div style={{ position: 'absolute', left: '-28.5px', top: '8px', width: '8px', height: '8px', borderRadius: '50%', background: '#e11d2e', border: '2px solid #0a0a0c' }} />
-                        <div style={{ fontSize: '18px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.3px', lineHeight: 1 }}>
-                          {monthKey}
-                        </div>
-                        <div style={{ fontSize: '11px', color: '#8a8a8f', marginBottom: '10px', marginTop: '4px' }}>{files.length} files</div>
-                        <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
-                          {files.slice(0, 12).map(file => (
-                            <div key={file.path} onClick={(e) => handleTileOpen(file, files, e)} onContextMenu={(e) => handleTileContextMenu(file, files, e)} style={{ width: '80px', height: '80px', borderRadius: '6px', overflow: 'hidden', cursor: 'pointer', background: '#111114', position: 'relative', opacity: deletingPaths.has(file.path) ? 0 : 1, transform: deletingPaths.has(file.path) ? 'scale(0.1)' : 'none', transition: 'all 0.35s' }}>
-                              {(photoExts.includes(file.ext.toLowerCase()) || (videoExts.includes(file.ext.toLowerCase()) && file.thumb)) ? (
-                                <>
-                                  <img src={thumbUrl(file)} loading="lazy" decoding="async" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                                  {videoExts.includes(file.ext.toLowerCase()) && <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.3)' }}><div style={{ fontSize: '18px' }}>▶</div></div>}
-                                </>
-                              ) : (
-                                <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '24px' }}>{videoExts.includes(file.ext.toLowerCase()) ? '🎬' : '📄'}</div>
-                              )}
-                            </div>
-                          ))}
-                          {files.length > 12 && <div style={{ width: '80px', height: '80px', borderRadius: '6px', background: '#161619', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', color: '#e11d2e', cursor: 'pointer', fontWeight: 600 }}>+{files.length - 12} more</div>}
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-
-              {/* Grid layout */}
-              {activeView === 'Grid' && (() => {
-                const tilesPerRow = Math.max(1, Math.floor((window.innerWidth - 260) / (tileSize + 5)))
-                const scrollTop = scrollTopRef.current
-                const winH = window.innerHeight
-                let offsetY = 0
-                void scrollVersion
-                return sortedGroupedData.keys.map(monthKey => {
-                  const files = sortedGroupedData.data[monthKey]
-                  const visible = getVisible(monthKey)
-                  const rowCount = Math.ceil(Math.min(visible, files.length) / tilesPerRow)
-                  const estH = rowCount * (tileSize + 5) + 80
-                  const myOffset = offsetY
-                  offsetY += estH + 28
-                  const inView = myOffset < scrollTop + winH + 1000 && myOffset + estH > scrollTop - 1000
-                  const ref = (el: HTMLDivElement | null): void => { monthRefs.current[monthKey] = el }
-
-                  if (!inView) return <div key={monthKey + '_ph'} ref={ref} style={{ height: estH + 28 }} />
-
-                  return (
-                    <div key={monthKey + '_grid_' + files.filter(f => f.thumb).length} ref={ref} style={{ marginBottom: '28px' }}>
-                      <div style={{ fontSize: '20px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.3px', lineHeight: 1 }}>
-                        {monthKey}
-                      </div>
-                      <div style={{ fontSize: '11px', color: '#8a8a8f', marginBottom: '12px', marginTop: '4px' }}>{files.length} files</div>
-                      <div style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fill, minmax(${tileSize}px, 1fr))`, gap: '5px', transition: 'grid-template-columns 0.12s cubic-bezier(0.25, 0.46, 0.45, 0.94)' }}>
-                        {files.slice(0, visible).map(file => (
-                          <FileTile key={file.path} file={file} onOpen={(f, e) => handleTileOpen(f, files, e)} onFav={handleFav} isFav={favourites.has(file.path)} isSelected={selected.has(file.path)} onSelect={handleSelect} onContextMenu={(f, e) => handleTileContextMenu(f, files, e)} tileSize={tileSize} isDeleting={deletingPaths.has(file.path)} />
-                        ))}
-                      </div>
-                      {files.length > visible && (
-                        <div onClick={() => setVisibleCount(prev => ({ ...prev, [monthKey]: visible + 40 }))} style={{ marginTop: '10px', padding: '8px', borderRadius: '8px', background: '#111113', border: '1px solid rgba(255,255,255,0.04)', cursor: 'pointer', fontSize: '12px', color: '#e11d2e', textAlign: 'center', fontWeight: 500 }}
-                          onMouseEnter={e => e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'}
-                          onMouseLeave={e => e.currentTarget.style.borderColor = 'rgba(255,255,255,0.04)'}
-                        >
-                          Show more ({files.length - visible} remaining)
-                        </div>
-                      )}
-                    </div>
-                  )
-                })
-              })()}
-            </div>
-          )}
-        </div>
+        {/* Isolated Scroll Content Area */}
+        <MainContentArea
+          activeNav={activeNav}
+          activeView={activeView}
+          scanning={scanning}
+          scanCount={scanCount}
+          selectedDrive={selectedDrive}
+          allFiles={allFiles}
+          favourites={favourites}
+          selected={selected}
+          deletingPaths={deletingPaths}
+          handleTileOpen={handleTileOpen}
+          handleFav={handleFav}
+          handleSelect={handleSelect}
+          handleTileContextMenu={handleTileContextMenu}
+          trashedFiles={trashedFiles}
+          handleRestore={handleRestore}
+          setShowEmptyTrashConfirm={setShowEmptyTrashConfirm}
+          setFileToDeletePermanently={setFileToDeletePermanently}
+          yearFilter={yearFilter}
+          setYearFilter={setYearFilter}
+          tileSize={tileSize}
+          setTileSize={setTileSize}
+          transitioning={transitioning}
+          setTransitioning={setTransitioning}
+          sortedGroupedData={sortedGroupedData}
+          handleWheel={handleWheel}
+        />
 
         {/* Status bar */}
         <div style={{ borderTop: '1px solid rgba(255,255,255,0.04)', padding: '8px 22px', display: 'flex', alignItems: 'center', gap: '16px', background: '#08080a', flexShrink: 0 }}>

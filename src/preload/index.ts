@@ -4,46 +4,82 @@ import { electronAPI } from '@electron-toolkit/preload'
 const api = {
   getDrives: () => ipcRenderer.send('get-drives'),
   onDrivesUpdated: (cb: (drives: unknown[]) => void) => {
-    ipcRenderer.removeAllListeners('drives-updated')
-    ipcRenderer.on('drives-updated', (_e, d) => cb(d))
+    const listener = (_e: unknown, d: any) => cb(d)
+    ipcRenderer.on('drives-updated', listener)
+    return () => {
+      ipcRenderer.removeListener('drives-updated', listener)
+    }
   },
   scanDrive: (p: string) => ipcRenderer.send('scan-drive', p),
   getFiles: (p: string) => ipcRenderer.send('get-files', p),
   onScanProgress: (cb: (d: { count: number; drive: string }) => void) => {
-    ipcRenderer.removeAllListeners('scan-progress')
-    ipcRenderer.on('scan-progress', (_e, d) => cb(d))
+    const listener = (_e: unknown, d: any) => cb(d)
+    ipcRenderer.on('scan-progress', listener)
+    return () => {
+      ipcRenderer.removeListener('scan-progress', listener)
+    }
   },
   onScanComplete: (cb: (d: { count: number; drive: string }) => void) => {
-    ipcRenderer.removeAllListeners('scan-complete')
-    ipcRenderer.on('scan-complete', (_e, d) => cb(d))
+    const listener = (_e: unknown, d: any) => cb(d)
+    ipcRenderer.on('scan-complete', listener)
+    return () => {
+      ipcRenderer.removeListener('scan-complete', listener)
+    }
   },
   onFilesUpdated: (cb: (g: Record<string, unknown[]>) => void) => {
-    ipcRenderer.removeAllListeners('files-updated')
-    ipcRenderer.on('files-updated', (_e, g) => cb(g))
+    const listener = (_e: unknown, g: any) => cb(g)
+    ipcRenderer.on('files-updated', listener)
+    return () => {
+      ipcRenderer.removeListener('files-updated', listener)
+    }
   },
   toggleFavourite: (p: string) => ipcRenderer.send('toggle-favourite', p),
   getFavourites: () => ipcRenderer.send('get-favourites'),
   onFavouritesUpdated: (cb: (files: unknown[]) => void) => {
-    ipcRenderer.removeAllListeners('favourites-updated')
-    ipcRenderer.on('favourites-updated', (_e, f) => cb(f))
+    const listener = (_e: unknown, f: any) => cb(f)
+    ipcRenderer.on('favourites-updated', listener)
+    return () => {
+      ipcRenderer.removeListener('favourites-updated', listener)
+    }
   },
   onFavouriteToggled: (cb: (p: string) => void) => {
-    ipcRenderer.removeAllListeners('favourite-toggled')
-    ipcRenderer.on('favourite-toggled', (_e, p) => cb(p))
+    const listener = (_e: unknown, p: any) => cb(p)
+    ipcRenderer.on('favourite-toggled', listener)
+    return () => {
+      ipcRenderer.removeListener('favourite-toggled', listener)
+    }
   },
   openFile: (p: string) => ipcRenderer.send('open-file', p),
   readFileBase64: (p: string) => ipcRenderer.invoke('read-file-base64', p),
   onThumbReady: (cb: (d: { filePath: string; thumbPath: string }) => void) => {
-    ipcRenderer.removeAllListeners('thumb-ready')
-    ipcRenderer.on('thumb-ready', (_e, d) => cb(d))
+    const listener = (_e: unknown, d: any) => cb(d)
+    ipcRenderer.on('thumb-ready', listener)
+    return () => {
+      ipcRenderer.removeListener('thumb-ready', listener)
+    }
   },
   transcodeVideo: (path: string) => ipcRenderer.send('transcode-video', path),
-  onTranscodeDone: (cb: (d: { inputPath: string; outPath: string }) => void) =>
-    ipcRenderer.on('transcode-done', (_e, d) => cb(d)),
-  onTranscodeProgress: (cb: (d: { inputPath: string; secs: number }) => void) =>
-    ipcRenderer.on('transcode-progress', (_e, d) => cb(d)),
-  onTranscodeError: (cb: (d: { inputPath: string }) => void) =>
-    ipcRenderer.on('transcode-error', (_e, d) => cb(d))
+  onTranscodeDone: (cb: (d: { inputPath: string; outPath: string }) => void) => {
+    const listener = (_e: unknown, d: any) => cb(d)
+    ipcRenderer.on('transcode-done', listener)
+    return () => {
+      ipcRenderer.removeListener('transcode-done', listener)
+    }
+  },
+  onTranscodeProgress: (cb: (d: { inputPath: string; secs: number }) => void) => {
+    const listener = (_e: unknown, d: any) => cb(d)
+    ipcRenderer.on('transcode-progress', listener)
+    return () => {
+      ipcRenderer.removeListener('transcode-progress', listener)
+    }
+  },
+  onTranscodeError: (cb: (d: { inputPath: string }) => void) => {
+    const listener = (_e: unknown, d: any) => cb(d)
+    ipcRenderer.on('transcode-error', listener)
+    return () => {
+      ipcRenderer.removeListener('transcode-error', listener)
+    }
+  }
 }
 
 if (process.contextIsolated) {

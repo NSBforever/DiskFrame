@@ -60,6 +60,10 @@ db.exec(`
     id INTEGER PRIMARY KEY CHECK (id = 1),
     skip_confirm INTEGER DEFAULT 0
   );
+
+  CREATE INDEX IF NOT EXISTS idx_files_drive_hidden_trashed_date ON files (drive, hidden, trashed_at, date DESC);
+  CREATE INDEX IF NOT EXISTS idx_files_trashed ON files (trashed_at) WHERE trashed_at IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_files_favourited ON files (favourited) WHERE favourited = 1;
 `)
 
 // Migrate existing DB — add columns if missing

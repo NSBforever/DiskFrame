@@ -28,25 +28,25 @@ declare global {
     electron: ElectronAPI
     api: {
       getDrives: () => void
-      onDrivesUpdated: (callback: (drives: DriveInfo[]) => void) => void
+      onDrivesUpdated: (callback: (drives: DriveInfo[]) => void) => () => void
       scanDrive: (drivePath: string) => void
       getFiles: (drivePath: string) => void
-      onScanProgress: (callback: (data: { count: number; drive: string }) => void) => void
-      onScanComplete: (callback: (data: { count: number; drive: string }) => void) => void
-      onFilesUpdated: (callback: (grouped: Record<string, ScannedFile[]>) => void) => void
+      onScanProgress: (callback: (data: { count: number; drive: string }) => void) => () => void
+      onScanComplete: (callback: (data: { count: number; drive: string }) => void) => () => void
+      onFilesUpdated: (callback: (grouped: Record<string, ScannedFile[]>) => void) => () => void
       toggleFavourite: (filePath: string) => void
       getFavourites: () => void
-      onFavouritesUpdated: (callback: (files: ScannedFile[]) => void) => void
-      onFavouriteToggled: (callback: (filePath: string) => void) => void
+      onFavouritesUpdated: (callback: (files: ScannedFile[]) => void) => () => void
+      onFavouriteToggled: (callback: (filePath: string) => void) => () => void
       openFile: (filePath: string) => void
       readFileBase64: (filePath: string) => Promise<string>
-      onThumbReady: (callback: (data: { filePath: string; thumbPath: string }) => void) => void
+      onThumbReady: (callback: (data: { filePath: string; thumbPath: string }) => void) => () => void
       transcodeVideo: (inputPath: string) => Promise<string>
-      onTranscodeDone: (callback: (data: { inputPath: string; outPath: string }) => void) => void
+      onTranscodeDone: (callback: (data: { inputPath: string; outPath: string }) => void) => () => void
       onTranscodeProgress: (
         callback: (data: { inputPath: string; secs: number; totalSecs?: number }) => void
-      ) => void
-      onTranscodeError: (callback: (data: { inputPath: string }) => void) => void
+      ) => () => void
+      onTranscodeError: (callback: (data: { inputPath: string }) => void) => () => void
     }
   }
 }
