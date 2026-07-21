@@ -12,7 +12,12 @@ function resolveFfmpeg(): string {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const p = require('ffmpeg-static') as string
     if (p) {
-      const candidates = [p, p.replace('app.asar', 'app.asar.unpacked'), p + '.exe']
+      // Prioritize app.asar.unpacked path so Electron executes it successfully from disk rather than inside ASAR
+      const candidates = [
+        p.replace('app.asar', 'app.asar.unpacked'),
+        p,
+        p + '.exe'
+      ]
       for (const c of candidates) if (fs.existsSync(c)) return c
     }
   } catch {}
@@ -396,12 +401,13 @@ function generateVideoThumb(fullPath: string): Promise<string | null> {
     }
 
     // Strategy: try at 2s first, fall back to 0s if file is short
+    // Using keyframe input-seeking (-ss before -i) for near-instant frame extraction and stability
     function tryAt(seekSecs: number, fallback: boolean): void {
       const args = [
-        '-i',
-        fullPath,
         '-ss',
         seekSecs.toString(),
+        '-i',
+        fullPath,
         '-vframes',
         '1',
         '-vf',
@@ -416,6 +422,10 @@ function generateVideoThumb(fullPath: string): Promise<string | null> {
         thumbPath
       ]
 
+      console.log(`[thumb:video] Spawning ffmpeg binary at path: "${ffmpegExe}"`)
+      console.log(`[thumb:video] Target file: "${fullPath}"`)
+      console.log(`[thumb:video] Spawn arguments:`, args)
+
       const ff = cp.spawn(ffmpegExe, args)
       let stderr = ''
       ff.stderr.on('data', (d: Buffer) => {
@@ -424,29 +434,32 @@ function generateVideoThumb(fullPath: string): Promise<string | null> {
 
       const killTimer = setTimeout(() => {
         try {
+          console.error(`[thumb:video] Execution timed out after 20s for: "${fullPath}". Killing process.`)
           ff.kill()
         } catch {}
       }, 20000)
 
-      ff.on('close', (code) => {
+      ff.on('error', (err) => {
         clearTimeout(killTimer)
-        if (code === 0 && fs.existsSync(thumbPath) && fs.statSync(thumbPath).size > 0) {
-          resolve(thumbPath)
-        } else if (!fallback && seekSecs > 0) {
-          // Retry at 0s
-          console.warn(`[thumb:video] retry at 0s for ${fullPath}`)
+        console.error(`[thumb:video] Spawn error for file: "${fullPath}":`, err)
+        if (!fallback && seekSecs > 0) {
+          console.log(`[thumb:video] Retrying at 0s due to spawn error...`)
           tryAt(0, true)
         } else {
-          console.warn(`[thumb:video] failed code=${code} for ${fullPath}`, stderr.slice(-200))
           resolve(null)
         }
       })
 
-      ff.on('error', (err) => {
+      ff.on('close', (code) => {
         clearTimeout(killTimer)
-        if (!fallback && seekSecs > 0) tryAt(0, true)
-        else {
-          console.warn('[thumb:video] spawn error', err)
+        if (code === 0 && fs.existsSync(thumbPath) && fs.statSync(thumbPath).size > 0) {
+          console.log(`[thumb:video] Success! Thumbnail generated at: "${thumbPath}"`)
+          resolve(thumbPath)
+        } else if (!fallback && seekSecs > 0) {
+          console.warn(`[thumb:video] Failed with code ${code} at ${seekSecs}s. Retrying at 0s. Stderr sample:`, stderr.slice(-300))
+          tryAt(0, true)
+        } else {
+          console.error(`[thumb:video] Permanent failure code=${code} for: "${fullPath}". Stderr:`, stderr)
           resolve(null)
         }
       })

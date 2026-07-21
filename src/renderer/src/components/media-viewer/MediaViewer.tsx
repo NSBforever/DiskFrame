@@ -5,6 +5,7 @@ import { useShortcuts } from './ShortcutManager'
 import { ImageLoader } from './ImageLoader'
 import { MediaViewerToolbar } from './MediaViewerToolbar'
 import { MetadataPanel } from './MetadataPanel'
+import { MapPin } from 'lucide-react'
 
 interface ScannedFile {
   path: string
@@ -185,6 +186,26 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
     }
   }, [isFullscreen])
 
+  // Escape key down listener for closing lightbox viewer cleanly
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        const active = document.activeElement
+        if (
+          active &&
+          (active.tagName === 'INPUT' ||
+            active.tagName === 'TEXTAREA' ||
+            active.getAttribute('contenteditable') === 'true')
+        ) {
+          return // Let the active input element handle the Escape press internally
+        }
+        handleClose()
+      }
+    }
+    window.addEventListener('keydown', handleEscape)
+    return () => window.removeEventListener('keydown', handleEscape)
+  }, [handleClose])
+
   // Keybind manager
   useShortcuts({
     onNext: handleNext,
@@ -257,7 +278,9 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
   const confirmDelete = async () => {
     setShowDeleteConfirm(false)
     try {
-      const result = await window.electron.ipcRenderer.invoke('delete-files', [file.path]) as { success?: string[] }
+      const result = (await window.electron.ipcRenderer.invoke('delete-files', [
+        file.path
+      ])) as { success?: string[] }
       if (result && result.success && result.success.length > 0) {
         onDelete(file.path)
         handleClose()
@@ -293,24 +316,26 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
       }
     }
     if (isClosing) {
-      return rect ? {
-        position: 'fixed' as const,
-        top: rect.top,
-        left: rect.left,
-        width: rect.width,
-        height: rect.height,
-        background: 'rgba(10, 10, 12, 0)',
-        opacity: 0,
-        transform: 'scale(0.8)',
-        transition: 'all 0.35s cubic-bezier(0.22, 1, 0.36, 1)'
-      } : {
-        position: 'fixed' as const,
-        inset: 0,
-        background: 'rgba(10, 10, 12, 0)',
-        opacity: 0,
-        transform: 'scale(0.95)',
-        transition: 'all 0.35s cubic-bezier(0.22, 1, 0.36, 1)'
-      }
+      return rect
+        ? {
+            position: 'fixed' as const,
+            top: rect.top,
+            left: rect.left,
+            width: rect.width,
+            height: rect.height,
+            background: 'rgba(10, 10, 12, 0)',
+            opacity: 0,
+            transform: 'scale(0.8)',
+            transition: 'all 0.35s cubic-bezier(0.22, 1, 0.36, 1)'
+          }
+        : {
+            position: 'fixed' as const,
+            inset: 0,
+            background: 'rgba(10, 10, 12, 0)',
+            opacity: 0,
+            transform: 'scale(0.95)',
+            transition: 'all 0.35s cubic-bezier(0.22, 1, 0.36, 1)'
+          }
     }
     return {
       position: 'fixed' as const,
@@ -364,6 +389,7 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
       {controlsVisible && !isOpening && !isClosing && list.indexOf(file) > 0 && (
         <div
           onClick={handlePrev}
+          className="slide-nav-btn"
           style={{
             position: 'absolute',
             left: '16px',
@@ -371,9 +397,9 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
             transform: 'translateY(-50%)',
             width: '44px',
             height: '44px',
-            borderRadius: '50%',
-            background: 'rgba(255,255,255,0.06)',
-            border: '1px solid rgba(255,255,255,0.1)',
+            borderRadius: '4px',
+            background: 'rgba(255,255,255,0.04)',
+            border: '1px solid rgba(255,255,255,0.06)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -382,17 +408,22 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
             color: '#f2f2f0',
             zIndex: 100,
             backdropFilter: 'blur(12px)',
-            transition: 'all 0.3s cubic-bezier(0.22, 1, 0.36, 1)'
+            transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.2s, background-color 0.2s'
           }}
           onMouseEnter={(e) => {
-            e.currentTarget.style.background = 'rgba(255,255,255,0.15)'
-            e.currentTarget.style.transform = 'translateY(-50%) scale(1.05)'
+            e.currentTarget.style.background = 'rgba(255,255,255,0.08)'
             e.currentTarget.style.borderColor = '#e11d2e'
           }}
           onMouseLeave={(e) => {
-            e.currentTarget.style.background = 'rgba(255,255,255,0.06)'
+            e.currentTarget.style.background = 'rgba(255,255,255,0.04)'
+            e.currentTarget.style.borderColor = 'rgba(255,255,255,0.06)'
             e.currentTarget.style.transform = 'translateY(-50%) scale(1)'
-            e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'
+          }}
+          onMouseDown={(e) => {
+            if (e.button === 0) e.currentTarget.style.transform = 'translateY(-50%) scale(0.9)'
+          }}
+          onMouseUp={(e) => {
+            if (e.button === 0) e.currentTarget.style.transform = 'translateY(-50%) scale(1.05)'
           }}
         >
           ‹
@@ -403,6 +434,7 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
       {controlsVisible && !isOpening && !isClosing && list.indexOf(file) < list.length - 1 && (
         <div
           onClick={handleNext}
+          className="slide-nav-btn"
           style={{
             position: 'absolute',
             right: '16px',
@@ -410,9 +442,9 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
             transform: 'translateY(-50%)',
             width: '44px',
             height: '44px',
-            borderRadius: '50%',
-            background: 'rgba(255,255,255,0.06)',
-            border: '1px solid rgba(255,255,255,0.1)',
+            borderRadius: '4px',
+            background: 'rgba(255,255,255,0.04)',
+            border: '1px solid rgba(255,255,255,0.06)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -421,17 +453,22 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
             color: '#f2f2f0',
             zIndex: 100,
             backdropFilter: 'blur(12px)',
-            transition: 'all 0.3s cubic-bezier(0.22, 1, 0.36, 1)'
+            transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.2s, background-color 0.2s'
           }}
           onMouseEnter={(e) => {
-            e.currentTarget.style.background = 'rgba(255,255,255,0.15)'
-            e.currentTarget.style.transform = 'translateY(-50%) scale(1.05)'
+            e.currentTarget.style.background = 'rgba(255,255,255,0.08)'
             e.currentTarget.style.borderColor = '#e11d2e'
           }}
           onMouseLeave={(e) => {
-            e.currentTarget.style.background = 'rgba(255,255,255,0.06)'
+            e.currentTarget.style.background = 'rgba(255,255,255,0.04)'
+            e.currentTarget.style.borderColor = 'rgba(255,255,255,0.06)'
             e.currentTarget.style.transform = 'translateY(-50%) scale(1)'
-            e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'
+          }}
+          onMouseDown={(e) => {
+            if (e.button === 0) e.currentTarget.style.transform = 'translateY(-50%) scale(0.9)'
+          }}
+          onMouseUp={(e) => {
+            if (e.button === 0) e.currentTarget.style.transform = 'translateY(-50%) scale(1.05)'
           }}
         >
           ›
@@ -482,6 +519,7 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
             padding: '16px 20px',
             background: 'linear-gradient(to top, rgba(10,10,12,0.9) 0%, rgba(10,10,12,0.3) 70%, transparent 100%)',
             display: 'flex',
+            alignItems: 'center',
             gap: '24px',
             fontSize: '11px',
             color: '#8a8a8f',
@@ -495,8 +533,8 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
             {file.path}
           </span>
           {file.lat && file.lng && (
-            <span>
-              📍 {file.lat.toFixed(3)}, {file.lng.toFixed(3)}
+            <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <MapPin size={12} color="#e11d2e" /> {file.lat.toFixed(3)}, {file.lng.toFixed(3)}
             </span>
           )}
         </div>
@@ -523,17 +561,18 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
             className="cred-glass"
             style={{
               padding: '24px 32px',
-              borderRadius: '16px',
+              borderRadius: '4px',
               maxWidth: '400px',
               width: '90%',
               textAlign: 'center',
               display: 'flex',
               flexDirection: 'column',
               gap: '20px',
+              boxShadow: 'none',
               animation: 'slideInUp 0.25s cubic-bezier(0.22, 1, 0.36, 1)'
             }}
           >
-            <div style={{ fontSize: '16px', fontWeight: 600, color: '#ffffff' }}>
+            <div style={{ fontSize: '14px', fontWeight: 700, color: '#ffffff', textTransform: 'uppercase', letterSpacing: '1px' }}>
               Move this file to Trash?
             </div>
             <div style={{ fontSize: '12px', color: '#8a8a8f', lineHeight: 1.5 }}>

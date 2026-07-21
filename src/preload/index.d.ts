@@ -37,7 +37,7 @@ declare global {
       toggleFavourite: (filePath: string) => void
       getFavourites: () => void
       onFavouritesUpdated: (callback: (files: ScannedFile[]) => void) => () => void
-      onFavouriteToggled: (callback: (filePath: string) => void) => () => void
+      onFavouriteToggled: (callback: (data: { filePath: string; isFav: boolean }) => void) => () => void
       openFile: (filePath: string) => void
       readFileBase64: (filePath: string) => Promise<string>
       onThumbReady: (callback: (data: { filePath: string; thumbPath: string }) => void) => () => void

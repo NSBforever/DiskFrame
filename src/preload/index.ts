@@ -42,8 +42,8 @@ const api = {
       ipcRenderer.removeListener('favourites-updated', listener)
     }
   },
-  onFavouriteToggled: (cb: (p: string) => void) => {
-    const listener = (_e: unknown, p: any) => cb(p)
+  onFavouriteToggled: (cb: (d: { filePath: string; isFav: boolean }) => void) => {
+    const listener = (_e: unknown, d: any) => cb(d)
     ipcRenderer.on('favourite-toggled', listener)
     return () => {
       ipcRenderer.removeListener('favourite-toggled', listener)

@@ -88,6 +88,19 @@ export function useGestures({
     const handlePointerDown = (e: PointerEvent) => {
       if (e.button === 2) return
 
+      // Prevent gestures / pointer capturing on buttons, inputs, selects, or toolbar/video custom controls
+      const target = e.target as HTMLElement
+      if (
+        target.closest('button') ||
+        target.closest('input') ||
+        target.closest('select') ||
+        target.closest('.media-viewer-controls') ||
+        target.closest('.slide-nav-btn') ||
+        target.closest('[data-no-drag]')
+      ) {
+        return
+      }
+
       el.setPointerCapture(e.pointerId)
       isDraggingRef.current = true
       dragStartPos = { x: e.clientX, y: e.clientY }
@@ -223,3 +236,4 @@ export function useGestures({
     setSwipeOffset
   }
 }
+export default useGestures

@@ -30,11 +30,15 @@ import {
   emptyTrash,
   autoPurgeTrash
 } from './scanner'
+import Database from 'better-sqlite3'
 
 const ffmpegExe = ffmpegPath ? ffmpegPath.replace('app.asar', 'app.asar.unpacked') : 'ffmpeg'
 
 let mainWindow: BrowserWindow
 let driveInterval: ReturnType<typeof setInterval> | null = null
+
+// Re-open sqlite db to query status for sync
+const dbPath = join(app.getPath('userData'), 'diskframe.db')
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -185,7 +189,12 @@ app.whenReady().then(() => {
 
   ipcMain.on('toggle-favourite', (_event, filePath: string) => {
     toggleFavourite(filePath)
-    if (mainWindow) mainWindow.webContents.send('favourite-toggled', filePath)
+    // Instantly query the new favourited status and send as a payload to avoid double-toggles
+    const db = new Database(dbPath)
+    const row = db.prepare('SELECT favourited FROM files WHERE path = ?').get(filePath) as { favourited: number } | undefined
+    db.close()
+    const isFav = (row?.favourited ?? 0) === 1
+    if (mainWindow) mainWindow.webContents.send('favourite-toggled', { filePath, isFav })
   })
 
   ipcMain.on('get-favourites', () => {

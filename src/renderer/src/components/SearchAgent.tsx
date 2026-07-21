@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react'
 import Fuse from 'fuse.js'
 import { FileTile } from '../App'
+import { Search } from 'lucide-react'
 
 interface ScannedFile {
   path: string
@@ -71,23 +72,7 @@ export function ApertureLogo(): React.JSX.Element {
   )
 }
 
-// resolveQueryWithLLM - Clearly marked extension point
 export async function resolveQueryWithLLM(query: string, localResults: ScannedFile[]): Promise<ScannedFile[]> {
-  /*
-    EXTENSION POINT: Real Claude/LLM call integration
-    
-    To implement a true LLM-based query resolution:
-    1. IPC Bridge: In the Electron main process, define a new handler `ai-enrich-query`.
-       ipcMain.handle('ai-enrich-query', async (event, queryStr, filesMetadata) => {
-         const apiKey = process.env.CLAUDE_API_KEY; // Managed securely on main process
-         // Perform fetch to Claude API: https://api.anthropic.com/v1/messages
-         // Prompt Claude to parse the query against the file schema, returning filtered file paths.
-         ...
-       });
-    2. Renderer invocation:
-       const results = await window.electron.ipcRenderer.invoke('ai-enrich-query', query, localResults);
-       return results;
-  */
   console.log(`[AI Search Agent] LLM resolver stub called for: "${query}" with ${localResults.length} initial items.`);
   return localResults;
 }
@@ -238,7 +223,6 @@ export default function SearchAgent({
       chips.push(`Favourites from ${years[0]}`)
     }
 
-    // Fallbacks
     if (chips.length === 0) {
       chips.push('Photos from last year')
       chips.push('Starred videos')
@@ -263,22 +247,21 @@ export default function SearchAgent({
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-      
-      {/* Intro Dashboard Card (centered when no query, slides up when searching) */}
+      {/* Intro Dashboard Card */}
       <div
         className="cred-glass"
         style={{
           width: '580px',
           maxWidth: '90%',
           margin: hasSearch ? '10px auto' : '10vh auto 30px',
-          borderRadius: '16px',
+          borderRadius: '4px',
           padding: hasSearch ? '16px 24px' : '36px',
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
           gap: hasSearch ? '12px' : '20px',
           border: '1px solid rgba(225, 29, 46, 0.25)',
-          boxShadow: '0 8px 32px rgba(225, 29, 46, 0.1)',
+          boxShadow: 'none',
           transition: 'all 0.4s cubic-bezier(0.22, 1, 0.36, 1)',
           position: 'relative'
         }}
@@ -318,7 +301,7 @@ export default function SearchAgent({
               border: 'none',
               padding: '0 20px',
               height: '40px',
-              borderRadius: '8px',
+              borderRadius: '4px',
               fontWeight: 600,
               fontSize: '13px'
             }}
@@ -377,11 +360,11 @@ export default function SearchAgent({
                 justifyContent: 'center',
                 gap: '12px',
                 background: '#0e0e11',
-                borderRadius: '12px',
+                borderRadius: '4px',
                 border: '1px solid rgba(255,255,255,0.04)'
               }}
             >
-              <div style={{ fontSize: '32px' }}>🔍</div>
+              <Search size={32} style={{ color: '#52525b' }} />
               <div style={{ fontSize: '13px', color: '#8a8a8f' }}>No matching items found.</div>
               <div style={{ fontSize: '11px', color: '#52525b' }}>Try broadening your search or modifying keywords.</div>
             </div>
