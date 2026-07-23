@@ -23,6 +23,8 @@ import {
   verifyPin,
   getSkipConfirm,
   setSkipConfirm,
+  getTileSizePref,
+  setTileSizePref,
   getTrashedFiles,
   getTrashCount,
   softDeleteFiles,
@@ -303,6 +305,12 @@ app.whenReady().then(() => {
   ipcMain.handle('get-skip-confirm', () => getSkipConfirm())
   ipcMain.handle('set-skip-confirm', (_event, skip: boolean) => {
     setSkipConfirm(skip)
+    return true
+  })
+
+  ipcMain.handle('get-tile-size', () => getTileSizePref())
+  ipcMain.handle('set-tile-size', (_event, size: number) => {
+    setTileSizePref(size)
     return true
   })
 

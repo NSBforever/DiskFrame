@@ -216,32 +216,93 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   const handlePlay = () => setIsPlaying(true)
   const handlePause = () => setIsPlaying(false)
 
-  // Seek bar draggable bind supporting stream seeking
-  const handleSeekChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = Number(e.target.value)
-    setCurrentTime(val)
+  // Seek bar hover preview & drag seek handlers
+  const [hoverTime, setHoverTime] = useState<number | null>(null)
+  const [hoverX, setHoverX] = useState<number>(0)
+  const [isDraggingSeek, setIsDraggingSeek] = useState(false)
+  const [volumeHovered, setVolumeHovered] = useState(false)
+  const [showSpeedMenu, setShowSpeedMenu] = useState(false)
+
+  const handleSeekBarMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect()
+    const x = e.clientX - rect.left
+    const pct = Math.max(0, Math.min(1, x / rect.width))
+    const time = pct * duration
+    setHoverTime(time)
+    setHoverX(x)
+  }
+
+  const handleSeekBarMouseLeave = () => {
+    setHoverTime(null)
+  }
+
+  const handleSeekBarMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    setIsDraggingSeek(true)
+    const rect = e.currentTarget.getBoundingClientRect()
+    const x = e.clientX - rect.left
+    const pct = Math.max(0, Math.min(1, x / rect.width))
+    const targetTime = pct * duration
+    setCurrentTime(targetTime)
 
     if (videoMode === 'native') {
-      if (videoRef.current) {
-        videoRef.current.currentTime = val
-      }
+      if (videoRef.current) videoRef.current.currentTime = targetTime
     } else if (videoMode === 'stream') {
       setIsBuffering(true)
-      setSeekOffset(val)
-      window.api
-        .getVideoPlayInfo(file.path, val)
+      setSeekOffset(targetTime)
+      window.api.getVideoPlayInfo(file.path, targetTime)
         .then((info) => {
           setVideoUrl(info.url)
           setIsBuffering(false)
-          if (videoRef.current) {
-            videoRef.current.play().catch(() => {})
-          }
+          if (videoRef.current) videoRef.current.play().catch(() => {})
         })
-        .catch(() => {
-          setIsBuffering(false)
-        })
+        .catch(() => setIsBuffering(false))
     }
   }
+
+  useEffect(() => {
+    if (!isDraggingSeek) return
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const seekBar = document.getElementById('youtube-seek-bar')
+      if (!seekBar) return
+      const rect = seekBar.getBoundingClientRect()
+      const x = e.clientX - rect.left
+      const pct = Math.max(0, Math.min(1, x / rect.width))
+      const targetTime = pct * duration
+      setCurrentTime(targetTime)
+    }
+
+    const handleMouseUp = (e: MouseEvent) => {
+      setIsDraggingSeek(false)
+      const seekBar = document.getElementById('youtube-seek-bar')
+      if (!seekBar) return
+      const rect = seekBar.getBoundingClientRect()
+      const x = e.clientX - rect.left
+      const pct = Math.max(0, Math.min(1, x / rect.width))
+      const targetTime = pct * duration
+
+      if (videoMode === 'native') {
+        if (videoRef.current) videoRef.current.currentTime = targetTime
+      } else if (videoMode === 'stream') {
+        setIsBuffering(true)
+        setSeekOffset(targetTime)
+        window.api.getVideoPlayInfo(file.path, targetTime)
+          .then((info) => {
+            setVideoUrl(info.url)
+            setIsBuffering(false)
+            if (videoRef.current) videoRef.current.play().catch(() => {})
+          })
+          .catch(() => setIsBuffering(false))
+      }
+    }
+
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [isDraggingSeek, duration, videoMode, file.path])
 
   // Volume slider & Mute toggle binds
   const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -316,6 +377,117 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
       clearInterval(timer)
     }
   }, [isVideo])
+
+  // Capture-phase keydown listener for strict keyboard shortcuts overrides
+  useEffect(() => {
+    if (!isVideo) return
+
+    const handleVideoKeyDown = (e: KeyboardEvent) => {
+      const activeEl = document.activeElement
+      if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.getAttribute('contenteditable') === 'true')) {
+        return
+      }
+
+      switch (e.key) {
+        case ' ':
+        case 'k':
+        case 'K':
+          e.preventDefault()
+          e.stopPropagation()
+          e.stopImmediatePropagation()
+          togglePlay()
+          break
+        case 'ArrowLeft': {
+          e.preventDefault()
+          e.stopPropagation()
+          e.stopImmediatePropagation()
+          const nextTimeL = Math.max(0, currentTime - 5)
+          setCurrentTime(nextTimeL)
+          if (videoMode === 'native') {
+            if (videoRef.current) videoRef.current.currentTime = nextTimeL
+          } else if (videoMode === 'stream') {
+            setIsBuffering(true)
+            setSeekOffset(nextTimeL)
+            window.api.getVideoPlayInfo(file.path, nextTimeL)
+              .then((info) => {
+                setVideoUrl(info.url)
+                setIsBuffering(false)
+                if (videoRef.current) videoRef.current.play().catch(() => {})
+              })
+              .catch(() => setIsBuffering(false))
+          }
+          break
+        }
+        case 'ArrowRight': {
+          e.preventDefault()
+          e.stopPropagation()
+          e.stopImmediatePropagation()
+          const nextTimeR = Math.min(duration, currentTime + 5)
+          setCurrentTime(nextTimeR)
+          if (videoMode === 'native') {
+            if (videoRef.current) videoRef.current.currentTime = nextTimeR
+          } else if (videoMode === 'stream') {
+            setIsBuffering(true)
+            setSeekOffset(nextTimeR)
+            window.api.getVideoPlayInfo(file.path, nextTimeR)
+              .then((info) => {
+                setVideoUrl(info.url)
+                setIsBuffering(false)
+                if (videoRef.current) videoRef.current.play().catch(() => {})
+              })
+              .catch(() => setIsBuffering(false))
+          }
+          break
+        }
+        case 'ArrowUp': {
+          e.preventDefault()
+          e.stopPropagation()
+          e.stopImmediatePropagation()
+          const nextVolumeU = Math.min(1, volume + 0.05)
+          if (videoRef.current) videoRef.current.volume = nextVolumeU
+          setVolume(nextVolumeU)
+          if (videoRef.current) videoRef.current.muted = false
+          setIsMuted(false)
+          break
+        }
+        case 'ArrowDown': {
+          e.preventDefault()
+          e.stopPropagation()
+          e.stopImmediatePropagation()
+          const nextVolumeD = Math.max(0, volume - 0.05)
+          if (videoRef.current) videoRef.current.volume = nextVolumeD
+          setVolume(nextVolumeD)
+          if (nextVolumeD === 0) {
+            if (videoRef.current) videoRef.current.muted = true
+            setIsMuted(true)
+          } else {
+            if (videoRef.current) videoRef.current.muted = false
+            setIsMuted(false)
+          }
+          break
+        }
+        case 'm':
+        case 'M':
+          e.preventDefault()
+          e.stopPropagation()
+          e.stopImmediatePropagation()
+          toggleMute()
+          break
+        case 'f':
+        case 'F':
+          e.preventDefault()
+          e.stopPropagation()
+          e.stopImmediatePropagation()
+          toggleFullscreen()
+          break
+      }
+    }
+
+    window.addEventListener('keydown', handleVideoKeyDown, true)
+    return () => {
+      window.removeEventListener('keydown', handleVideoKeyDown, true)
+    }
+  }, [isVideo, togglePlay, currentTime, duration, videoMode, file.path, volume, toggleMute, toggleFullscreen])
 
   const formatTime = (secs: number) => {
     if (isNaN(secs)) return '0:00'
@@ -487,164 +659,303 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
                 </div>
               )}
 
-              {/* Custom VLC-style Video Control Overlay */}
+              {/* Custom YouTube-style Video Control Overlay */}
               <div
                 style={{
                   position: 'absolute',
-                  bottom: '16px',
-                  left: '16px',
-                  right: '16px',
-                  background: 'rgba(10, 10, 12, 0.88)',
-                  backdropFilter: 'blur(12px) saturate(1.2)',
-                  border: '1px solid rgba(225, 29, 46, 0.25)',
-                  borderRadius: '4px',
-                  padding: '8px 14px',
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
+                  height: '100px',
+                  background: 'linear-gradient(to top, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.4) 50%, transparent 100%)',
+                  padding: '0 20px 20px 20px',
                   display: 'flex',
-                  alignItems: 'center',
-                  gap: '12px',
+                  flexDirection: 'column',
+                  justifyContent: 'flex-end',
                   opacity: showControls ? 1 : 0,
-                  transition: 'opacity 0.25s cubic-bezier(0.22, 1, 0.36, 1)',
+                  transform: showControls ? 'translateY(0)' : 'translateY(8px)',
+                  transition: 'opacity 0.25s cubic-bezier(0.22, 1, 0.36, 1), transform 0.25s cubic-bezier(0.22, 1, 0.36, 1)',
                   zIndex: 200,
                   pointerEvents: showControls ? 'auto' : 'none',
-                  userSelect: 'none'
+                  userSelect: 'none',
+                  boxSizing: 'border-box'
                 }}
               >
-                {/* Play/Pause Button */}
-                <button
-                  onClick={togglePlay}
+                <style>{`
+                  #youtube-seek-bar:hover .seek-bar-track {
+                    height: 6px !important;
+                  }
+                  #youtube-seek-bar:hover .seek-bar-scrubber {
+                    transform: translate(-50%, -50%) scale(1) !important;
+                  }
+                `}</style>
+                {/* Seek Bar */}
+                <div
+                  id="youtube-seek-bar"
+                  onMouseMove={handleSeekBarMouseMove}
+                  onMouseLeave={handleSeekBarMouseLeave}
+                  onMouseDown={handleSeekBarMouseDown}
                   style={{
-                    background: 'transparent',
-                    border: 'none',
-                    color: '#d0d0e0',
+                    width: '100%',
+                    height: '16px',
+                    display: 'flex',
+                    alignItems: 'center',
                     cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    padding: 0
-                  }}
-                  onMouseEnter={(e) => (e.currentTarget.style.color = '#e11d2e')}
-                  onMouseLeave={(e) => (e.currentTarget.style.color = '#d0d0e0')}
-                >
-                  {isPlaying ? <Pause size={16} /> : <Play size={16} />}
-                </button>
-
-                {/* Duration Binds */}
-                <div
-                  style={{
-                    fontSize: '10px',
-                    color: '#8a8a8f',
-                    minWidth: '70px',
-                    fontWeight: 600,
-                    letterSpacing: '0.5px'
+                    position: 'relative',
+                    marginBottom: '4px'
                   }}
                 >
-                  {formatTime(currentTime)} / {formatTime(duration)}
-                </div>
-
-                {/* Custom Seek slider track */}
-                <input
-                  type="range"
-                  min="0"
-                  max={duration || 100}
-                  value={currentTime}
-                  onChange={handleSeekChange}
-                  style={{
-                    flex: 1,
-                    height: '4px',
-                    outline: 'none',
-                    cursor: 'pointer'
-                  }}
-                />
-
-                {/* Mute toggle and Volume level */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                  <button
-                    onClick={toggleMute}
+                  {/* Background track */}
+                  <div
+                    className="seek-bar-track"
                     style={{
-                      background: 'transparent',
-                      border: 'none',
-                      color: '#d0d0e0',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      alignItems: 'center',
-                      padding: 0
-                    }}
-                    onMouseEnter={(e) => (e.currentTarget.style.color = '#e11d2e')}
-                    onMouseLeave={(e) => (e.currentTarget.style.color = '#d0d0e0')}
-                  >
-                    {isMuted ? <VolumeX size={16} /> : <Volume2 size={16} />}
-                  </button>
-                  <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.05"
-                    value={isMuted ? 0 : volume}
-                    onChange={handleVolumeChange}
-                    style={{
-                      width: '60px',
+                      width: '100%',
                       height: '4px',
-                      outline: 'none',
-                      cursor: 'pointer'
+                      background: 'rgba(255, 255, 255, 0.2)',
+                      borderRadius: '2px',
+                      position: 'relative',
+                      transition: 'height 0.1s ease-in-out'
                     }}
-                  />
-                </div>
-
-                {/* Playback speed selector multipliers */}
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '2px',
-                    borderLeft: '1px solid rgba(255,255,255,0.08)',
-                    paddingLeft: '8px'
-                  }}
-                >
-                  {[0.5, 1.0, 1.5, 2.0].map((speed) => (
-                    <button
-                      key={speed}
-                      onClick={() => handleSpeedChange(speed)}
+                  >
+                    {/* Playback Progress (Red fill) */}
+                    <div
                       style={{
-                        background: playbackSpeed === speed ? 'rgba(225, 29, 46, 0.25)' : 'transparent',
-                        border: 'none',
+                        height: '100%',
+                        width: `${duration ? (currentTime / duration) * 100 : 0}%`,
+                        background: '#e11d2e',
                         borderRadius: '2px',
-                        color: playbackSpeed === speed ? '#e11d2e' : '#8a8a8f',
+                        position: 'absolute',
+                        left: 0,
+                        top: 0
+                      }}
+                    />
+                    {/* Scrubber knob */}
+                    <div
+                      className="seek-bar-scrubber"
+                      style={{
+                        position: 'absolute',
+                        left: `${duration ? (currentTime / duration) * 100 : 0}%`,
+                        top: '50%',
+                        transform: isDraggingSeek ? 'translate(-50%, -50%) scale(1)' : 'translate(-50%, -50%) scale(0)',
+                        width: '12px',
+                        height: '12px',
+                        borderRadius: '50%',
+                        background: '#e11d2e',
+                        transition: 'transform 0.1s ease-in-out',
+                        boxShadow: '0 0 6px rgba(0,0,0,0.5)'
+                      }}
+                    />
+                  </div>
+
+                  {/* Time Tooltip */}
+                  {hoverTime !== null && (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        left: `${hoverX}px`,
+                        bottom: '20px',
+                        transform: 'translateX(-50%)',
+                        background: 'rgba(15,15,20,0.95)',
+                        border: '1px solid rgba(255,255,255,0.08)',
+                        borderRadius: '2px',
+                        padding: '2px 6px',
                         fontSize: '9px',
-                        fontWeight: 700,
-                        padding: '2px 4px',
-                        cursor: 'pointer',
-                        letterSpacing: '0.2px'
-                      }}
-                      onMouseEnter={(e) => {
-                        if (playbackSpeed !== speed) e.currentTarget.style.color = '#ffffff'
-                      }}
-                      onMouseLeave={(e) => {
-                        if (playbackSpeed !== speed) e.currentTarget.style.color = '#8a8a8f'
+                        color: '#ffffff',
+                        fontWeight: 'bold',
+                        pointerEvents: 'none',
+                        whiteSpace: 'nowrap',
+                        zIndex: 250
                       }}
                     >
-                      {speed}x
-                    </button>
-                  ))}
+                      {formatTime(hoverTime)}
+                    </div>
+                  )}
                 </div>
 
-                {/* Local Fullscreen switch */}
-                <button
-                  onClick={toggleFullscreen}
+                {/* Control Bar Layout */}
+                <div
                   style={{
-                    background: 'transparent',
-                    border: 'none',
-                    color: '#d0d0e0',
-                    cursor: 'pointer',
+                    width: '100%',
                     display: 'flex',
                     alignItems: 'center',
-                    padding: 0,
-                    borderLeft: '1px solid rgba(255,255,255,0.08)',
-                    paddingLeft: '8px'
+                    height: '36px'
                   }}
-                  onMouseEnter={(e) => (e.currentTarget.style.color = '#e11d2e')}
-                  onMouseLeave={(e) => (e.currentTarget.style.color = '#d0d0e0')}
                 >
-                  {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
-                </button>
+                  {/* Left Controls */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                    <button
+                      onClick={togglePlay}
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        color: '#f2f2f0',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        padding: 0
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.color = '#e11d2e')}
+                      onMouseLeave={(e) => (e.currentTarget.style.color = '#f2f2f0')}
+                    >
+                      {isPlaying ? <Pause size={18} /> : <Play size={18} />}
+                    </button>
+
+                    <div
+                      style={{
+                        fontSize: '11px',
+                        color: '#f2f2f0',
+                        fontWeight: 500,
+                        letterSpacing: '0.5px'
+                      }}
+                    >
+                      {formatTime(currentTime)} <span style={{ color: '#8a8a8f' }}>/</span> {formatTime(duration)}
+                    </div>
+                  </div>
+
+                  {/* Spacer */}
+                  <div style={{ flex: 1 }} />
+
+                  {/* Right Controls */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                    {/* Volume Button + Slide Slider */}
+                    <div
+                      onMouseEnter={() => setVolumeHovered(true)}
+                      onMouseLeave={() => setVolumeHovered(false)}
+                      style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+                    >
+                      <button
+                        onClick={toggleMute}
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          color: '#f2f2f0',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          padding: 0
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.color = '#e11d2e')}
+                        onMouseLeave={(e) => (e.currentTarget.style.color = '#f2f2f0')}
+                      >
+                        {isMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
+                      </button>
+
+                      <div
+                        style={{
+                          width: volumeHovered ? '60px' : '0px',
+                          opacity: volumeHovered ? 1 : 0,
+                          overflow: 'hidden',
+                          transition: 'width 0.2s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.2s cubic-bezier(0.22, 1, 0.36, 1)',
+                          display: 'flex',
+                          alignItems: 'center'
+                        }}
+                      >
+                        <input
+                          type="range"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={isMuted ? 0 : volume}
+                          onChange={handleVolumeChange}
+                          style={{
+                            width: '60px',
+                            height: '3px',
+                            outline: 'none',
+                            cursor: 'pointer',
+                            accentColor: '#e11d2e',
+                            background: 'rgba(255,255,255,0.2)'
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Speed Selector */}
+                    <div style={{ position: 'relative' }}>
+                      <button
+                        onClick={() => setShowSpeedMenu(!showSpeedMenu)}
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          color: '#f2f2f0',
+                          fontSize: '11px',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                          padding: '4px 8px',
+                          borderRadius: '2px',
+                          textTransform: 'uppercase'
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.color = '#e11d2e')}
+                        onMouseLeave={(e) => (e.currentTarget.style.color = '#f2f2f0')}
+                      >
+                        {playbackSpeed === 1.0 ? 'Normal' : `${playbackSpeed}x`}
+                      </button>
+
+                      {showSpeedMenu && (
+                        <div
+                          style={{
+                            position: 'absolute',
+                            bottom: '36px',
+                            right: '0',
+                            background: 'rgba(15, 15, 20, 0.95)',
+                            border: '1px solid rgba(255,255,255,0.08)',
+                            borderRadius: '4px',
+                            padding: '4px 0',
+                            minWidth: '100px',
+                            zIndex: 300,
+                            boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+                            display: 'flex',
+                            flexDirection: 'column'
+                          }}
+                        >
+                          {[0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0].map((speed) => (
+                            <div
+                              key={speed}
+                              onClick={() => {
+                                handleSpeedChange(speed)
+                                setShowSpeedMenu(false)
+                              }}
+                              style={{
+                                padding: '6px 12px',
+                                cursor: 'pointer',
+                                fontSize: '11px',
+                                color: playbackSpeed === speed ? '#e11d2e' : '#f2f2f0',
+                                background: playbackSpeed === speed ? 'rgba(225,29,46,0.1)' : 'transparent',
+                                fontWeight: playbackSpeed === speed ? 'bold' : 'normal',
+                                textAlign: 'center'
+                              }}
+                              onMouseEnter={(e) => {
+                                if (playbackSpeed !== speed) e.currentTarget.style.background = 'rgba(255,255,255,0.05)'
+                              }}
+                              onMouseLeave={(e) => {
+                                if (playbackSpeed !== speed) e.currentTarget.style.background = 'transparent'
+                              }}
+                            >
+                              {speed === 1.0 ? 'Normal' : `${speed}x`}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Fullscreen Button */}
+                    <button
+                      onClick={toggleFullscreen}
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        color: '#f2f2f0',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        alignItems: 'center',
+                        padding: 0
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.color = '#e11d2e')}
+                      onMouseLeave={(e) => (e.currentTarget.style.color = '#f2f2f0')}
+                    >
+                      {isFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+                    </button>
+                  </div>
+                </div>
               </div>
             </>
           ) : (

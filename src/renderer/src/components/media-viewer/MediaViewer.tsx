@@ -7,6 +7,10 @@ import { MediaViewerToolbar } from './MediaViewerToolbar'
 import { MetadataPanel } from './MetadataPanel'
 import { MapPin } from 'lucide-react'
 
+const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic']
+const videoExts = ['.mp4', '.mov', '.avi', '.mkv', '.webm']
+
+
 interface ScannedFile {
   path: string
   name: string
@@ -48,6 +52,8 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
   rect
 }) => {
   const containerRef = useRef<HTMLDivElement>(null)
+  const isPhoto = photoExts.includes(file.ext.toLowerCase())
+  const isVideo = videoExts.includes(file.ext.toLowerCase())
   const [imgDimensions, setImgDimensions] = useState<{ width: number; height: number } | null>(null)
   const [rotation, setRotation] = useState(0)
   const [flipHorizontal, setFlipHorizontal] = useState(false)
@@ -509,7 +515,7 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
       />
 
       {/* Bottom Bar Info Overlay */}
-      {controlsVisible && !isOpening && !isClosing && !isInfoOpen && (
+      {controlsVisible && !isOpening && !isClosing && !isInfoOpen && isPhoto && (
         <div
           style={{
             position: 'absolute',
@@ -530,6 +536,45 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
           <span>{file.date ? new Date(file.date).toLocaleDateString() : ''}</span>
           <span>{(file.size / 1024 / 1024).toFixed(1)} MB</span>
           <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {file.path}
+          </span>
+          {file.lat && file.lng && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <MapPin size={12} color="#e11d2e" /> {file.lat.toFixed(3)}, {file.lng.toFixed(3)}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Video Details Top-Left Overlay */}
+      {controlsVisible && !isOpening && !isClosing && !isInfoOpen && isVideo && (
+        <div
+          style={{
+            position: 'absolute',
+            top: '60px',
+            left: '20px',
+            background: 'rgba(10, 10, 12, 0.75)',
+            backdropFilter: 'blur(8px)',
+            borderRadius: '4px',
+            border: '1px solid rgba(255,255,255,0.06)',
+            padding: '10px 14px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '4px',
+            fontSize: '11px',
+            color: '#8a8a8f',
+            zIndex: 100,
+            maxWidth: '300px',
+            pointerEvents: 'none',
+            boxSizing: 'border-box'
+          }}
+        >
+          <span style={{ color: '#ffffff', fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={file.name}>
+            {file.name}
+          </span>
+          <span>{file.date ? new Date(file.date).toLocaleDateString() : ''}</span>
+          <span>{(file.size / 1024 / 1024).toFixed(1)} MB</span>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={file.path}>
             {file.path}
           </span>
           {file.lat && file.lng && (

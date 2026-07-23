@@ -80,6 +80,15 @@ if (!cols.includes('hidden'))
 if (!cols.includes('vault_path')) db.prepare('ALTER TABLE files ADD COLUMN vault_path TEXT').run()
 if (!cols.includes('trashed_at')) db.prepare('ALTER TABLE files ADD COLUMN trashed_at TEXT').run()
 
+const deletePrefsCols = (db.prepare('PRAGMA table_info(delete_prefs)').all() as { name: string }[]).map((c) => c.name)
+if (!deletePrefsCols.includes('tile_size')) {
+  try {
+    db.prepare('ALTER TABLE delete_prefs ADD COLUMN tile_size INTEGER DEFAULT 120').run()
+  } catch (e) {
+    console.error('Error migrating delete_prefs:', e)
+  }
+}
+
 export interface ScannedFile {
   path: string
   name: string
@@ -127,6 +136,30 @@ export function setSkipConfirm(skip: boolean): void {
   db.prepare('INSERT OR REPLACE INTO delete_prefs (id, skip_confirm) VALUES (1, ?)').run(
     skip ? 1 : 0
   )
+}
+
+export function getTileSizePref(): number {
+  try {
+    const row = db.prepare('SELECT tile_size FROM delete_prefs WHERE id = 1').get() as
+      | { tile_size: number }
+      | undefined
+    return row?.tile_size ?? 120
+  } catch (e) {
+    return 120
+  }
+}
+
+export function setTileSizePref(size: number): void {
+  try {
+    const exists = db.prepare('SELECT id FROM delete_prefs WHERE id = 1').get()
+    if (exists) {
+      db.prepare('UPDATE delete_prefs SET tile_size = ? WHERE id = 1').run(size)
+    } else {
+      db.prepare('INSERT OR REPLACE INTO delete_prefs (id, tile_size) VALUES (1, ?)').run(size)
+    }
+  } catch (e) {
+    console.error('Error saving tile size pref:', e)
+  }
 }
 
 // ─── HIDE/LOCK FILES ──────────────────────────────────────────────────────────

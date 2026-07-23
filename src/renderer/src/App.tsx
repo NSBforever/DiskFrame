@@ -91,6 +91,8 @@ if (typeof window !== 'undefined' && !window.api) {
     onThumbReady: (cb: any) => { thumbReadyListeners.add(cb); return () => thumbReadyListeners.delete(cb) },
     onFavouriteToggled: (cb: any) => { favouriteToggledListeners.add(cb); return () => favouriteToggledListeners.delete(cb) },
     onFsIoProgress: (cb: any) => { fsIoProgressListeners.add(cb); return () => fsIoProgressListeners.delete(cb) },
+    getTileSize: async () => 120,
+    setTileSize: async () => {}
   }
 }
 
@@ -129,7 +131,8 @@ import {
   Play,
   FolderOpen,
   Copy,
-  X
+  X,
+  Settings
 } from 'lucide-react'
 
 interface DriveInfo {
@@ -159,6 +162,37 @@ export interface ScannedFile {
 const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic']
 const videoExts = ['.mp4', '.mov', '.avi', '.mkv', '.wmv']
 const docExts = ['.pdf', '.docx', '.doc', '.txt', '.xlsx', '.pptx', '.csv']
+const FadeLoadMore: React.FC<{ monthKey: string; visible: number; onVisible: () => void }> = ({ monthKey, visible, onVisible }) => {
+  const ref = React.useRef<HTMLDivElement>(null)
+
+  React.useEffect(() => {
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) {
+        onVisible()
+      }
+    }, { rootMargin: '120px' })
+
+    if (ref.current) observer.observe(ref.current)
+    return () => observer.disconnect()
+  }, [onVisible])
+
+  return (
+    <div
+      ref={ref}
+      onClick={onVisible}
+      style={{
+        position: 'relative',
+        height: '60px',
+        marginTop: '-30px',
+        marginBottom: '20px',
+        background: 'linear-gradient(to bottom, transparent, #0a0a0c 90%)',
+        cursor: 'pointer',
+        zIndex: 10,
+        pointerEvents: 'auto'
+      }}
+    />
+  )
+}
 
 function thumbUrl(file: ScannedFile): string {
   const src = file.thumb || file.path
@@ -449,6 +483,7 @@ const MainContentArea: React.FC<{
   setYearFilter: (year: string | null) => void
   tileSize: number
   setTileSize: (size: number) => void
+  onTileSizeChange: (percent: number) => void
   transitioning: boolean
   setTransitioning: (transitioning: boolean) => void
   sortedGroupedData: { keys: string[]; data: Record<string, ScannedFile[]> }
@@ -479,6 +514,7 @@ const MainContentArea: React.FC<{
   setYearFilter,
   tileSize,
   setTileSize,
+  onTileSizeChange,
   transitioning,
   setTransitioning,
   sortedGroupedData,
@@ -524,7 +560,9 @@ const MainContentArea: React.FC<{
     sortedGroupedData.keys.forEach(monthKey => {
       const files = sortedGroupedData.data[monthKey]
       const visible = getVisible(monthKey)
-      const slicedFiles = files.slice(0, visible)
+      const hasMore = files.length > visible
+      const actualVisible = hasMore ? Math.max(tilesPerRow, Math.floor(visible / tilesPerRow) * tilesPerRow) : visible
+      const slicedFiles = files.slice(0, actualVisible)
 
       items.push({
         type: 'header',
@@ -543,17 +581,17 @@ const MainContentArea: React.FC<{
           rowFiles,
           rowIndex,
           files,
-          isLastRowOfSection: rowIndex === chunked.length - 1 && files.length <= visible
+          isLastRowOfSection: rowIndex === chunked.length - 1 && files.length <= actualVisible
         })
       })
 
-      if (files.length > visible) {
+      if (files.length > actualVisible) {
         items.push({
           type: 'show-more',
           key: `show-more-${monthKey}`,
           monthKey,
           visible,
-          remaining: files.length - visible
+          remaining: files.length - actualVisible
         })
       }
     })
@@ -673,7 +711,7 @@ const MainContentArea: React.FC<{
 
   const handleYearClick = useCallback((year: string) => {
     setYearFilter(year)
-    setTileSize(100)
+    setTileSize(120)
     setActiveView('Grid')
     setTransitioning(true)
     setTimeout(() => {
@@ -759,33 +797,13 @@ const MainContentArea: React.FC<{
         )
       }
       case 'show-more': {
-        const { monthKey, visible, remaining } = item
+        const { monthKey, visible } = item
         return (
-          <div
-            onClick={() => handleShowMore(monthKey, visible)}
-            style={{
-              marginTop: '10px',
-              marginBottom: '28px',
-              padding: '8px',
-              borderRadius: '4px',
-              background: '#111113',
-              border: '1px solid rgba(255,255,255,0.04)',
-              cursor: 'pointer',
-              fontSize: '11px',
-              color: '#e11d2e',
-              textAlign: 'center',
-              fontWeight: 600,
-              textTransform: 'uppercase',
-              letterSpacing: '1px',
-              transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.2s'
-            }}
-            onMouseEnter={e => e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'}
-            onMouseLeave={e => e.currentTarget.style.borderColor = 'rgba(255,255,255,0.04)'}
-            onMouseDown={e => e.currentTarget.style.transform = 'scale(0.98)'}
-            onMouseUp={e => e.currentTarget.style.transform = 'scale(1)'}
-          >
-            Show more ({remaining} remaining)
-          </div>
+          <FadeLoadMore
+            monthKey={monthKey}
+            visible={visible}
+            onVisible={() => handleShowMore(monthKey, visible)}
+          />
         )
       }
       case 'timeline-header': {
@@ -1014,11 +1032,14 @@ const MainContentArea: React.FC<{
     return 500
   }, [activeView, tileSize])
 
+  const tileSizePercent = (tileSize / 120) * 100
+
   const isVirtualized =
     !scanning &&
     selectedDrive &&
     activeNav !== 'places' &&
     activeNav !== 'archive' &&
+    activeNav !== 'settings' &&
     activeView !== 'Map' &&
     !(activeNav === 'trash' && trashedFiles.length === 0) &&
     !(activeNav === 'favourites' && allFavFiles.length === 0)
@@ -1054,6 +1075,76 @@ const MainContentArea: React.FC<{
       style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '20px' }}
       onWheel={handleWheel}
     >
+      {/* Settings Panel View */}
+      {!scanning && activeNav === 'settings' && (
+        <div className="view-transition-enter" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+          <div>
+            <h2 style={{ fontSize: '22px', fontWeight: 700, color: '#f2f2f0', letterSpacing: '-0.5px', margin: 0 }}>
+              Settings
+            </h2>
+            <div style={{ fontSize: '9px', color: '#8a8a8f', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+              Configure application parameters and interface layout
+            </div>
+          </div>
+
+          <div style={{
+            background: '#111114',
+            borderRadius: '4px',
+            border: '1px solid rgba(255, 255, 255, 0.04)',
+            padding: '24px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '24px',
+            maxWidth: '600px'
+          }}>
+            {/* Interface Section */}
+            <div>
+              <h3 style={{ fontSize: '13px', fontWeight: 700, color: '#ffffff', letterSpacing: '0.5px', textTransform: 'uppercase', margin: '0 0 16px 0', borderBottom: '1px solid rgba(255,255,255,0.04)', paddingBottom: '8px' }}>
+                Interface Layout
+              </h3>
+              
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <label htmlFor="settings-tile-size-slider" style={{ fontSize: '12px', fontWeight: 600, color: '#f2f2f0' }}>Grid Tile Size</label>
+                  <span style={{ fontSize: '11px', color: '#e11d2e', fontWeight: 700 }}>
+                    {Math.round(tileSizePercent)}% ({tileSize}px)
+                  </span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                  <input
+                    id="settings-tile-size-slider"
+                    type="range"
+                    min="50"
+                    max="200"
+                    step="5"
+                    value={Math.round(tileSizePercent)}
+                    onChange={(e) => onTileSizeChange(Number(e.target.value))}
+                    style={{
+                      flex: 1,
+                      height: '4px',
+                      outline: 'none',
+                      cursor: 'pointer',
+                      accentColor: '#e11d2e',
+                      background: 'rgba(255, 255, 255, 0.1)'
+                    }}
+                  />
+                </div>
+                <div style={{ fontSize: '10px', color: '#8a8a8f', marginTop: '4px' }}>
+                  Adjusts the scale of grid item cards in the main lists.
+                </div>
+              </div>
+            </div>
+
+            {/* Placeholder for future sections */}
+            <div>
+              <h3 style={{ fontSize: '13px', fontWeight: 700, color: '#8a8a8f', letterSpacing: '0.5px', textTransform: 'uppercase', margin: '0 0 8px 0', opacity: 0.5 }}>
+                Advanced settings (coming soon)
+              </h3>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Coming soon components */}
       {!scanning && activeNav === 'archive' && (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '12px' }} className="view-transition-enter">
@@ -1085,7 +1176,7 @@ const MainContentArea: React.FC<{
       )}
 
       {/* Prompt scan drive */}
-      {!selectedDrive && activeNav !== 'archive' && activeNav !== 'trash' && (
+      {!selectedDrive && activeNav !== 'archive' && activeNav !== 'trash' && activeNav !== 'settings' && (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '10px' }} className="view-transition-enter">
           <HardDrive size={48} style={{ color: '#52525b' }} />
           <div style={{ fontSize: '13px', color: '#8a8a8f', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px' }}>Select a drive to scan and explore</div>
@@ -1202,7 +1293,7 @@ export default function App(): React.JSX.Element {
   const [activeView, setActiveView] = useState('Grid')
 
   const zoomLevelRef = useRef(1.0)
-  const [tileSize, setTileSize] = useState(100)
+  const [tileSize, setTileSize] = useState(120)
   const [transitioning, setTransitioning] = useState(false)
   const zoomTicksRef = useRef(0)
   const lastZoomDirRef = useRef<'in' | 'out' | null>(null)
@@ -1339,6 +1430,15 @@ export default function App(): React.JSX.Element {
       })
     })
 
+    window.api.getTileSize()
+      .then((size) => {
+        if (size && size >= 55) {
+          setTileSize(size)
+          zoomLevelRef.current = Math.max(0.3, Math.min(1.0, size / 120))
+        }
+      })
+      .catch((err) => console.error('Error loading tile size preference:', err))
+
     window.api.getDrives()
     window.api.getFavourites()
     refreshTrash()
@@ -1377,12 +1477,19 @@ export default function App(): React.JSX.Element {
   const handleDriveClick = (name: string): void => {
     setSelectedDrive(name); currentDriveRef.current = name
     setScanning(true); setScanCount(0); setActiveNav('all'); setActiveView('Grid')
-    zoomLevelRef.current = 1.0; setTileSize(100); setSelected(new Set())
+    zoomLevelRef.current = 1.0; setTileSize(120); setSelected(new Set())
     
     // Force prune previous drive files cache immediately on click
     setDriveFiles({ [name]: {} })
     
     window.api.scanDrive(name)
+  }
+
+  const handleSettingsTileSizeChange = (percent: number) => {
+    const newSize = Math.max(55, Math.round((percent / 100) * 120))
+    setTileSize(newSize)
+    zoomLevelRef.current = Math.max(0.3, Math.min(1.0, newSize / 120))
+    window.api.setTileSize(newSize).catch((err) => console.error(err))
   }
 
   const handleRescan = useCallback((name: string): void => {
@@ -1420,29 +1527,30 @@ export default function App(): React.JSX.Element {
 
     const newZoom = Math.max(0.3, Math.min(1.0, zoomLevelRef.current + (dir === 'in' ? 0.025 : -0.025)))
     zoomLevelRef.current = newZoom
-    const newTileSize = Math.max(55, Math.round(100 * Math.min(newZoom * 1.8, 1)))
+    const newTileSize = Math.max(55, Math.round(120 * Math.min(newZoom * 1.8, 1)))
     setTileSize(newTileSize)
+    window.api.setTileSize(newTileSize).catch((err) => console.error(err))
 
     if (transitioning) return
 
     if (activeView === 'Grid' && newTileSize <= 58 && zoomTicksRef.current >= 3) {
       setTransitioning(true); zoomTicksRef.current = 0
-      setTimeout(() => { setActiveView('Timeline'); zoomLevelRef.current = 1.0; setTileSize(100); setTransitioning(false) }, 320)
+      setTimeout(() => { setActiveView('Timeline'); zoomLevelRef.current = 1.0; setTileSize(120); setTransitioning(false) }, 320)
       return
     }
     if (activeView === 'Timeline' && dir === 'in' && zoomTicksRef.current >= 3) {
       setTransitioning(true); zoomTicksRef.current = 0
-      setTimeout(() => { setActiveView('Grid'); zoomLevelRef.current = 1.0; setTileSize(100); setTransitioning(false) }, 320)
+      setTimeout(() => { setActiveView('Grid'); zoomLevelRef.current = 1.0; setTileSize(120); setTransitioning(false) }, 320)
       return
     }
     if (activeView === 'Timeline' && dir === 'out' && zoomTicksRef.current >= 4) {
       setTransitioning(true); zoomTicksRef.current = 0
-      setTimeout(() => { setActiveView('Years'); zoomLevelRef.current = 1.0; setTileSize(100); setTransitioning(false) }, 320)
+      setTimeout(() => { setActiveView('Years'); zoomLevelRef.current = 1.0; setTileSize(120); setTransitioning(false) }, 320)
       return
     }
     if (activeView === 'Years' && dir === 'in' && zoomTicksRef.current >= 3) {
       setTransitioning(true); zoomTicksRef.current = 0
-      setTimeout(() => { setActiveView('Timeline'); zoomLevelRef.current = 1.0; setTileSize(100); setTransitioning(false) }, 320)
+      setTimeout(() => { setActiveView('Timeline'); zoomLevelRef.current = 1.0; setTileSize(120); setTransitioning(false) }, 320)
       return
     }
   }, [activeView, transitioning])
@@ -1953,7 +2061,8 @@ export default function App(): React.JSX.Element {
             { id: 'screenshots', label: 'Screenshots', icon: <Camera size={14} /> },
             { id: 'places', label: 'Places Map', icon: <MapIcon size={14} /> },
             { id: 'favourites', label: 'Favourites', icon: <Star size={14} /> },
-            { id: 'trash', label: 'Trash', icon: <Trash2 size={14} /> }
+            { id: 'trash', label: 'Trash', icon: <Trash2 size={14} /> },
+            { id: 'settings', label: 'Settings', icon: <Settings size={14} /> }
           ].map(item => (
             <div key={item.id} onClick={() => setActiveNav(item.id)} className={`snav ${activeNav === item.id ? 'active' : ''}`}>
               <span style={{ display: 'flex', alignItems: 'center', marginRight: '12px', color: activeNav === item.id ? '#e11d2e' : '#8a8a8f' }}>{item.icon}</span>
@@ -2053,6 +2162,7 @@ export default function App(): React.JSX.Element {
           setYearFilter={setYearFilter}
           tileSize={tileSize}
           setTileSize={setTileSize}
+          onTileSizeChange={handleSettingsTileSizeChange}
           transitioning={transitioning}
           setTransitioning={setTransitioning}
           sortedGroupedData={sortedGroupedData}

@@ -93,7 +93,9 @@ const api = {
   },
   getVideoPlayInfo: (filePath: string, startSecs?: number) =>
     ipcRenderer.invoke('get-video-play-info', { filePath, startSecs }),
-  stopVideoStream: () => ipcRenderer.invoke('stop-video-stream')
+  stopVideoStream: () => ipcRenderer.invoke('stop-video-stream'),
+  getTileSize: () => ipcRenderer.invoke('get-tile-size'),
+  setTileSize: (size: number) => ipcRenderer.invoke('set-tile-size', size)
 }
 
 if (process.contextIsolated) {

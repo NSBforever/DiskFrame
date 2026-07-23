@@ -57,6 +57,8 @@ declare global {
         startSecs?: number
       ) => Promise<{ mode: 'native' | 'stream'; url: string; duration: number; isRemux?: boolean }>
       stopVideoStream: () => Promise<boolean>
+      getTileSize: () => Promise<number>
+      setTileSize: (size: number) => Promise<void>
     }
   }
 }
