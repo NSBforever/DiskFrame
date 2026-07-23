@@ -1,6 +1,113 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
+import { Virtuoso } from 'react-virtuoso'
+
+// ─── BROWSER MOCKS FOR TESTING & WEB ENVIRONMENT ──────────────────────────────────
+if (typeof window !== 'undefined' && !window.api) {
+  const drivesUpdatedListeners = new Set<(d: any[]) => void>()
+  const favouritesUpdatedListeners = new Set<(f: any[]) => void>()
+  const scanProgressListeners = new Set<(p: any) => void>()
+  const scanCompleteListeners = new Set<(c: any) => void>()
+  const filesUpdatedListeners = new Set<(g: any) => void>()
+  const thumbReadyListeners = new Set<(t: any) => void>()
+  const favouriteToggledListeners = new Set<(t: any) => void>()
+  const fsIoProgressListeners = new Set<(p: any) => void>()
+
+  const generateMockFiles = (): Record<string, ScannedFile[]> => {
+    const groups: Record<string, ScannedFile[]> = {}
+    const extList = ['.jpg', '.png', '.mp4', '.pdf', '.mov']
+    const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+    const years = ['2026', '2025', '2024']
+
+    let fileIndex = 1
+    years.forEach(year => {
+      months.forEach(month => {
+        const key = `${month} ${year}`
+        groups[key] = []
+        for (let i = 0; i < 35; i++) {
+          const id = fileIndex++
+          const ext = extList[id % extList.length]
+          const dateStr = `${year}-${String(months.indexOf(month) + 1).padStart(2, '0')}-${String((id % 28) + 1).padStart(2, '0')}T10:00:00Z`
+          groups[key].push({
+            path: `C:\\MockMedia\\file_${id}${ext}`,
+            name: `file_${id}`,
+            ext: ext,
+            size: 1024 * 1024 * (id % 15 + 1),
+            date: dateStr,
+            year: year,
+            month: month,
+            lat: id % 10 === 0 ? 37.7749 + (id % 5) * 0.1 : null,
+            lng: id % 10 === 0 ? -122.4194 + (id % 5) * 0.1 : null,
+            drive: 'C:',
+            favourited: id % 13 === 0 ? 1 : 0,
+            thumb: null
+          })
+        }
+      })
+    })
+    return groups
+  }
+
+  (window as any).api = {
+    getDrives: () => {
+      const drives = [{ name: 'C:', total: 512, free: 256, used: 256, filesystem: 'NTFS' }]
+      setTimeout(() => {
+        drivesUpdatedListeners.forEach(l => l(drives))
+      }, 50)
+    },
+    getFavourites: () => {
+      setTimeout(() => {
+        favouritesUpdatedListeners.forEach(l => l([]))
+      }, 50)
+    },
+    getFiles: (drive: string) => {
+      const mockGroups = generateMockFiles()
+      setTimeout(() => {
+        filesUpdatedListeners.forEach(l => l(mockGroups))
+      }, 50)
+    },
+    scanDrive: (drive: string) => {
+      let progress = 0
+      const interval = setInterval(() => {
+        progress += 200
+        scanProgressListeners.forEach(l => l({ count: progress }))
+        if (progress >= 1200) {
+          clearInterval(interval)
+          scanCompleteListeners.forEach(l => l({ drive, count: 1200 }))
+        }
+      }, 100)
+    },
+    toggleFavourite: (filePath: string) => {
+      setTimeout(() => {
+        favouriteToggledListeners.forEach(l => l({ filePath, isFav: true }))
+      }, 50)
+    },
+    onDrivesUpdated: (cb: any) => { drivesUpdatedListeners.add(cb); return () => drivesUpdatedListeners.delete(cb) },
+    onFavouritesUpdated: (cb: any) => { favouritesUpdatedListeners.add(cb); return () => favouritesUpdatedListeners.delete(cb) },
+    onScanProgress: (cb: any) => { scanProgressListeners.add(cb); return () => scanProgressListeners.delete(cb) },
+    onScanComplete: (cb: any) => { scanCompleteListeners.add(cb); return () => scanCompleteListeners.delete(cb) },
+    onFilesUpdated: (cb: any) => { filesUpdatedListeners.add(cb); return () => filesUpdatedListeners.delete(cb) },
+    onThumbReady: (cb: any) => { thumbReadyListeners.add(cb); return () => thumbReadyListeners.delete(cb) },
+    onFavouriteToggled: (cb: any) => { favouriteToggledListeners.add(cb); return () => favouriteToggledListeners.delete(cb) },
+    onFsIoProgress: (cb: any) => { fsIoProgressListeners.add(cb); return () => fsIoProgressListeners.delete(cb) },
+  }
+}
+
+if (typeof window !== 'undefined' && !window.electron) {
+  (window as any).electron = {
+    ipcRenderer: {
+      invoke: async (channel: string) => {
+        if (channel === 'get-trashed-files') return []
+        if (channel === 'get-trash-count') return 0
+        return null
+      },
+      send: () => {},
+      on: () => () => {},
+    }
+  }
+}
+
 import MediaViewer from './components/media-viewer/MediaViewer'
 import GlobeView from './components/GlobeView'
 import SearchAgent from './components/SearchAgent'
@@ -59,7 +166,7 @@ function thumbUrl(file: ScannedFile): string {
 }
 
 export const FileTile = React.memo(({
-  file, onOpen, onFav, isFav, isSelected, onSelect, onContextMenu, tileSize, isTrashView, onRestore, onDeletePermanently, isDeleting
+  file, onOpen, onFav, isFav, isSelected, onSelect, onContextMenu, tileSize, isTrashView, onRestore, onDeletePermanently, isDeleting, onDragStart
 }: {
   file: ScannedFile
   onOpen: (f: ScannedFile, e: React.MouseEvent) => void
@@ -73,6 +180,7 @@ export const FileTile = React.memo(({
   onRestore?: (f: ScannedFile) => void
   onDeletePermanently?: (f: ScannedFile) => void
   isDeleting?: boolean
+  onDragStart?: (file: ScannedFile, e: React.DragEvent) => void
 }): React.JSX.Element => {
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState(false)
@@ -94,6 +202,9 @@ export const FileTile = React.memo(({
       onContextMenu={(e) => onContextMenu(file, e)}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      draggable={!isTrashView}
+      onDragStart={(e) => onDragStart?.(file, e)}
+      data-grid-tile={file.path}
       style={{
         borderRadius: '4px', // CRED style sharp corners
         aspectRatio: '1',
@@ -234,49 +345,7 @@ export const FileTile = React.memo(({
   )
 })
 
-function YearsView({ groupedFiles, onYearClick }: { groupedFiles: Record<string, ScannedFile[]>; onYearClick: (year: string) => void }): React.JSX.Element {
-  const yearMap: Record<string, ScannedFile[]> = {}
-  for (const [key, files] of Object.entries(groupedFiles)) {
-    const year = key.split('-')[0]
-    if (!yearMap[year]) yearMap[year] = []
-    yearMap[year].push(...files)
-  }
-  const years = Object.keys(yearMap).sort((a, b) => Number(b) - Number(a))
 
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '16px', padding: '8px 0' }}>
-      {years.map(year => {
-        const files = yearMap[year]
-        const previewFiles = [...files.filter(f => f.thumb), ...files.filter(f => photoExts.includes(f.ext.toLowerCase()) && !f.thumb)].slice(0, 4)
-        return (
-          <div key={year} onClick={() => onYearClick(year)}
-            style={{ background: '#111114', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.04)', overflow: 'hidden', cursor: 'pointer', transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.25s' }}
-            onMouseEnter={e => { const el = e.currentTarget as HTMLDivElement; el.style.borderColor = '#e11d2e' }}
-            onMouseLeave={e => { const el = e.currentTarget as HTMLDivElement; el.style.borderColor = 'rgba(255,255,255,0.04)' }}
-            onMouseDown={e => { e.currentTarget.style.transform = 'scale(0.97)' }}
-            onMouseUp={e => { e.currentTarget.style.transform = 'scale(1)' }}
-          >
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr 1fr', height: '140px' }}>
-              {[0, 1, 2, 3].map(i => {
-                const f = previewFiles[i]
-                const src = f ? ('media:///' + (f.thumb || f.path).replace(/\\/g, '/')) : null
-                return (
-                  <div key={i} style={{ background: '#161619', overflow: 'hidden', borderRight: i % 2 === 0 ? '1px solid #0a0a0c' : undefined, borderBottom: i < 2 ? '1px solid #0a0a0c' : undefined, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    {src ? <YearThumb src={src} /> : <Camera size={20} style={{ opacity: 0.15 }} />}
-                  </div>
-                )
-              })}
-            </div>
-            <div style={{ padding: '12px 14px 14px' }}>
-              <div style={{ fontSize: '18px', fontWeight: 700, color: '#f2f2f0', letterSpacing: '-0.3px' }}>{year}</div>
-              <div style={{ fontSize: '9px', color: '#8a8a8f', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{files.length} files</div>
-            </div>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
 
 function YearThumb({ src }: { src: string }): React.JSX.Element {
   const [err, setErr] = useState(false)
@@ -317,7 +386,7 @@ function MapView({ files, onOpen }: { files: ScannedFile[]; onOpen: (f: ScannedF
       const marker = L.marker([first.lat, first.lng], { icon })
       const thumbsHtml = clusterFiles.slice(0, 4).map(f => {
         const src = f.thumb ? `media:///${f.thumb.replace(/\\/g, '/')}` : ''
-        return src ? `<img src="${src}" style="width:56px;height:56px;object-fit:cover;border-radius:4px;" />` : `<div style="width:56px;height:56px;background:#222226;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:18px;">${videoExts.includes(f.ext) ? '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:#8a8a8f;"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="17" x2="7" y2="17"/><line x1="17" y1="17" x2="22" y2="17"/><line x1="17" y1="7" x2="22" y2="7"/></svg>' : '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:#8a8a8f;"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>'}</div>`
+        return src ? `<img src="${src}" style="width:56px;height:56px;object-fit:cover;border-radius:4px;" />` : `<div style="width:56px;height:56px;background:#222226;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:18px;">${videoExts.includes(f.ext) ? '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:#8a8a8f;"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="17" x2="7" y2="17"/><line x1="17" y1="17" x2="22" y2="17"/><line x1="17" y1="7" x2="22" y2="7"/></svg>' : '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:#8a8a8f;"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>'}</div>`
       }).join('')
       marker.bindPopup(`<div style="font-size:12px;min-width:140px;font-family:system-ui,sans-serif;"><div style="font-weight:600;margin-bottom:6px;color:#f2f2f0;">${count} file${count > 1 ? 's' : ''}</div><div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px;">${thumbsHtml}</div><div style="font-size:10px;color:#8a8a8f;">${new Date(first.date).toLocaleDateString()}</div>${count > 4 ? `<div style="font-size:10px;color:#e11d2e;margin-top:2px;">+${count - 4} more</div>` : ''}</div>`, { maxWidth: 200 })
       
@@ -355,112 +424,7 @@ function MapView({ files, onOpen }: { files: ScannedFile[]; onOpen: (f: ScannedF
   )
 }
 
-// ─── MEMOIZED INDIVIDUAL MONTH GRID SECTION ──────────────────────────────────
-const MonthGridSection = React.memo(({
-  monthKey,
-  files,
-  tileSize,
-  visible,
-  onShowMore,
-  handleTileOpen,
-  handleFav,
-  isFav,
-  selected,
-  handleSelect,
-  handleTileContextMenu,
-  deletingPaths,
-  tilesPerRow,
-  scrollTop,
-  winH,
-  offsetY,
-  onRegisterRef
-}: {
-  monthKey: string
-  files: ScannedFile[]
-  tileSize: number
-  visible: number
-  onShowMore: () => void
-  handleTileOpen: (file: ScannedFile, currentList: ScannedFile[], e?: React.MouseEvent) => void
-  handleFav: (file: ScannedFile) => void
-  isFav: Set<string>
-  selected: Set<string>
-  handleSelect: (file: ScannedFile, e: React.MouseEvent) => void
-  handleTileContextMenu: (file: ScannedFile, currentList: ScannedFile[], e: React.MouseEvent) => void
-  deletingPaths: Set<string>
-  tilesPerRow: number
-  scrollTop: number
-  winH: number
-  offsetY: number
-  onRegisterRef: (key: string, el: HTMLDivElement | null) => void
-}) => {
-  const rowCount = Math.ceil(Math.min(visible, files.length) / tilesPerRow)
-  const estH = rowCount * (tileSize + 5) + 80
-  const inView = offsetY < scrollTop + winH + 1200 && offsetY + estH > scrollTop - 1200
 
-  const ref = useCallback((el: HTMLDivElement | null) => {
-    onRegisterRef(monthKey, el)
-  }, [monthKey, onRegisterRef])
-
-  if (!inView) {
-    return <div ref={ref} style={{ height: `${estH + 28}px`, marginBottom: '28px' }} />
-  }
-
-  return (
-    <div ref={ref} style={{ marginBottom: '28px' }}>
-      <div style={{ fontSize: '18px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.3px', lineHeight: 1 }}>
-        {monthKey}
-      </div>
-      <div style={{ fontSize: '9px', color: '#8a8a8f', marginBottom: '12px', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{files.length} files</div>
-      <div style={{
-        display: 'grid',
-        gridTemplateColumns: `repeat(auto-fill, minmax(${tileSize}px, 1fr))`,
-        gap: '5px',
-        transition: 'grid-template-columns 0.12s cubic-bezier(0.25, 0.46, 0.45, 0.94)'
-      }}>
-        {files.slice(0, visible).map(file => (
-          <FileTile
-            key={file.path}
-            file={file}
-            onOpen={(f, e) => handleTileOpen(f, files, e)}
-            onFav={handleFav}
-            isFav={isFav.has(file.path)}
-            isSelected={selected.has(file.path)}
-            onSelect={handleSelect}
-            onContextMenu={(f, e) => handleTileContextMenu(f, files, e)}
-            tileSize={tileSize}
-            isDeleting={deletingPaths.has(file.path)}
-          />
-        ))}
-      </div>
-      {files.length > visible && (
-        <div
-          onClick={onShowMore}
-          style={{
-            marginTop: '10px',
-            padding: '8px',
-            borderRadius: '4px',
-            background: '#111113',
-            border: '1px solid rgba(255,255,255,0.04)',
-            cursor: 'pointer',
-            fontSize: '11px',
-            color: '#e11d2e',
-            textAlign: 'center',
-            fontWeight: 600,
-            textTransform: 'uppercase',
-            letterSpacing: '1px',
-            transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.2s'
-          }}
-          onMouseEnter={e => e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'}
-          onMouseLeave={e => e.currentTarget.style.borderColor = 'rgba(255,255,255,0.04)'}
-          onMouseDown={e => e.currentTarget.style.transform = 'scale(0.98)'}
-          onMouseUp={e => e.currentTarget.style.transform = 'scale(1)'}
-        >
-          Show more ({files.length - visible} remaining)
-        </div>
-      )}
-    </div>
-  )
-})
 
 // ─── MEMOIZED SCROLL CONTENT AREA TO ISOLATE RE-RENDERS ───────────────────────
 const MainContentArea: React.FC<{
@@ -489,6 +453,10 @@ const MainContentArea: React.FC<{
   setTransitioning: (transitioning: boolean) => void
   sortedGroupedData: { keys: string[]; data: Record<string, ScannedFile[]> }
   handleWheel: (e: React.WheelEvent) => void
+  handleGroupCheckboxClick: (groupKey: string, e: React.MouseEvent) => void
+  groupBy: string
+  onDragStart: (file: ScannedFile, e: React.DragEvent) => void
+  setActiveView: (view: string) => void
 }> = React.memo(({
   activeNav,
   activeView,
@@ -514,27 +482,22 @@ const MainContentArea: React.FC<{
   transitioning,
   setTransitioning,
   sortedGroupedData,
-  handleWheel
+  handleWheel,
+  handleGroupCheckboxClick,
+  groupBy,
+  onDragStart,
+  setActiveView
 }) => {
-  const [scrollVersion, setScrollVersion] = useState(0)
   const [visibleCount, setVisibleCount] = useState<Record<string, number>>({})
   const [placesSubView, setPlacesSubView] = useState<'map' | 'globe'>('map')
+  const [windowWidth, setWindowWidth] = useState(window.innerWidth)
 
-  const scrollTopRef = useRef(0)
-  const rafRef = useRef<number | null>(null)
-  const monthRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const virtuosoRef = useRef<any>(null)
 
-  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
-    scrollTopRef.current = e.currentTarget.scrollTop
-    if (rafRef.current) return
-    rafRef.current = requestAnimationFrame(() => {
-      rafRef.current = null
-      setScrollVersion(v => v + 1)
-    })
-  }, [])
-
-  const handleRegisterRef = useCallback((key: string, el: HTMLDivElement | null) => {
-    monthRefs.current[key] = el
+  useEffect(() => {
+    const handleResize = () => setWindowWidth(window.innerWidth)
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
   }, [])
 
   const getVisible = useCallback((key: string): number => visibleCount[key] ?? 40, [visibleCount])
@@ -544,27 +507,439 @@ const MainContentArea: React.FC<{
 
   const allFavFiles = useMemo(() => allFiles.filter(f => favourites.has(f.path)), [allFiles, favourites])
 
-  // Explicitly reference scrollVersion to avoid TS TS6133 warning while forcing re-renders on scroll
-  void scrollVersion
+  const chunkArray = <T,>(array: T[], size: number): T[][] => {
+    const result: T[][] = []
+    for (let i = 0; i < array.length; i += size) {
+      result.push(array.slice(i, i + size))
+    }
+    return result
+  }
 
-  return (
-    <div
-      style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '20px' }}
-      onWheel={handleWheel}
-      onScroll={handleScroll}
-    >
-      {/* Coming soon components */}
-      {!scanning && activeNav === 'archive' && (
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '12px' }} className="view-transition-enter">
-          <FolderArchive size={48} style={{ color: '#52525b' }} />
-          <div style={{ fontSize: '13px', fontWeight: 700, color: '#f2f2f0', textTransform: 'uppercase', letterSpacing: '1px' }}>Archive</div>
-          <div style={{ fontSize: '11px', color: '#8a8a8f', padding: '5px 12px', borderRadius: '4px', background: '#111114', border: '1px solid rgba(255,255,255,0.04)' }}>Coming soon</div>
-        </div>
-      )}
+  // 1. Grid Items construction
+  const gridItems = useMemo(() => {
+    if (activeView !== 'Grid') return []
+    const items: any[] = []
+    const tilesPerRow = Math.max(1, Math.floor((windowWidth - 260) / (tileSize + 5)))
 
-      {/* Trash Lifecycle Bin View */}
-      {!scanning && activeNav === 'trash' && (
-        <div className="view-transition-enter">
+    sortedGroupedData.keys.forEach(monthKey => {
+      const files = sortedGroupedData.data[monthKey]
+      const visible = getVisible(monthKey)
+      const slicedFiles = files.slice(0, visible)
+
+      items.push({
+        type: 'header',
+        key: `header-${monthKey}-${files.length}`,
+        monthKey,
+        filesCount: files.length,
+        allSel: files.every(f => selected.has(f.path))
+      })
+
+      const chunked = chunkArray(slicedFiles, tilesPerRow)
+      chunked.forEach((rowFiles, rowIndex) => {
+        items.push({
+          type: 'row',
+          key: `row-${monthKey}-${rowIndex}`,
+          monthKey,
+          rowFiles,
+          rowIndex,
+          files,
+          isLastRowOfSection: rowIndex === chunked.length - 1 && files.length <= visible
+        })
+      })
+
+      if (files.length > visible) {
+        items.push({
+          type: 'show-more',
+          key: `show-more-${monthKey}`,
+          monthKey,
+          visible,
+          remaining: files.length - visible
+        })
+      }
+    })
+    return items
+  }, [sortedGroupedData, getVisible, selected, tileSize, activeView, windowWidth])
+
+  // Keep a reference to the latest gridItems for scrolling from YearsView click
+  const latestGridItemsRef = useRef<any[]>([])
+  useEffect(() => {
+    latestGridItemsRef.current = gridItems
+  }, [gridItems])
+
+  // 2. Timeline Items construction
+  const timelineItems = useMemo(() => {
+    if (activeView !== 'Timeline') return []
+    const items: any[] = []
+    sortedGroupedData.keys.forEach(monthKey => {
+      const files = sortedGroupedData.data[monthKey]
+      items.push({
+        type: 'timeline-header',
+        key: `timeline-header-${monthKey}-${files.length}`,
+        monthKey,
+        filesCount: files.length,
+        allSel: files.every(f => selected.has(f.path))
+      })
+      items.push({
+        type: 'timeline-row',
+        key: `timeline-row-${monthKey}`,
+        monthKey,
+        rowFiles: files.slice(0, 12),
+        files,
+        hasMore: files.length > 12,
+        remaining: files.length - 12
+      })
+    })
+    return items
+  }, [sortedGroupedData, selected, activeView])
+
+  // 3. Years Items construction
+  const yearsItems = useMemo(() => {
+    if (activeView !== 'Years') return []
+    const items: any[] = []
+    items.push({
+      type: 'years-header',
+      key: 'years-header'
+    })
+    const yearMap: Record<string, ScannedFile[]> = {}
+    for (const [key, files] of Object.entries(sortedGroupedData.data)) {
+      const year = key.split('-')[0]
+      if (!yearMap[year]) yearMap[year] = []
+      yearMap[year].push(...files)
+    }
+    const years = Object.keys(yearMap).sort((a, b) => Number(b) - Number(a))
+
+    const yearsPerRow = Math.max(1, Math.floor((windowWidth - 260) / (200 + 16)))
+    const chunked = chunkArray(years, yearsPerRow)
+    chunked.forEach((rowYears, rowIndex) => {
+      items.push({
+        type: 'years-row',
+        key: `years-row-${rowIndex}`,
+        rowYears,
+        yearMap
+      })
+    })
+    return items
+  }, [sortedGroupedData, activeView, windowWidth])
+
+  // 4. Favourites Items construction
+  const favouritesItems = useMemo(() => {
+    if (activeNav !== 'favourites') return []
+    const items: any[] = []
+    items.push({
+      type: 'favourites-header',
+      key: 'favourites-header'
+    })
+    const tilesPerRow = Math.max(1, Math.floor((windowWidth - 260) / (100 + 5)))
+    const chunked = chunkArray(allFavFiles, tilesPerRow)
+    chunked.forEach((rowFiles, rowIndex) => {
+      items.push({
+        type: 'favourites-row',
+        key: `favourites-row-${rowIndex}`,
+        rowFiles
+      })
+    })
+    return items
+  }, [allFavFiles, activeNav, windowWidth])
+
+  // 5. Trash Items construction
+  const trashItems = useMemo(() => {
+    if (activeNav !== 'trash') return []
+    const items: any[] = []
+    items.push({
+      type: 'trash-header',
+      key: 'trash-header'
+    })
+    const tilesPerRow = Math.max(1, Math.floor((windowWidth - 260) / (100 + 5)))
+    const chunked = chunkArray(trashedFiles, tilesPerRow)
+    chunked.forEach((rowFiles, rowIndex) => {
+      items.push({
+        type: 'trash-row',
+        key: `trash-row-${rowIndex}`,
+        rowFiles
+      })
+    })
+    return items
+  }, [trashedFiles, activeNav, windowWidth])
+
+  // Combine items list based on current active state
+  const virtualItems = useMemo(() => {
+    if (activeNav === 'favourites') return favouritesItems
+    if (activeNav === 'trash') return trashItems
+    if (activeView === 'Grid') return gridItems
+    if (activeView === 'Timeline') return timelineItems
+    if (activeView === 'Years') return yearsItems
+    return []
+  }, [activeNav, activeView, favouritesItems, trashItems, gridItems, timelineItems, yearsItems])
+
+  const handleYearClick = useCallback((year: string) => {
+    setYearFilter(year)
+    setTileSize(100)
+    setActiveView('Grid')
+    setTransitioning(true)
+    setTimeout(() => {
+      const targetMonthKey = Object.keys(sortedGroupedData.data).find(m => m.includes(year))
+      if (targetMonthKey) {
+        const index = latestGridItemsRef.current.findIndex(item => item.type === 'header' && item.monthKey === targetMonthKey)
+        if (index !== -1) {
+          virtuosoRef.current?.scrollToIndex({
+            index,
+            align: 'start',
+            behavior: 'smooth'
+          })
+        }
+      }
+      setTransitioning(false)
+    }, 150)
+  }, [sortedGroupedData, setYearFilter, setTileSize, setActiveView, setTransitioning])
+
+  const renderItem = (item: any) => {
+    switch (item.type) {
+      case 'header': {
+        const { monthKey, filesCount, allSel } = item
+        return (
+          <div style={{ marginTop: '16px', marginBottom: '12px' }}>
+            <div className="group-header" style={{ display: 'flex', alignItems: 'center', gap: '8px', height: '24px' }}>
+              <div style={{ fontSize: '18px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.3px', lineHeight: 1 }}>
+                {monthKey}
+              </div>
+              {groupBy === 'day' && (
+                <div
+                  onClick={(e) => handleGroupCheckboxClick(monthKey, e)}
+                  className={`group-header-checkbox ${allSel ? 'group-header-checkbox-active' : ''}`}
+                  style={{
+                    width: '16px',
+                    height: '16px',
+                    borderRadius: '2px',
+                    background: allSel ? '#e11d2e' : 'rgba(0,0,0,0.6)',
+                    border: `1.5px solid ${allSel ? '#e11d2e' : 'rgba(255,255,255,0.3)'}`,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '9px',
+                    cursor: 'pointer',
+                    color: '#f2f2f0',
+                    marginLeft: '4px'
+                  }}
+                >
+                  {allSel && <Check size={10} strokeWidth={3} />}
+                </div>
+              )}
+            </div>
+            <div style={{ fontSize: '9px', color: '#8a8a8f', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{filesCount} files</div>
+          </div>
+        )
+      }
+      case 'row': {
+        const { rowFiles, files, isLastRowOfSection } = item
+        return (
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: `repeat(auto-fill, minmax(${tileSize}px, 1fr))`,
+              gap: '5px',
+              marginBottom: isLastRowOfSection ? '28px' : '5px'
+            }}
+          >
+            {rowFiles.map((file: ScannedFile) => (
+              <FileTile
+                key={file.path}
+                file={file}
+                onOpen={(f, e) => handleTileOpen(f, files, e)}
+                onFav={handleFav}
+                isFav={favourites.has(file.path)}
+                isSelected={selected.has(file.path)}
+                onSelect={handleSelect}
+                onContextMenu={(f, e) => handleTileContextMenu(f, files, e)}
+                tileSize={tileSize}
+                isDeleting={deletingPaths.has(file.path)}
+                onDragStart={onDragStart}
+              />
+            ))}
+          </div>
+        )
+      }
+      case 'show-more': {
+        const { monthKey, visible, remaining } = item
+        return (
+          <div
+            onClick={() => handleShowMore(monthKey, visible)}
+            style={{
+              marginTop: '10px',
+              marginBottom: '28px',
+              padding: '8px',
+              borderRadius: '4px',
+              background: '#111113',
+              border: '1px solid rgba(255,255,255,0.04)',
+              cursor: 'pointer',
+              fontSize: '11px',
+              color: '#e11d2e',
+              textAlign: 'center',
+              fontWeight: 600,
+              textTransform: 'uppercase',
+              letterSpacing: '1px',
+              transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.2s'
+            }}
+            onMouseEnter={e => e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'}
+            onMouseLeave={e => e.currentTarget.style.borderColor = 'rgba(255,255,255,0.04)'}
+            onMouseDown={e => e.currentTarget.style.transform = 'scale(0.98)'}
+            onMouseUp={e => e.currentTarget.style.transform = 'scale(1)'}
+          >
+            Show more ({remaining} remaining)
+          </div>
+        )
+      }
+      case 'timeline-header': {
+        const { monthKey, filesCount, allSel } = item
+        return (
+          <div style={{ position: 'relative', marginBottom: '10px' }}>
+            <div style={{ position: 'absolute', left: '-28.5px', top: '8px', width: '8px', height: '8px', borderRadius: '50%', background: '#e11d2e', border: '2px solid #0a0a0c' }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', height: '24px' }}>
+              <div style={{ fontSize: '18px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.3px', lineHeight: 1 }}>
+                {monthKey}
+              </div>
+              {groupBy === 'day' && (
+                <div
+                  onClick={(e) => handleGroupCheckboxClick(monthKey, e)}
+                  className={`group-header-checkbox ${allSel ? 'group-header-checkbox-active' : ''}`}
+                  style={{
+                    width: '16px',
+                    height: '16px',
+                    borderRadius: '2px',
+                    background: allSel ? '#e11d2e' : 'rgba(0,0,0,0.6)',
+                    border: `1.5px solid ${allSel ? '#e11d2e' : 'rgba(255,255,255,0.3)'}`,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '9px',
+                    cursor: 'pointer',
+                    color: '#f2f2f0',
+                    marginLeft: '4px'
+                  }}
+                >
+                  {allSel && <Check size={10} strokeWidth={3} />}
+                </div>
+              )}
+            </div>
+            <div style={{ fontSize: '11px', color: '#8a8a8f', marginTop: '4px' }}>{filesCount} files</div>
+          </div>
+        )
+      }
+      case 'timeline-row': {
+        const { rowFiles, files, hasMore, remaining } = item
+        return (
+          <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', marginBottom: '28px' }}>
+            {rowFiles.map((file: ScannedFile) => (
+              <div
+                key={file.path}
+                onClick={(e) => handleTileOpen(file, files, e)}
+                onContextMenu={(e) => handleTileContextMenu(file, files, e)}
+                draggable={activeNav !== 'trash'}
+                onDragStart={(e) => onDragStart(file, e)}
+                data-grid-tile={file.path}
+                style={{ width: '80px', height: '80px', borderRadius: '4px', overflow: 'hidden', cursor: 'pointer', background: '#111114', position: 'relative', opacity: deletingPaths.has(file.path) ? 0 : 1, transform: deletingPaths.has(file.path) ? 'scale(0.1)' : 'none', transition: 'all 0.35s' }}
+              >
+                {(photoExts.includes(file.ext.toLowerCase()) || (videoExts.includes(file.ext.toLowerCase()) && file.thumb)) ? (
+                  <>
+                    <img src={thumbUrl(file)} loading="lazy" decoding="async" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                    {videoExts.includes(file.ext.toLowerCase()) && <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.3)' }}><Play size={16} fill="#ffffff" stroke="none" /></div>}
+                  </                  >
+                ) : (
+                  <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#141420' }}>
+                    {videoExts.includes(file.ext.toLowerCase()) ? <Film size={24} color="#e11d2e" /> : <FileText size={24} color="#8a8a8f" />}
+                  </div>
+                )}
+              </div>
+            ))}
+            {hasMore && <div style={{ width: '80px', height: '80px', borderRadius: '4px', background: '#161619', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', color: '#e11d2e', cursor: 'pointer', fontWeight: 600 }}>+{remaining} more</div>}
+          </div>
+        )
+      }
+      case 'years-header': {
+        return (
+          <div style={{ fontSize: '22px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.5px', marginBottom: '14px' }}>
+            All Years {yearFilter && <span onClick={() => setYearFilter(null)} style={{ fontSize: '13px', color: '#e11d2e', cursor: 'pointer', fontWeight: 400, marginLeft: '10px' }}>× {yearFilter}</span>}
+          </div>
+        )
+      }
+      case 'years-row': {
+        const { rowYears, yearMap } = item
+        return (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '16px', marginBottom: '16px' }}>
+            {rowYears.map((year: string) => {
+              const files = yearMap[year]
+              const previewFiles = [...files.filter(f => f.thumb), ...files.filter(f => photoExts.includes(f.ext.toLowerCase()) && !f.thumb)].slice(0, 4)
+              return (
+                <div key={year} onClick={() => handleYearClick(year)}
+                  style={{ background: '#111114', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.04)', overflow: 'hidden', cursor: 'pointer', transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.25s' }}
+                  onMouseEnter={e => { const el = e.currentTarget as HTMLDivElement; el.style.borderColor = '#e11d2e' }}
+                  onMouseLeave={e => { const el = e.currentTarget as HTMLDivElement; el.style.borderColor = 'rgba(255,255,255,0.04)' }}
+                  onMouseDown={e => { e.currentTarget.style.transform = 'scale(0.97)' }}
+                  onMouseUp={e => { e.currentTarget.style.transform = 'scale(1)' }}
+                >
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr 1fr', height: '140px' }}>
+                    {[0, 1, 2, 3].map(i => {
+                      const f = previewFiles[i]
+                      const src = f ? ('media:///' + (f.thumb || f.path).replace(/\\/g, '/')) : null
+                      return (
+                        <div key={i} style={{ background: '#161619', overflow: 'hidden', borderRight: i % 2 === 0 ? '1px solid #0a0a0c' : undefined, borderBottom: i < 2 ? '1px solid #0a0a0c' : undefined, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          {src ? <YearThumb src={src} /> : <Camera size={20} style={{ opacity: 0.15 }} />}
+                        </div>
+                      )
+                    })}
+                  </div>
+                  <div style={{ padding: '12px 14px 14px' }}>
+                    <div style={{ fontSize: '18px', fontWeight: 700, color: '#f2f2f0', letterSpacing: '-0.3px' }}>{year}</div>
+                    <div style={{ fontSize: '9px', color: '#8a8a8f', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{files.length} files</div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )
+      }
+      case 'favourites-row': {
+        const { rowFiles } = item
+        return (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '5px', marginBottom: '5px' }}>
+            {rowFiles.map((file: ScannedFile) => (
+              <FileTile key={file.path} file={file} onOpen={(f, e) => handleTileOpen(f, allFavFiles, e)} onFav={handleFav} isFav={true} isSelected={selected.has(file.path)} onSelect={handleSelect} onContextMenu={(f, e) => handleTileContextMenu(f, allFavFiles, e)} tileSize={100} isDeleting={deletingPaths.has(file.path)} onDragStart={onDragStart} />
+            ))}
+          </div>
+        )
+      }
+      case 'favourites-header': {
+        return (
+          <div style={{ fontSize: '22px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.5px', marginBottom: '16px' }}>
+            Favourites <span style={{ color: '#e11d2e', fontSize: '14px', fontWeight: 500 }}>{allFavFiles.length} items</span>
+          </div>
+        )
+      }
+      case 'trash-row': {
+        const { rowFiles } = item
+        return (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '5px', marginBottom: '5px' }}>
+            {rowFiles.map((file: ScannedFile) => (
+              <FileTile 
+                key={file.path} 
+                file={file} 
+                onOpen={(f, e) => handleTileOpen(f, trashedFiles, e)} 
+                onFav={handleFav} 
+                isFav={false} 
+                isSelected={false} 
+                onSelect={handleSelect} 
+                onContextMenu={(f, e) => handleTileContextMenu(f, trashedFiles, e)} 
+                tileSize={100}
+                isTrashView={true}
+                onRestore={handleRestore}
+                onDeletePermanently={f => setFileToDeletePermanently(f)}
+                isDeleting={deletingPaths.has(file.path)}
+              />
+            ))}
+          </div>
+        )
+      }
+      case 'trash-header': {
+        return (
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
             <div>
               <h2 style={{ fontSize: '22px', fontWeight: 700, color: '#f2f2f0', letterSpacing: '-0.5px', margin: 0 }}>
@@ -584,34 +959,128 @@ const MainContentArea: React.FC<{
               </button>
             )}
           </div>
-          
-          {trashedFiles.length === 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '50vh', gap: '12px' }}>
-              <Trash2 size={48} style={{ color: '#52525b' }} />
-              <div style={{ fontSize: '13px', color: '#8a8a8f', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px' }}>Trash is empty.</div>
-              <div style={{ fontSize: '10px', color: '#52525b' }}>Soft-deleted photos and videos will appear here.</div>
+        )
+      }
+      default:
+        return null
+    }
+  }
+
+  const animationStyle = useMemo(() => {
+    if (activeNav === 'favourites' || activeNav === 'trash') return undefined
+    if (activeView === 'Years') {
+      return { animation: transitioning ? 'slideOutLeft 0.28s forwards' : 'slideInRight 0.28s forwards' }
+    }
+    if (activeView === 'Grid' || activeView === 'Timeline') {
+      return {
+        animation: transitioning && activeView === 'Grid' ? 'slideOutLeft 0.28s forwards'
+          : transitioning && activeView === 'Timeline' ? 'slideOutRight 0.28s forwards'
+            : activeView === 'Timeline' ? 'slideInRight 0.28s forwards' : 'slideInLeft 0.28s forwards'
+      }
+    }
+    return undefined
+  }, [activeView, activeNav, transitioning])
+
+  const virtuosoComponents = useMemo(() => {
+    const listStyle: React.CSSProperties = {
+      padding: '20px',
+      boxSizing: 'border-box'
+    }
+    if (activeView === 'Timeline' && activeNav !== 'favourites' && activeNav !== 'trash' && activeNav !== 'places') {
+      listStyle.paddingLeft = '44px'
+      listStyle.borderLeft = '1.5px solid rgba(255,255,255,0.04)'
+      listStyle.marginLeft = '20px'
+    }
+    return {
+      List: React.forwardRef<HTMLDivElement, any>(({ style, children, ...props }, ref) => (
+        <div
+          ref={ref}
+          {...props}
+          style={{
+            ...style,
+            ...listStyle
+          }}
+        >
+          {children}
+        </div>
+      ))
+    }
+  }, [activeView, activeNav])
+
+  const overscanPx = useMemo(() => {
+    if (activeView === 'Grid') return Math.max(300, 5 * (tileSize + 5))
+    if (activeView === 'Timeline') return 550
+    if (activeView === 'Years') return 1000
+    return 500
+  }, [activeView, tileSize])
+
+  const isVirtualized =
+    !scanning &&
+    selectedDrive &&
+    activeNav !== 'places' &&
+    activeNav !== 'archive' &&
+    activeView !== 'Map' &&
+    !(activeNav === 'trash' && trashedFiles.length === 0) &&
+    !(activeNav === 'favourites' && allFavFiles.length === 0)
+
+  if (isVirtualized) {
+    return (
+      <div
+        onWheel={handleWheel}
+        className="view-transition-enter"
+        style={{
+          flex: 1,
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+          minHeight: 0,
+          ...animationStyle
+        }}
+      >
+        <Virtuoso
+          style={{ flex: 1 }}
+          data={virtualItems}
+          itemContent={(_, item) => renderItem(item)}
+          overscan={overscanPx}
+          components={virtuosoComponents}
+          ref={virtuosoRef}
+        />
+      </div>
+    )
+  }
+
+  return (
+    <div
+      style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', padding: '20px' }}
+      onWheel={handleWheel}
+    >
+      {/* Coming soon components */}
+      {!scanning && activeNav === 'archive' && (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '12px' }} className="view-transition-enter">
+          <FolderArchive size={48} style={{ color: '#52525b' }} />
+          <div style={{ fontSize: '13px', fontWeight: 700, color: '#f2f2f0', textTransform: 'uppercase', letterSpacing: '1px' }}>Archive</div>
+          <div style={{ fontSize: '11px', color: '#8a8a8f', padding: '5px 12px', borderRadius: '4px', background: '#111114', border: '1px solid rgba(255,255,255,0.04)' }}>Coming soon</div>
+        </div>
+      )}
+
+      {/* Trash Lifecycle Bin View - Empty state only */}
+      {!scanning && activeNav === 'trash' && trashedFiles.length === 0 && (
+        <div className="view-transition-enter">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+            <div>
+              <h2 style={{ fontSize: '22px', fontWeight: 700, color: '#f2f2f0', letterSpacing: '-0.5px', margin: 0 }}>
+                Trash Collection
+              </h2>
+              <div style={{ fontSize: '9px', color: '#8a8a8f', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                Items in trash are soft-deleted and permanently purged after 30 days.
+              </div>
             </div>
-          ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '5px' }}>
-              {trashedFiles.map(file => (
-                <FileTile 
-                  key={file.path} 
-                  file={file} 
-                  onOpen={(f, e) => handleTileOpen(f, trashedFiles, e)} 
-                  onFav={handleFav} 
-                  isFav={false} 
-                  isSelected={false} 
-                  onSelect={handleSelect} 
-                  onContextMenu={(f, e) => handleTileContextMenu(f, trashedFiles, e)} 
-                  tileSize={100}
-                  isTrashView={true}
-                  onRestore={handleRestore}
-                  onDeletePermanently={f => setFileToDeletePermanently(f)}
-                  isDeleting={deletingPaths.has(file.path)}
-                />
-              ))}
-            </div>
-          )}
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '50vh', gap: '12px' }}>
+            <Trash2 size={48} style={{ color: '#52525b' }} />
+            <div style={{ fontSize: '13px', color: '#8a8a8f', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px' }}>Trash is empty.</div>
+            <div style={{ fontSize: '10px', color: '#52525b' }}>Soft-deleted photos and videos will appear here.</div>
+          </div>
         </div>
       )}
 
@@ -635,21 +1104,13 @@ const MainContentArea: React.FC<{
         </div>
       )}
 
-      {/* Favourites Grid */}
-      {!scanning && activeNav === 'favourites' && (
+      {/* Favourites Grid - Empty state only */}
+      {!scanning && activeNav === 'favourites' && allFavFiles.length === 0 && (
         <div className="view-transition-enter">
           <div style={{ fontSize: '22px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.5px', marginBottom: '8px' }}>
-            Favourites <span style={{ color: '#e11d2e', fontSize: '14px', fontWeight: 500 }}>{allFavFiles.length} items</span>
+            Favourites <span style={{ color: '#e11d2e', fontSize: '14px', fontWeight: 500 }}>0 items</span>
           </div>
-          {allFavFiles.length === 0 ? (
-            <div style={{ color: '#8a8a8f', fontSize: '13px', marginTop: '16px' }}>No favourites yet. Add items to your favorites.</div>
-          ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '5px', marginTop: '16px' }}>
-              {allFavFiles.map(file => (
-                <FileTile key={file.path} file={file} onOpen={(f, e) => handleTileOpen(f, allFavFiles, e)} onFav={handleFav} isFav={true} isSelected={selected.has(file.path)} onSelect={handleSelect} onContextMenu={(f, e) => handleTileContextMenu(f, allFavFiles, e)} tileSize={100} isDeleting={deletingPaths.has(file.path)} />
-              ))}
-            </div>
-          )}
+          <div style={{ color: '#8a8a8f', fontSize: '13px', marginTop: '16px' }}>No favourites yet. Add items to your favorites.</div>
         </div>
       )}
 
@@ -660,8 +1121,6 @@ const MainContentArea: React.FC<{
             <div style={{ fontSize: '10px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700 }}>
               📍 {allFiles.filter(f => f.lat !== null && f.lng !== null).length} Mapped Coordinates
             </div>
-            
-            {/* Segmented CRED Map/Globe toggle */}
             <div style={{ display: 'flex', background: '#111113', borderRadius: '4px', padding: '2px', border: '1px solid rgba(255,255,255,0.04)' }}>
               <button
                 onClick={() => setPlacesSubView('map')}
@@ -705,7 +1164,6 @@ const MainContentArea: React.FC<{
               </button>
             </div>
           </div>
-
           <div style={{ flex: 1, minHeight: 0 }}>
             {placesSubView === 'map' ? (
               <MapView files={allFiles.filter(f => f.lat !== null && f.lng !== null)} onOpen={(f, list, e) => handleTileOpen(f, list, e)} />
@@ -720,109 +1178,6 @@ const MainContentArea: React.FC<{
       {!scanning && activeView === 'Map' && activeNav !== 'places' && activeNav !== 'archive' && activeNav !== 'trash' && (
         <div style={{ height: 'calc(100vh - 120px)' }} className="view-transition-enter">
           <MapView files={allFiles} onOpen={(f, list, e) => handleTileOpen(f, list, e)} />
-        </div>
-      )}
-
-      {/* Years view */}
-      {!scanning && activeView === 'Years' && activeNav !== 'favourites' && activeNav !== 'places' && activeNav !== 'archive' && activeNav !== 'trash' && (
-        <div style={{ animation: transitioning ? 'slideOutLeft 0.28s forwards' : 'slideInRight 0.28s forwards' }} className="view-transition-enter">
-          <div style={{ fontSize: '22px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.5px', marginBottom: '14px' }}>
-            All Years {yearFilter && <span onClick={() => setYearFilter(null)} style={{ fontSize: '13px', color: '#e11d2e', cursor: 'pointer', fontWeight: 400, marginLeft: '10px' }}>× {yearFilter}</span>}
-          </div>
-          <YearsView groupedFiles={sortedGroupedData.data} onYearClick={year => {
-            setYearFilter(year); setTileSize(100)
-            setTransitioning(true)
-            setTimeout(() => {
-              const key = Object.keys(sortedGroupedData.data).find(m => m.includes(year))
-              if (key && monthRefs.current[key]) monthRefs.current[key]?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-              setTransitioning(false)
-            }, 100)
-          }} />
-        </div>
-      )}
-
-      {/* Dynamic Grid + Timeline view */}
-      {!scanning && activeNav !== 'favourites' && activeNav !== 'places' && activeNav !== 'archive' && activeNav !== 'trash' && (activeView === 'Grid' || activeView === 'Timeline') && (
-        <div style={{
-          animation: transitioning && activeView === 'Grid' ? 'slideOutLeft 0.28s forwards'
-            : transitioning && activeView === 'Timeline' ? 'slideOutRight 0.28s forwards'
-              : activeView === 'Timeline' ? 'slideInRight 0.28s forwards' : 'slideInLeft 0.28s forwards'
-        }} className="view-transition-enter">
-          {/* Timeline layout */}
-          {activeView === 'Timeline' && (
-            <div style={{ paddingLeft: '24px', borderLeft: '1.5px solid rgba(255,255,255,0.04)' }}>
-              {sortedGroupedData.keys.map(monthKey => {
-                const files = sortedGroupedData.data[monthKey]
-                return (
-                  <div key={monthKey} ref={el => { monthRefs.current[monthKey] = el }} style={{ marginBottom: '28px', position: 'relative' }}>
-                    <div style={{ position: 'absolute', left: '-28.5px', top: '8px', width: '8px', height: '8px', borderRadius: '50%', background: '#e11d2e', border: '2px solid #0a0a0c' }} />
-                    <div style={{ fontSize: '18px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.3px', lineHeight: 1 }}>
-                      {monthKey}
-                    </div>
-                    <div style={{ fontSize: '11px', color: '#8a8a8f', marginBottom: '10px', marginTop: '4px' }}>{files.length} files</div>
-                    <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
-                      {files.slice(0, 12).map(file => (
-                        <div key={file.path} onClick={(e) => handleTileOpen(file, files, e)} onContextMenu={(e) => handleTileContextMenu(file, files, e)} style={{ width: '80px', height: '80px', borderRadius: '4px', overflow: 'hidden', cursor: 'pointer', background: '#111114', position: 'relative', opacity: deletingPaths.has(file.path) ? 0 : 1, transform: deletingPaths.has(file.path) ? 'scale(0.1)' : 'none', transition: 'all 0.35s' }}>
-                          {(photoExts.includes(file.ext.toLowerCase()) || (videoExts.includes(file.ext.toLowerCase()) && file.thumb)) ? (
-                            <>
-                              <img src={thumbUrl(file)} loading="lazy" decoding="async" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                              {videoExts.includes(file.ext.toLowerCase()) && <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.3)' }}><Play size={16} fill="#ffffff" stroke="none" /></div>}
-                            </>
-                          ) : (
-                            <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#141420' }}>
-                              {videoExts.includes(file.ext.toLowerCase()) ? <Film size={24} color="#e11d2e" /> : <FileText size={24} color="#8a8a8f" />}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                      {files.length > 12 && <div style={{ width: '80px', height: '80px', borderRadius: '4px', background: '#161619', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', color: '#e11d2e', cursor: 'pointer', fontWeight: 600 }}>+{files.length - 12} more</div>}
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          )}
-
-          {/* Grid layout */}
-          {activeView === 'Grid' && (() => {
-            const tilesPerRow = Math.max(1, Math.floor((window.innerWidth - 260) / (tileSize + 5)))
-            const scrollTop = scrollTopRef.current
-            const winH = window.innerHeight
-            let offsetY = 0
-            
-            return sortedGroupedData.keys.map(monthKey => {
-              const files = sortedGroupedData.data[monthKey]
-              const visible = getVisible(monthKey)
-              
-              const rowCount = Math.ceil(Math.min(visible, files.length) / tilesPerRow)
-              const estH = rowCount * (tileSize + 5) + 80
-              const myOffset = offsetY
-              offsetY += estH + 28
-
-              return (
-                <MonthGridSection
-                  key={`${monthKey}_section_${files.length}`}
-                  monthKey={monthKey}
-                  files={files}
-                  tileSize={tileSize}
-                  visible={visible}
-                  onShowMore={() => handleShowMore(monthKey, visible)}
-                  handleTileOpen={handleTileOpen}
-                  handleFav={handleFav}
-                  isFav={favourites}
-                  selected={selected}
-                  handleSelect={handleSelect}
-                  handleTileContextMenu={handleTileContextMenu}
-                  deletingPaths={deletingPaths}
-                  tilesPerRow={tilesPerRow}
-                  scrollTop={scrollTop}
-                  winH={winH}
-                  offsetY={myOffset}
-                  onRegisterRef={handleRegisterRef}
-                />
-              )
-            })
-          })()}
         </div>
       )}
     </div>
@@ -869,6 +1224,13 @@ export default function App(): React.JSX.Element {
   // Floating AI search interface states
   const [showAiOverlay, setShowAiOverlay] = useState(false)
 
+  // File Copy/Cut/Paste States
+  const [ioProgress, setIoProgress] = useState<{ completed: number; total: number; currentFile: string } | null>(null)
+  const [toastMsg, setToastMsg] = useState<string | null>(null)
+  const [dragOverDrive, setDragOverDrive] = useState<string | null>(null)
+  const clipboardPathsRef = useRef<string[]>([])
+  const clipboardActionRef = useRef<'copy' | 'cut' | null>(null)
+
   // Queue to buffer thumbnail ready events, preventing multiple full re-renders
   const thumbQueueRef = useRef<{ filePath: string; thumbPath: string }[]>([])
 
@@ -881,6 +1243,23 @@ export default function App(): React.JSX.Element {
     } catch (e) {
       console.error('Error fetching trash list/count:', e)
     }
+  }, [])
+
+  // Auto-clear toast alert messages after 3s
+  useEffect(() => {
+    if (toastMsg) {
+      const t = setTimeout(() => setToastMsg(null), 3000)
+      return () => clearTimeout(t)
+    }
+    return undefined
+  }, [toastMsg])
+
+  // Hook background copy/move I/O progress listener
+  useEffect(() => {
+    const unsubProgress = window.api.onFsIoProgress((data) => {
+      setIoProgress(data)
+    })
+    return () => unsubProgress()
   }, [])
 
   // Process buffered thumbnails queue on a interval (once every 300ms)
@@ -1269,6 +1648,181 @@ export default function App(): React.JSX.Element {
     return { keys, data: groups }
   }, [allFiles, groupBy, favourites, getFiltered])
 
+  // Day bulk select & contiguous shift click
+  const lastSelectedGroupRef = useRef<string | null>(null)
+
+  const handleGroupCheckboxClick = useCallback((groupKey: string, e: React.MouseEvent) => {
+    const groupFiles = sortedGroupedData.data[groupKey] || []
+    const allSel = groupFiles.every(f => selected.has(f.path))
+    const targetState = !allSel
+
+    setSelected(prev => {
+      const next = new Set(prev)
+
+      if (e.shiftKey && lastSelectedGroupRef.current) {
+        const startIdx = sortedGroupedData.keys.indexOf(lastSelectedGroupRef.current)
+        const endIdx = sortedGroupedData.keys.indexOf(groupKey)
+        if (startIdx !== -1 && endIdx !== -1) {
+          const min = Math.min(startIdx, endIdx)
+          const max = Math.max(startIdx, endIdx)
+          const keysInRange = sortedGroupedData.keys.slice(min, max + 1)
+          for (const key of keysInRange) {
+            const filesInRange = sortedGroupedData.data[key] || []
+            for (const f of filesInRange) {
+              if (targetState) next.add(f.path); else next.delete(f.path)
+            }
+          }
+        }
+      } else {
+        for (const f of groupFiles) {
+          if (targetState) next.add(f.path); else next.delete(f.path)
+        }
+      }
+
+      return next
+    })
+    lastSelectedGroupRef.current = groupKey
+  }, [sortedGroupedData, selected])
+
+  // Drag and Drop tiles
+  const handleDragStart = useCallback((file: ScannedFile, e: React.DragEvent) => {
+    const paths = Array.from(selected.size > 0 && selected.has(file.path) ? selected : [file.path])
+    e.dataTransfer.setData('text/plain', JSON.stringify({ paths }))
+
+    const badge = document.createElement('div')
+    badge.style.position = 'absolute'
+    badge.style.top = '-1000px'
+    badge.style.background = '#e11d2e'
+    badge.style.color = '#fff'
+    badge.style.padding = '4px 8px'
+    badge.style.borderRadius = '4px'
+    badge.style.fontFamily = 'sans-serif'
+    badge.style.fontSize = '12px'
+    badge.style.fontWeight = 'bold'
+    badge.style.border = '1px solid rgba(255,255,255,0.1)'
+    badge.innerText = `${paths.length} file${paths.length > 1 ? 's' : ''}`
+
+    document.body.appendChild(badge)
+    e.dataTransfer.setDragImage(badge, 0, 0)
+    setTimeout(() => {
+      if (document.body.contains(badge)) {
+        document.body.removeChild(badge)
+      }
+    }, 0)
+  }, [selected])
+
+  // Drag and Drop drop-zones (Sidebar Drives)
+  const handleDragOverDrive = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+  }, [])
+
+  const handleDragEnterDrive = useCallback((driveName: string, e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOverDrive(driveName)
+  }, [])
+
+  const handleDragLeaveDrive = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOverDrive(null)
+  }, [])
+
+  const handleDropDrive = useCallback(async (driveName: string, e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOverDrive(null)
+    try {
+      const dataStr = e.dataTransfer.getData('text/plain')
+      if (!dataStr) return
+      const payload = JSON.parse(dataStr) as { paths?: string[] }
+      if (!payload.paths || payload.paths.length === 0) return
+
+      const action = e.ctrlKey ? 'copy' : 'cut'
+      const paths = payload.paths
+
+      setIoProgress({ completed: 0, total: paths.length, currentFile: 'Initializing...' })
+
+      let result
+      if (action === 'copy') {
+        result = await window.api.fsCopyPaste(paths, driveName)
+      } else {
+        result = await window.api.fsCutPaste(paths, driveName)
+      }
+
+      const successCount = result?.success?.length ?? 0
+      const failedCount = result?.failed?.length ?? 0
+
+      setToastMsg(`${action === 'copy' ? 'Copied' : 'Moved'} ${successCount} files to ${driveName}${failedCount > 0 ? `, ${failedCount} failed` : ''}`)
+      setSelected(new Set())
+    } catch (err) {
+      console.error('Drop error', err)
+      setToastMsg('Failed to process dropped files')
+    } finally {
+      setIoProgress(null)
+    }
+  }, [])
+
+  // Keyboard I/O shortcuts (Ctrl+C, Ctrl+X, Ctrl+V)
+  useEffect(() => {
+    const handleKeyDown = async (e: KeyboardEvent) => {
+      const active = document.activeElement
+      if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.getAttribute('contenteditable') === 'true')) {
+        return
+      }
+
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === 'c' || e.key === 'C') {
+          if (selected.size > 0) {
+            e.preventDefault()
+            clipboardPathsRef.current = Array.from(selected)
+            clipboardActionRef.current = 'copy'
+            setToastMsg(`${selected.size} file${selected.size > 1 ? 's' : ''} copied to clipboard`)
+          }
+        } else if (e.key === 'x' || e.key === 'X') {
+          if (selected.size > 0) {
+            e.preventDefault()
+            clipboardPathsRef.current = Array.from(selected)
+            clipboardActionRef.current = 'cut'
+            setToastMsg(`${selected.size} file${selected.size > 1 ? 's' : ''} cut to clipboard`)
+          }
+        } else if (e.key === 'v' || e.key === 'V') {
+          if (selectedDrive && clipboardPathsRef.current.length > 0 && clipboardActionRef.current) {
+            e.preventDefault()
+            const action = clipboardActionRef.current
+            const paths = clipboardPathsRef.current
+            
+            setIoProgress({ completed: 0, total: paths.length, currentFile: 'Initializing...' })
+            
+            try {
+              let result
+              if (action === 'copy') {
+                result = await window.api.fsCopyPaste(paths, selectedDrive)
+              } else {
+                result = await window.api.fsCutPaste(paths, selectedDrive)
+              }
+              
+              const successCount = result?.success?.length ?? 0
+              const failedCount = result?.failed?.length ?? 0
+              
+              setToastMsg(`${action === 'copy' ? 'Copied' : 'Moved'} ${successCount} files successfully${failedCount > 0 ? `, ${failedCount} failed` : ''}`)
+              
+              setSelected(new Set())
+              if (action === 'cut') {
+                clipboardPathsRef.current = []
+                clipboardActionRef.current = null
+              }
+            } catch (err) {
+              console.error(err)
+              setToastMsg('File transfer failed')
+            } finally {
+              setIoProgress(null)
+            }
+          }
+        }
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [selected, selectedDrive])
+
   // Custom Trash Operations
   const handleRestore = useCallback(async (file: ScannedFile) => {
     setDeletingPaths(prev => {
@@ -1313,6 +1867,18 @@ export default function App(): React.JSX.Element {
           100% { transform: scale(1); opacity: 0.95; }
         }
         
+        /* Checkbox visibility selectors on group-header hover */
+        .group-header .group-header-checkbox {
+          opacity: 0;
+          transition: opacity 0.15s ease-in-out;
+        }
+        .group-header:hover .group-header-checkbox {
+          opacity: 1;
+        }
+        .group-header-checkbox-active {
+          opacity: 1 !important;
+        }
+
         /* Embedded core visual parameters */
         ::-webkit-scrollbar { width: 4px; height: 4px; }
         ::-webkit-scrollbar-track { background: #0a0a0c; }
@@ -1331,19 +1897,26 @@ export default function App(): React.JSX.Element {
         {drives.map(drive => {
           const pct = drive.total > 0 ? Math.round((drive.used / drive.total) * 100) : 0
           const sel = selectedDrive === drive.name
+          const isDragOver = dragOverDrive === drive.name
           return (
-            <div key={drive.name} onClick={() => handleDriveClick(drive.name)} 
+            <div key={drive.name}
+              onClick={() => handleDriveClick(drive.name)} 
+              onDragOver={handleDragOverDrive}
+              onDragEnter={(e) => handleDragEnterDrive(drive.name, e)}
+              onDragLeave={handleDragLeaveDrive}
+              onDrop={(e) => handleDropDrive(drive.name, e)}
               style={{ 
                 margin: '8px 12px', 
-                background: sel ? 'rgba(225, 29, 46, 0.05)' : '#111114', 
+                background: sel ? 'rgba(225, 29, 46, 0.05)' : isDragOver ? 'rgba(225, 29, 46, 0.1)' : '#111114', 
                 borderRadius: '4px', // CRED sharp corners
                 padding: '12px', 
-                border: `1px solid ${sel ? 'rgba(225, 29, 46, 0.35)' : 'rgba(255,255,255,0.04)'}`, 
+                border: `1px solid ${sel ? 'rgba(225, 29, 46, 0.35)' : isDragOver ? '#e11d2e' : 'rgba(255,255,255,0.04)'}`, 
                 cursor: 'pointer',
-                transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.25s'
+                outline: isDragOver ? '1px solid #e11d2e' : 'none',
+                transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.25s, background-color 0.25s'
               }}
-              onMouseEnter={e => e.currentTarget.style.borderColor = sel ? 'rgba(225, 29, 46, 0.5)' : 'rgba(255,255,255,0.1)'}
-              onMouseLeave={e => e.currentTarget.style.borderColor = sel ? 'rgba(225, 29, 46, 0.35)' : 'rgba(255,255,255,0.04)'}
+              onMouseEnter={e => e.currentTarget.style.borderColor = sel ? 'rgba(225, 29, 46, 0.5)' : isDragOver ? '#e11d2e' : 'rgba(255,255,255,0.1)'}
+              onMouseLeave={e => e.currentTarget.style.borderColor = sel ? 'rgba(225, 29, 46, 0.35)' : isDragOver ? '#e11d2e' : 'rgba(255,255,255,0.04)'}
               onMouseDown={e => { e.currentTarget.style.transform = 'scale(0.97)' }}
               onMouseUp={e => { e.currentTarget.style.transform = 'scale(1)' }}
             >
@@ -1369,7 +1942,7 @@ export default function App(): React.JSX.Element {
 
         <div style={{ height: '1px', background: 'rgba(255,255,255,0.04)', margin: '14px 16px' }} />
 
-        {/* Collections (Lucide vector icons replacing Emojis) */}
+        {/* Collections */}
         <div style={{ padding: '4px 0' }}>
           <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '1px', padding: '0 22px', marginBottom: '8px', fontWeight: 700 }}>Collections</div>
           {[
@@ -1484,6 +2057,10 @@ export default function App(): React.JSX.Element {
           setTransitioning={setTransitioning}
           sortedGroupedData={sortedGroupedData}
           handleWheel={handleWheel}
+          handleGroupCheckboxClick={handleGroupCheckboxClick}
+          groupBy={groupBy}
+          onDragStart={handleDragStart}
+          setActiveView={setActiveView}
         />
 
         {/* Status bar */}
@@ -1733,6 +2310,34 @@ export default function App(): React.JSX.Element {
         </div>
       )}
 
+      {/* Floating toast notification */}
+      {toastMsg && (
+        <div className="cred-glass" style={{ position: 'fixed', bottom: '80px', right: '24px', padding: '12px 20px', borderRadius: '4px', zIndex: 10000, display: 'flex', alignItems: 'center', gap: '8px', color: '#f2f2f0', border: '1px solid #e11d2e', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '1.5px', fontWeight: 700 }}>
+          <Sparkles size={12} color="#e11d2e" /> {toastMsg}
+        </div>
+      )}
+
+      {/* Floating copy/move I/O progress window overlay */}
+      {ioProgress && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)', zIndex: 9999, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '16px' }}>
+          <div className="cred-glass" style={{ width: '90%', maxWidth: '400px', padding: '24px 32px', borderRadius: '4px', display: 'flex', flexDirection: 'column', gap: '16px', boxShadow: 'none' }}>
+            <div style={{ fontSize: '13px', fontWeight: 700, color: '#e11d2e', textTransform: 'uppercase', letterSpacing: '1.5px' }}>
+              {ioProgress.completed === ioProgress.total ? 'Processing Complete' : 'Transferring Files...'}
+            </div>
+            <div style={{ fontSize: '10px', color: '#8a8a8f', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textTransform: 'uppercase' }}>
+              {ioProgress.currentFile}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', fontWeight: 700 }}>
+              <span style={{ color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Progress:</span>
+              <span style={{ color: '#f2f2f0' }}>{ioProgress.completed} / {ioProgress.total}</span>
+            </div>
+            <div style={{ width: '100%', height: '4px', background: '#111114', overflow: 'hidden' }}>
+              <div style={{ width: `${(ioProgress.completed / ioProgress.total) * 100}%`, height: '100%', background: '#e11d2e', transition: 'width 0.15s ease' }} />
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Single File Soft Trash Confirm Modal */}
       {fileToDelete && (
         <div
@@ -1943,7 +2548,7 @@ export default function App(): React.JSX.Element {
               <AlertTriangle size={18} /> Permanent Deletion
             </div>
             <div style={{ fontSize: '11px', color: '#8a8a8f', lineHeight: 1.5 }}>
-              Are you sure you want to permanently delete "{fileToDeletePermanently.name}"? This will delete the actual file from your disk and cannot be undone.
+              Are you sure you want to permanently delete "{fileToDeletePermanently.name}"? This will move the file to the OS Recycle Bin.
             </div>
             <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '8px' }}>
               <button
@@ -2018,7 +2623,7 @@ export default function App(): React.JSX.Element {
               <AlertTriangle size={18} /> Empty Trash Bin
             </div>
             <div style={{ fontSize: '11px', color: '#8a8a8f', lineHeight: 1.5 }}>
-              Are you sure you want to permanently delete all {trashCount} items in the trash? This operation is irreversible and will delete the files physically from your disk.
+              Are you sure you want to permanently delete all {trashCount} items in the trash? This will move the files physically to the OS Recycle Bin.
             </div>
             <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '8px' }}>
               <button

@@ -79,7 +79,21 @@ const api = {
     return () => {
       ipcRenderer.removeListener('transcode-error', listener)
     }
-  }
+  },
+  fsCopyPaste: (filePaths: string[], destDrive: string) =>
+    ipcRenderer.invoke('fs-copy-paste', { filePaths, destDrive }),
+  fsCutPaste: (filePaths: string[], destDrive: string) =>
+    ipcRenderer.invoke('fs-cut-paste', { filePaths, destDrive }),
+  onFsIoProgress: (cb: (d: { completed: number; total: number; currentFile: string }) => void) => {
+    const listener = (_e: unknown, d: any) => cb(d)
+    ipcRenderer.on('fs-io-progress', listener)
+    return () => {
+      ipcRenderer.removeListener('fs-io-progress', listener)
+    }
+  },
+  getVideoPlayInfo: (filePath: string, startSecs?: number) =>
+    ipcRenderer.invoke('get-video-play-info', { filePath, startSecs }),
+  stopVideoStream: () => ipcRenderer.invoke('stop-video-stream')
 }
 
 if (process.contextIsolated) {

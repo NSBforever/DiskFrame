@@ -1,5 +1,5 @@
 import { app, shell, BrowserWindow, ipcMain, protocol, net } from 'electron'
-import { join } from 'path'
+import { join, basename, extname, dirname } from 'path'
 import { spawn } from 'child_process'
 import * as fs from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -8,11 +8,12 @@ import { getDiskInfo } from 'node-disk-info'
 import ffmpegPath from 'ffmpeg-static'
 import {
   scanDrive,
+  ScannedFile,
   getGroupedFiles,
   toggleFavourite,
   getFavourites,
   getFileCount,
-  getFilesWithoutThumbs,
+  getAllFilesWithoutThumbs,
   generateThumbForFile,
   updateThumb,
   hideFile,
@@ -32,13 +33,28 @@ import {
 } from './scanner'
 import Database from 'better-sqlite3'
 
+import { initStreamServer, probeMedia, killActiveStream, closeStreamServer } from './streamServer'
+
 const ffmpegExe = ffmpegPath ? ffmpegPath.replace('app.asar', 'app.asar.unpacked') : 'ffmpeg'
 
 let mainWindow: BrowserWindow
 let driveInterval: ReturnType<typeof setInterval> | null = null
 
-// Re-open sqlite db to query status for sync
 const dbPath = join(app.getPath('userData'), 'diskframe.db')
+
+function getUniqueDestPath(destPath: string): string {
+  if (!fs.existsSync(destPath)) return destPath
+  const dir = dirname(destPath)
+  const ext = extname(destPath)
+  const base = basename(destPath, ext)
+  let counter = 1
+  let candidate = join(dir, `${base} (${counter})${ext}`)
+  while (fs.existsSync(candidate)) {
+    counter++
+    candidate = join(dir, `${base} (${counter})${ext}`)
+  }
+  return candidate
+}
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -94,15 +110,68 @@ async function sendDrives(): Promise<void> {
   }
 }
 
-async function generateThumbsForDrive(drivePath: string): Promise<void> {
-  const files = getFilesWithoutThumbs(drivePath)
-  for (const file of files) {
-    const thumbPath = await generateThumbForFile(file.path, file.ext)
-    if (thumbPath && mainWindow && !mainWindow.isDestroyed()) {
-      updateThumb(file.path, thumbPath)
-      mainWindow.webContents.send('thumb-ready', { filePath: file.path, thumbPath })
+async function generateThumbsForDrive(_drivePath: string): Promise<void> {
+  await backfillAllMissingThumbnails()
+}
+
+async function backfillAllMissingThumbnails(): Promise<void> {
+  let files: ScannedFile[] = []
+  try {
+    files = getAllFilesWithoutThumbs()
+  } catch (err) {
+    console.error('[thumb:backfill:error] Failed to fetch missing thumbnail rows:', err)
+    return
+  }
+
+  if (files.length === 0) {
+    console.log('[thumb:backfill] No missing thumbnails found in database.')
+    return
+  }
+
+  console.log(`[thumb:backfill:start] Enqueuing ${files.length} missing thumbnails for processing...`)
+
+  let successCount = 0
+  let failCount = 0
+  let skipCount = 0
+  const CONCURRENCY = 4
+  let idx = 0
+
+  async function worker() {
+    while (idx < files.length) {
+      const file = files[idx++]
+      if (!file) break
+
+      if (!fs.existsSync(file.path)) {
+        updateThumb(file.path, 'NO_FILE')
+        skipCount++
+        continue
+      }
+
+      try {
+        const thumbPath = await generateThumbForFile(file.path, file.ext)
+        if (thumbPath) {
+          updateThumb(file.path, thumbPath)
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('thumb-ready', { filePath: file.path, thumbPath })
+          }
+          successCount++
+        } else {
+          failCount++
+          console.warn(`[thumb:backfill:fail] Frame/Image conversion returned null for: "${file.path}" (${file.ext})`)
+        }
+      } catch (err) {
+        failCount++
+        console.error(`[thumb:backfill:error] Unexpected failure for file "${file.path}":`, err)
+      }
     }
   }
+
+  const workers = Array.from({ length: CONCURRENCY }, () => worker())
+  await Promise.all(workers)
+
+  console.log(
+    `[thumb:backfill:complete] Summary: ${successCount} succeeded, ${failCount} failed, ${skipCount} skipped (file not found on disk).`
+  )
 }
 
 app.whenReady().then(() => {
@@ -258,6 +327,199 @@ app.whenReady().then(() => {
   })
   ipcMain.handle('verify-pin', (_event, pin: string) => verifyPin(pin))
 
+  ipcMain.handle('fs-copy-paste', async (_event, { filePaths, destDrive }: { filePaths: string[], destDrive: string }) => {
+    let completed = 0
+    const total = filePaths.length
+    const success: string[] = []
+    const failed: { path: string; error: string }[] = []
+
+    const db = new Database(dbPath)
+    
+    let destRoot = destDrive
+    if (destRoot.length === 2 && destRoot.endsWith(':')) {
+      destRoot = destRoot + '\\'
+    }
+
+    for (const src of filePaths) {
+      try {
+        if (!fs.existsSync(src)) {
+          throw new Error('Source file does not exist')
+        }
+        const fileName = basename(src)
+        const ext = extname(src)
+        const candidate = join(destRoot, fileName)
+        const dest = getUniqueDestPath(candidate)
+
+        fs.copyFileSync(src, dest)
+        success.push(src)
+
+        const row = db.prepare('SELECT * FROM files WHERE path = ?').get(src) as any
+        const now = new Date()
+        const dateStr = now.toISOString()
+        const yearStr = now.getFullYear().toString()
+        const monthStr = now.toLocaleString('default', { month: 'long' })
+
+        if (row) {
+          db.prepare(`
+            INSERT OR REPLACE INTO files (path, name, ext, size, date, year, month, lat, lng, drive, thumb, favourited, locked, hidden, vault_path, trashed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, NULL, NULL)
+          `).run(
+            dest,
+            basename(dest),
+            ext,
+            row.size,
+            row.date || dateStr,
+            row.year || yearStr,
+            row.month || monthStr,
+            row.lat,
+            row.lng,
+            destDrive,
+            row.thumb
+          )
+        } else {
+          const stat = fs.statSync(dest)
+          db.prepare(`
+            INSERT OR REPLACE INTO files (path, name, ext, size, date, year, month, lat, lng, drive, thumb, favourited, locked, hidden, vault_path, trashed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, NULL, NULL)
+          `).run(
+            dest,
+            basename(dest),
+            ext,
+            stat.size,
+            dateStr,
+            yearStr,
+            monthStr,
+            null,
+            null,
+            destDrive,
+            null
+          )
+        }
+      } catch (err: any) {
+        console.error(`[fs-copy-paste] Error copying ${src}:`, err)
+        failed.push({ path: src, error: err.message || 'Copy failed' })
+      }
+
+      completed++
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('fs-io-progress', { completed, total, currentFile: basename(src) })
+      }
+    }
+
+    db.close()
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('files-updated', getGroupedFiles(destDrive))
+    }
+    return { success, failed }
+  })
+
+  ipcMain.handle('fs-cut-paste', async (_event, { filePaths, destDrive }: { filePaths: string[], destDrive: string }) => {
+    let completed = 0
+    const total = filePaths.length
+    const success: string[] = []
+    const failed: { path: string; error: string }[] = []
+
+    const db = new Database(dbPath)
+
+    let destRoot = destDrive
+    if (destRoot.length === 2 && destRoot.endsWith(':')) {
+      destRoot = destRoot + '\\'
+    }
+
+    for (const src of filePaths) {
+      try {
+        if (!fs.existsSync(src)) {
+          throw new Error('Source file does not exist')
+        }
+        const fileName = basename(src)
+        const ext = extname(src)
+        const candidate = join(destRoot, fileName)
+        const dest = getUniqueDestPath(candidate)
+
+        try {
+          fs.renameSync(src, dest)
+        } catch (renameErr: any) {
+          if (renameErr.code === 'EXDEV') {
+            fs.copyFileSync(src, dest)
+            fs.unlinkSync(src)
+          } else {
+            throw renameErr
+          }
+        }
+        success.push(src)
+
+        const exists = db.prepare('SELECT 1 FROM files WHERE path = ?').get(src)
+        if (exists) {
+          db.prepare('UPDATE files SET path = ?, name = ?, drive = ? WHERE path = ?').run(
+            dest,
+            basename(dest),
+            destDrive,
+            src
+          )
+        } else {
+          const stat = fs.statSync(dest)
+          const now = new Date()
+          db.prepare(`
+            INSERT OR REPLACE INTO files (path, name, ext, size, date, year, month, lat, lng, drive, thumb, favourited, locked, hidden, vault_path, trashed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, NULL, NULL)
+          `).run(
+            dest,
+            basename(dest),
+            ext,
+            stat.size,
+            now.toISOString(),
+            now.getFullYear().toString(),
+            now.toLocaleString('default', { month: 'long' }),
+            null,
+            null,
+            destDrive,
+            null
+          )
+        }
+      } catch (err: any) {
+        console.error(`[fs-cut-paste] Error moving ${src}:`, err)
+        failed.push({ path: src, error: err.message || 'Move failed' })
+      }
+
+      completed++
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('fs-io-progress', { completed, total, currentFile: basename(src) })
+      }
+    }
+
+    db.close()
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('files-updated', getGroupedFiles(destDrive))
+    }
+    return { success, failed }
+  })
+
+  ipcMain.handle('get-video-play-info', async (_event, { filePath, startSecs }: { filePath: string; startSecs?: number }) => {
+    const port = await initStreamServer()
+    const probe = await probeMedia(filePath)
+    if (probe.isNative) {
+      return {
+        mode: 'native',
+        url: 'media:///' + filePath.replace(/\\/g, '/'),
+        duration: probe.duration
+      }
+    }
+    const queryPath = encodeURIComponent(filePath)
+    const startParam = startSecs && startSecs > 0 ? `&start=${startSecs}` : ''
+    const url = `http://127.0.0.1:${port}/stream?path=${queryPath}${startParam}`
+    return {
+      mode: 'stream',
+      url,
+      duration: probe.duration,
+      isRemux: probe.isRemux
+    }
+  })
+
+  ipcMain.handle('stop-video-stream', () => {
+    killActiveStream()
+    return true
+  })
+
   // ── TRANSCODE (improved: parse duration, reliable spawn) ──
   ipcMain.on('transcode-video', async (event, inputPath: string) => {
     const { createHash } = await import('crypto')
@@ -349,6 +611,7 @@ app.whenReady().then(() => {
   })
 
   createWindow()
+  backfillAllMissingThumbnails().catch((err) => console.error('[backfill startup error]', err))
   driveInterval = setInterval(() => sendDrives(), 3000)
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -356,6 +619,11 @@ app.whenReady().then(() => {
 })
 
 app.on('window-all-closed', () => {
+  closeStreamServer()
   if (driveInterval) clearInterval(driveInterval)
   if (process.platform !== 'darwin') app.quit()
 })
+
+export { generateThumbForFile, updateThumb, probeMedia, initStreamServer, killActiveStream, closeStreamServer }
+
+

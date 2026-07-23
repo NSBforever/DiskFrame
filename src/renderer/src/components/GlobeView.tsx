@@ -40,18 +40,22 @@ export default function GlobeView({ files, onOpen }: GlobeViewProps): React.JSX.
   const [hasError, setHasError] = useState(false)
   const [errorMsg, setErrorMsg] = useState('')
 
+  const textureUrl = useMemo(() => {
+    return import.meta.env.DEV ? earthDark : 'media:///' + earthDark
+  }, [])
+
   // Earth texture loading validation logger
   useEffect(() => {
-    console.log('[GlobeView] Testing texture loading path:', earthDark)
+    console.log('[GlobeView] Testing texture loading path:', textureUrl)
     const img = new Image()
-    img.src = earthDark
+    img.src = textureUrl
     img.onload = () => {
       console.log('[GlobeView] Success: Earth texture image loaded successfully inside renderer context.')
     }
     img.onerror = (err) => {
-      console.error('[GlobeView] Error: Earth texture image failed to load. Source URL:', earthDark, err)
+      console.error('[GlobeView] Error: Earth texture image failed to load. Source URL:', textureUrl, err)
     }
-  }, [])
+  }, [textureUrl])
 
   // Listen for WebGL context creation failures
   useEffect(() => {
@@ -210,7 +214,7 @@ export default function GlobeView({ files, onOpen }: GlobeViewProps): React.JSX.
           ref={globeRef}
           width={dimensions.width}
           height={dimensions.height}
-          globeImageUrl={earthDark}
+          globeImageUrl={textureUrl}
           backgroundColor="#0a0a0c"
           atmosphereColor="#e11d2e"
           htmlElementsData={clusters}

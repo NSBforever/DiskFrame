@@ -61,12 +61,16 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   const isPhoto = photoExts.includes(file.ext.toLowerCase())
   const isVideo = videoExts.includes(file.ext.toLowerCase())
   const isPdf = file.ext.toLowerCase() === '.pdf'
-  const isMp4 = file.ext.toLowerCase() === '.mp4'
 
   const videoRef = useRef<HTMLVideoElement>(null)
   const videoContainerRef = useRef<HTMLDivElement>(null)
 
-  // Custom VLC-style video states
+  // Custom VLC-style video states & streaming pipeline
+  const [videoMode, setVideoMode] = useState<'native' | 'stream' | null>(null)
+  const [videoUrl, setVideoUrl] = useState<string | null>(null)
+  const [isBuffering, setIsBuffering] = useState(false)
+  const [seekOffset, setSeekOffset] = useState(0)
+
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
@@ -82,7 +86,6 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
     const idx = list.findIndex((f) => f.path === file.path)
     if (idx === -1) return
 
-    // Preload next image
     if (idx < list.length - 1) {
       const nextFile = list[idx + 1]
       if (photoExts.includes(nextFile.ext.toLowerCase())) {
@@ -90,7 +93,6 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
       }
     }
 
-    // Preload previous image
     if (idx > 0) {
       const prevFile = list[idx - 1]
       if (photoExts.includes(prevFile.ext.toLowerCase())) {
@@ -99,7 +101,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
     }
   }, [file.path, list])
 
-  // Load current file
+  // Load current file (Photos & Videos)
   useEffect(() => {
     setHighResSrc(null)
     setLoading(true)
@@ -107,7 +109,11 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
     setImgError(false)
     setVideoError(false)
 
-    // Reset VLC control state when media path changes
+    // Reset video player states
+    setVideoMode(null)
+    setVideoUrl(null)
+    setIsBuffering(false)
+    setSeekOffset(0)
     setIsPlaying(false)
     setCurrentTime(0)
     setDuration(0)
@@ -115,7 +121,6 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
     setIsMuted(false)
     setPlaybackSpeed(1.0)
 
-    // Spinner delay
     const spinnerTimer = setTimeout(() => {
       setShowSpinner(true)
     }, 150)
@@ -137,6 +142,28 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
           setShowSpinner(false)
           setImgError(true)
         })
+    } else if (isVideo) {
+      clearTimeout(spinnerTimer)
+      setLoading(false)
+      setShowSpinner(false)
+      setIsBuffering(true)
+
+      // Probe media via main process IPC
+      window.api
+        .getVideoPlayInfo(file.path)
+        .then((info) => {
+          setVideoMode(info.mode)
+          setVideoUrl(info.url)
+          if (info.duration > 0) {
+            setDuration(info.duration)
+          }
+          setIsBuffering(false)
+        })
+        .catch((err) => {
+          console.error('[ImageLoader] Error fetching video info:', err)
+          setVideoError(true)
+          setIsBuffering(false)
+        })
     } else {
       clearTimeout(spinnerTimer)
       setLoading(false)
@@ -145,19 +172,29 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
 
     return () => {
       clearTimeout(spinnerTimer)
+      if (isVideo) {
+        window.api.stopVideoStream().catch(() => {})
+      }
     }
-  }, [file.path, isPhoto, onImageLoaded])
+  }, [file.path, isPhoto, isVideo, onImageLoaded])
 
   // Time Updates & Metadata Loaded Binds
   const handleTimeUpdate = () => {
     if (videoRef.current) {
-      setCurrentTime(videoRef.current.currentTime)
+      const liveTime = videoRef.current.currentTime
+      if (videoMode === 'stream') {
+        setCurrentTime(seekOffset + liveTime)
+      } else {
+        setCurrentTime(liveTime)
+      }
     }
   }
 
   const handleLoadedMetadata = () => {
     if (videoRef.current) {
-      setDuration(videoRef.current.duration)
+      if (videoRef.current.duration && !isNaN(videoRef.current.duration) && videoRef.current.duration !== Infinity) {
+        setDuration(videoRef.current.duration)
+      }
       onImageLoaded({
         width: videoRef.current.videoWidth,
         height: videoRef.current.videoHeight
@@ -179,12 +216,31 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   const handlePlay = () => setIsPlaying(true)
   const handlePause = () => setIsPlaying(false)
 
-  // Seek bar draggable bind
+  // Seek bar draggable bind supporting stream seeking
   const handleSeekChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!videoRef.current) return
     const val = Number(e.target.value)
-    videoRef.current.currentTime = val
     setCurrentTime(val)
+
+    if (videoMode === 'native') {
+      if (videoRef.current) {
+        videoRef.current.currentTime = val
+      }
+    } else if (videoMode === 'stream') {
+      setIsBuffering(true)
+      setSeekOffset(val)
+      window.api
+        .getVideoPlayInfo(file.path, val)
+        .then((info) => {
+          setVideoUrl(info.url)
+          setIsBuffering(false)
+          if (videoRef.current) {
+            videoRef.current.play().catch(() => {})
+          }
+        })
+        .catch(() => {
+          setIsBuffering(false)
+        })
+    }
   }
 
   // Volume slider & Mute toggle binds
@@ -270,7 +326,6 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
 
   const showControls = controlsVisible || !isPlaying
 
-  // Thumb URL for progressive layout placeholder
   const thumbSrc = file.thumb ? toUrl(file.thumb) : null
   const mediaSrc = toUrl(file.path)
 
@@ -326,7 +381,6 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
             </div>
           ) : (
             <>
-              {/* Blur placeholder thumb first */}
               {loading && thumbSrc && (
                 <img
                   src={thumbSrc}
@@ -356,7 +410,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
         </div>
       )}
 
-      {/* Render HTML5 Video */}
+      {/* Render Universal HTML5 / Streamed Video */}
       {isVideo && (
         <div
           ref={videoContainerRef}
@@ -374,16 +428,18 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
             background: '#000'
           }}
         >
-          {isMp4 && !videoError ? (
+          {videoUrl && !videoError ? (
             <>
               <video
                 ref={videoRef}
-                src={mediaSrc}
+                src={videoUrl}
                 autoPlay
                 onLoadedMetadata={handleLoadedMetadata}
                 onTimeUpdate={handleTimeUpdate}
                 onPlay={handlePlay}
                 onPause={handlePause}
+                onWaiting={() => setIsBuffering(true)}
+                onPlaying={() => setIsBuffering(false)}
                 onError={() => setVideoError(true)}
                 style={{
                   maxWidth: '100%',
@@ -391,6 +447,45 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
                   objectFit: 'contain'
                 }}
               />
+
+              {/* Buffering Spinner */}
+              {isBuffering && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '12px',
+                    background: 'rgba(0,0,0,0.5)',
+                    zIndex: 10
+                  }}
+                >
+                  <div
+                    style={{
+                      width: '36px',
+                      height: '36px',
+                      border: '3px solid rgba(255,255,255,0.1)',
+                      borderTop: '3px solid #e11d2e',
+                      borderRadius: '50%',
+                      animation: 'tileSpin 0.8s linear infinite'
+                    }}
+                  />
+                  <div
+                    style={{
+                      fontSize: '10px',
+                      color: '#e11d2e',
+                      textTransform: 'uppercase',
+                      letterSpacing: '1px',
+                      fontWeight: 700
+                    }}
+                  >
+                    {videoMode === 'stream' ? 'Transcoding Stream...' : 'Buffering...'}
+                  </div>
+                </div>
+              )}
 
               {/* Custom VLC-style Video Control Overlay */}
               <div
@@ -553,7 +648,6 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
               </div>
             </>
           ) : (
-            /* Transcode trigger placeholder */
             <div
               style={{
                 display: 'flex',
@@ -569,7 +663,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
             >
               <div style={{ fontSize: '64px' }}>🎬</div>
               <div style={{ fontSize: '15px', fontWeight: 600, color: '#f2f2f0' }}>{file.name}</div>
-              <div style={{ fontSize: '12px', color: '#8a8a8f' }}>This format cannot play in-app</div>
+              <div style={{ fontSize: '12px', color: '#8a8a8f' }}>Fallback system player required for this media</div>
               <button
                 onClick={() => window.electron.ipcRenderer.send('open-file', file.path)}
                 style={{
@@ -613,4 +707,5 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
     </div>
   )
 }
+
 export default ImageLoader

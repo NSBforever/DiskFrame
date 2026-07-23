@@ -226,7 +226,23 @@ export function restoreFiles(filePaths: string[]): void {
   tx()
 }
 
-export function deleteFilesPermanently(filePaths: string[]): { success: string[]; failed: string[] } {
+async function safeDelete(filePath: string): Promise<void> {
+  try {
+    if (fs.existsSync(filePath)) {
+      const trash = (await import('trash')).default
+      await trash(filePath)
+    }
+  } catch (err) {
+    console.error(`[safeDelete] Failed to send to Recycle Bin: ${filePath}`, err)
+    try {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath)
+      }
+    } catch {}
+  }
+}
+
+export async function deleteFilesPermanently(filePaths: string[]): Promise<{ success: string[]; failed: string[] }> {
   const success: string[] = []
   const failed: string[] = []
   for (const p of filePaths) {
@@ -234,10 +250,10 @@ export function deleteFilesPermanently(filePaths: string[]): { success: string[]
       const file = db.prepare('SELECT * FROM files WHERE path = ?').get(p) as ScannedFile | undefined
       if (file) {
         if (fs.existsSync(p)) {
-          fs.unlinkSync(p)
+          await safeDelete(p)
         }
         if (file.vault_path && fs.existsSync(file.vault_path)) {
-          fs.unlinkSync(file.vault_path)
+          await safeDelete(file.vault_path)
         }
         if (file.thumb && fs.existsSync(file.thumb)) {
           fs.unlinkSync(file.thumb)
@@ -253,16 +269,16 @@ export function deleteFilesPermanently(filePaths: string[]): { success: string[]
   return { success, failed }
 }
 
-export function emptyTrash(): { success: boolean; count: number } {
+export async function emptyTrash(): Promise<{ success: boolean; count: number }> {
   const toPurge = db.prepare('SELECT * FROM files WHERE trashed_at IS NOT NULL').all() as ScannedFile[]
   let count = 0
   for (const file of toPurge) {
     try {
       if (fs.existsSync(file.path)) {
-        fs.unlinkSync(file.path)
+        await safeDelete(file.path)
       }
       if (file.vault_path && fs.existsSync(file.vault_path)) {
-        fs.unlinkSync(file.vault_path)
+        await safeDelete(file.vault_path)
       }
       if (file.thumb && fs.existsSync(file.thumb)) {
         fs.unlinkSync(file.thumb)
@@ -276,7 +292,7 @@ export function emptyTrash(): { success: boolean; count: number } {
   return { success: true, count }
 }
 
-export function autoPurgeTrash(): void {
+export async function autoPurgeTrash(): Promise<void> {
   const cutoff = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString()
   const toPurge = db.prepare('SELECT * FROM files WHERE trashed_at IS NOT NULL AND trashed_at < ?').all(cutoff) as ScannedFile[]
   
@@ -286,10 +302,10 @@ export function autoPurgeTrash(): void {
     for (const file of toPurge) {
       try {
         if (fs.existsSync(file.path)) {
-          fs.unlinkSync(file.path)
+          await safeDelete(file.path)
         }
         if (file.vault_path && fs.existsSync(file.vault_path)) {
-          fs.unlinkSync(file.vault_path)
+          await safeDelete(file.vault_path)
         }
         if (file.thumb && fs.existsSync(file.thumb)) {
           fs.unlinkSync(file.thumb)
@@ -350,8 +366,14 @@ export function getFileCount(drivePath?: string): number {
 
 export function getFilesWithoutThumbs(drivePath: string): ScannedFile[] {
   return db
-    .prepare('SELECT * FROM files WHERE drive = ? AND (thumb IS NULL OR thumb = "") AND trashed_at IS NULL')
+    .prepare("SELECT * FROM files WHERE drive = ? AND (thumb IS NULL OR thumb = '') AND trashed_at IS NULL ORDER BY date DESC")
     .all(drivePath) as ScannedFile[]
+}
+
+export function getAllFilesWithoutThumbs(): ScannedFile[] {
+  return db
+    .prepare("SELECT * FROM files WHERE (thumb IS NULL OR thumb = '') AND trashed_at IS NULL ORDER BY date DESC")
+    .all() as ScannedFile[]
 }
 
 function makeHash(fullPath: string): string {
@@ -368,6 +390,7 @@ const MIN_PHOTO_SIZE = 50 * 1024
 // ─── THUMBNAIL GENERATION ─────────────────────────────────────────────────────
 export async function generateThumbForFile(fullPath: string, ext: string): Promise<string | null> {
   const lowerExt = ext.toLowerCase()
+  console.log('[DIAG:IDENTIFY]', { fullPath, ext, lowerExt })
 
   if (sharpExts.includes(lowerExt)) {
     try {
@@ -380,7 +403,34 @@ export async function generateThumbForFile(fullPath: string, ext: string): Promi
         .toFile(thumbPath)
       return fs.existsSync(thumbPath) ? thumbPath : null
     } catch (e) {
-      console.error('[thumb:sharp failed]', fullPath, e)
+      console.error('[DIAG:SHARP_FAILED]', fullPath, e)
+      return null
+    }
+  }
+
+  if (lowerExt === '.heic') {
+    console.log('[DIAG:HEIC_DETECT]', fullPath)
+    try {
+      const thumbPath = join(thumbDir, `${makeHash(fullPath)}.jpg`)
+      if (fs.existsSync(thumbPath)) return thumbPath
+      console.log('[DIAG:HEIC_CONVERT_BEFORE]', fullPath)
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const convert = require('heic-convert')
+      const inputBuffer = fs.readFileSync(fullPath)
+      const outputBuffer = await convert({
+        buffer: inputBuffer,
+        format: 'JPEG',
+        quality: 0.8
+      })
+      await sharp(outputBuffer)
+        .rotate()
+        .resize(300, 300, { fit: 'cover', position: 'centre' })
+        .jpeg({ quality: 80 })
+        .toFile(thumbPath)
+      console.log('[DIAG:HEIC_CONVERT_SUCCESS]', { fullPath, thumbPath })
+      return fs.existsSync(thumbPath) ? thumbPath : null
+    } catch (err) {
+      console.error('[DIAG:HEIC_CONVERT_FAILED]', fullPath, err)
       return null
     }
   }
@@ -392,84 +442,115 @@ export async function generateThumbForFile(fullPath: string, ext: string): Promi
   return null
 }
 
-function generateVideoThumb(fullPath: string): Promise<string | null> {
+function extractRawFrame(fullPath: string, seekSecs: number, tempFramePath: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const thumbPath = join(thumbDir, `${makeHash(fullPath)}.jpg`)
-    if (fs.existsSync(thumbPath)) {
-      resolve(thumbPath)
-      return
-    }
+    const args = [
+      '-ss',
+      seekSecs.toString(),
+      '-i',
+      fullPath,
+      '-vframes',
+      '1',
+      '-f',
+      'image2',
+      '-q:v',
+      '2',
+      '-threads',
+      '1',
+      '-y',
+      tempFramePath
+    ]
+    console.log('[DIAG:FFMPEG_BEFORE]', { exe: ffmpegExe, args: args.join(' ') })
+    const ff = cp.spawn(ffmpegExe, args)
+    let stderr = ''
+    ff.stderr.on('data', (d: Buffer) => {
+      stderr += d.toString()
+    })
 
-    // Strategy: try at 2s first, fall back to 0s if file is short
-    // Using keyframe input-seeking (-ss before -i) for near-instant frame extraction and stability
-    function tryAt(seekSecs: number, fallback: boolean): void {
-      const args = [
-        '-ss',
-        seekSecs.toString(),
-        '-i',
+    const killTimer = setTimeout(() => {
+      try {
+        console.error('[DIAG:FFMPEG_TIMEOUT]', fullPath)
+        ff.kill()
+      } catch {}
+    }, 15000)
+
+    ff.on('error', (err) => {
+      clearTimeout(killTimer)
+      console.error('[DIAG:FFMPEG_SPAWN_ERROR]', fullPath, err)
+      resolve(false)
+    })
+
+    ff.on('close', (code) => {
+      clearTimeout(killTimer)
+      const exists = fs.existsSync(tempFramePath) && fs.statSync(tempFramePath).size > 0
+      console.log('[DIAG:FFMPEG_AFTER]', {
         fullPath,
-        '-vframes',
-        '1',
-        '-vf',
-        'scale=300:300:force_original_aspect_ratio=increase,crop=300:300',
-        '-f',
-        'image2',
-        '-q:v',
-        '3',
-        '-threads',
-        '1',
-        '-y',
-        thumbPath
-      ]
-
-      console.log(`[thumb:video] Spawning ffmpeg binary at path: "${ffmpegExe}"`)
-      console.log(`[thumb:video] Target file: "${fullPath}"`)
-      console.log(`[thumb:video] Spawn arguments:`, args)
-
-      const ff = cp.spawn(ffmpegExe, args)
-      let stderr = ''
-      ff.stderr.on('data', (d: Buffer) => {
-        stderr += d.toString()
+        code,
+        stderr: stderr.slice(-300),
+        exists
       })
-
-      const killTimer = setTimeout(() => {
-        try {
-          console.error(`[thumb:video] Execution timed out after 20s for: "${fullPath}". Killing process.`)
-          ff.kill()
-        } catch {}
-      }, 20000)
-
-      ff.on('error', (err) => {
-        clearTimeout(killTimer)
-        console.error(`[thumb:video] Spawn error for file: "${fullPath}":`, err)
-        if (!fallback && seekSecs > 0) {
-          console.log(`[thumb:video] Retrying at 0s due to spawn error...`)
-          tryAt(0, true)
-        } else {
-          resolve(null)
-        }
-      })
-
-      ff.on('close', (code) => {
-        clearTimeout(killTimer)
-        if (code === 0 && fs.existsSync(thumbPath) && fs.statSync(thumbPath).size > 0) {
-          console.log(`[thumb:video] Success! Thumbnail generated at: "${thumbPath}"`)
-          resolve(thumbPath)
-        } else if (!fallback && seekSecs > 0) {
-          console.warn(`[thumb:video] Failed with code ${code} at ${seekSecs}s. Retrying at 0s. Stderr sample:`, stderr.slice(-300))
-          tryAt(0, true)
-        } else {
-          console.error(`[thumb:video] Permanent failure code=${code} for: "${fullPath}". Stderr:`, stderr)
-          resolve(null)
-        }
-      })
-    }
-
-    tryAt(2, false)
+      resolve(exists)
+    })
   })
 }
 
+async function generateVideoThumb(fullPath: string): Promise<string | null> {
+  const hash = makeHash(fullPath)
+  const thumbPath = join(thumbDir, `${hash}.jpg`)
+  if (fs.existsSync(thumbPath) && fs.statSync(thumbPath).size > 0) {
+    return thumbPath
+  }
+
+  const osTmp = app.getPath('temp') || require('os').tmpdir()
+  const tempFramePath = join(osTmp, `df_raw_${hash}_${Date.now()}.png`)
+
+  try {
+    // 1. Extract single frame near 1s, fall back to 0s if file is short/fails
+    let success = await extractRawFrame(fullPath, 1, tempFramePath)
+    if (!success) {
+      console.log('[DIAG:FFMPEG_RETRY_0S]', fullPath)
+      success = await extractRawFrame(fullPath, 0, tempFramePath)
+    }
+
+    if (!success || !fs.existsSync(tempFramePath)) {
+      console.warn(`[DIAG:FRAME_EXTRACT_FAILED] for: "${fullPath}"`)
+      return null
+    }
+
+    // 2. Centered semi-transparent play icon SVG overlay (matching photo thumbnail 300x300 grid)
+    const playOverlaySvg = Buffer.from(`
+      <svg width="300" height="300" viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="150" cy="150" r="32" fill="rgba(0, 0, 0, 0.55)" stroke="rgba(255, 255, 255, 0.85)" stroke-width="2.5"/>
+        <polygon points="142,135 166,150 142,165" fill="#ffffff"/>
+      </svg>
+    `)
+
+    // 3. Resize extracted frame through Sharp and composite play-icon overlay
+    await sharp(tempFramePath)
+      .rotate()
+      .resize(300, 300, { fit: 'cover', position: 'centre' })
+      .composite([{ input: playOverlaySvg, top: 0, left: 0 }])
+      .jpeg({ quality: 80 })
+      .toFile(thumbPath)
+
+    const created = fs.existsSync(thumbPath) && fs.statSync(thumbPath).size > 0
+    console.log('[DIAG:THUMB_CREATED]', { fullPath, thumbPath, created })
+    return created ? thumbPath : null
+  } catch (err) {
+    console.error(`[DIAG:SHARP_COMPOSITE_FAILED] for: "${fullPath}"`, err)
+    return null
+  } finally {
+    // Clean up temporary raw frame image file
+    if (fs.existsSync(tempFramePath)) {
+      try {
+        fs.unlinkSync(tempFramePath)
+      } catch {}
+    }
+  }
+}
+
 export function updateThumb(filePath: string, thumbPath: string): void {
+  console.log('[DIAG:SQLITE_WRITE]', { filePath, thumbPath })
   db.prepare('UPDATE files SET thumb = ? WHERE path = ?').run(thumbPath, filePath)
 }
 
