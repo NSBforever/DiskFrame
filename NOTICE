@@ -1,0 +1,12 @@
+DiskFrame - Open Source Licenses Notice
+========================================
+
+This application bundles mpv media player binaries (`mpv.exe`).
+mpv is open source software licensed under GNU General Public License v2+ (GPLv2+) 
+or GNU Lesser General Public License v2.1+ (LGPLv2.1+) depending on build configuration.
+
+For full mpv source code, copyright holders, and license text, please visit:
+- MPV GitHub Repository: https://github.com/mpv-player/mpv
+- MPV Official Website: https://mpv.io/
+
+ffmpeg and other bundled utilities are licensed under LGPL/GPL licenses respectively.

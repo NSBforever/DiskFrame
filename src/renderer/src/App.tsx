@@ -61,7 +61,7 @@ if (typeof window !== 'undefined' && !window.api) {
         favouritesUpdatedListeners.forEach(l => l([]))
       }, 50)
     },
-    getFiles: (drive: string) => {
+    getFiles: (_drive: string) => {
       const mockGroups = generateMockFiles()
       setTimeout(() => {
         filesUpdatedListeners.forEach(l => l(mockGroups))
@@ -113,8 +113,8 @@ if (typeof window !== 'undefined' && !window.electron) {
 import MediaViewer from './components/media-viewer/MediaViewer'
 import GlobeView from './components/GlobeView'
 import SearchAgent from './components/SearchAgent'
+import DriveSelectionView from './components/DriveSelectionView'
 import {
-  HardDrive,
   FolderArchive,
   Image as ImageIcon,
   Film,
@@ -132,7 +132,8 @@ import {
   FolderOpen,
   Copy,
   X,
-  Settings
+  Settings,
+  ArrowLeft
 } from 'lucide-react'
 
 interface DriveInfo {
@@ -162,7 +163,7 @@ export interface ScannedFile {
 const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic']
 const videoExts = ['.mp4', '.mov', '.avi', '.mkv', '.wmv']
 const docExts = ['.pdf', '.docx', '.doc', '.txt', '.xlsx', '.pptx', '.csv']
-const FadeLoadMore: React.FC<{ monthKey: string; visible: number; onVisible: () => void }> = ({ monthKey, visible, onVisible }) => {
+const FadeLoadMore: React.FC<{ monthKey: string; visible: number; onVisible: () => void }> = ({ onVisible }) => {
   const ref = React.useRef<HTMLDivElement>(null)
 
   React.useEffect(() => {
@@ -200,7 +201,7 @@ function thumbUrl(file: ScannedFile): string {
 }
 
 export const FileTile = React.memo(({
-  file, onOpen, onFav, isFav, isSelected, onSelect, onContextMenu, tileSize, isTrashView, onRestore, onDeletePermanently, isDeleting, onDragStart
+  file, onOpen, onFav, isFav, isSelected, onSelect, onContextMenu, tileSize, isTrashView, onRestore, onDeletePermanently, isDeleting, onDragStart, selectedPaths
 }: {
   file: ScannedFile
   onOpen: (f: ScannedFile, e: React.MouseEvent) => void
@@ -215,6 +216,7 @@ export const FileTile = React.memo(({
   onDeletePermanently?: (f: ScannedFile) => void
   isDeleting?: boolean
   onDragStart?: (file: ScannedFile, e: React.DragEvent) => void
+  selectedPaths?: string[]
 }): React.JSX.Element => {
   const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState(false)
@@ -230,12 +232,67 @@ export const FileTile = React.memo(({
   const iconSize = tileSize < 80 ? 20 : 28
   const subFontSize = tileSize < 80 ? '7px' : '9px'
 
+  const dragInfoRef = useRef<{
+    startX: number
+    startY: number
+    isDragging: boolean
+    hasTriggered: boolean
+  } | null>(null)
+
+  const handleMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 0 || isTrashView) return
+    e.currentTarget.style.transform = 'scale(0.97)'
+    dragInfoRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      isDragging: false,
+      hasTriggered: false
+    }
+  }, [isTrashView])
+
+  const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (!dragInfoRef.current || dragInfoRef.current.hasTriggered || isTrashView) return
+    const dx = e.clientX - dragInfoRef.current.startX
+    const dy = e.clientY - dragInfoRef.current.startY
+    const dist = Math.hypot(dx, dy)
+
+    if (dist > 5) {
+      dragInfoRef.current.isDragging = true
+      dragInfoRef.current.hasTriggered = true
+      e.preventDefault()
+      e.currentTarget.style.transform = 'scale(1)'
+
+      const filePaths = (isSelected && selectedPaths && selectedPaths.length > 0 && selectedPaths.includes(file.path))
+        ? selectedPaths
+        : [file.path]
+
+      window.api.startNativeDrag(filePaths)
+    }
+  }, [file.path, isSelected, selectedPaths, isTrashView])
+
+  const handleMouseUp = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return
+    e.currentTarget.style.transform = 'scale(1)'
+    const wasDragging = dragInfoRef.current?.isDragging
+    dragInfoRef.current = null
+    if (!wasDragging) {
+      onOpen(file, e)
+    }
+  }, [file, onOpen])
+
+  const handleMouseLeave = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    setHovered(false)
+    e.currentTarget.style.transform = 'scale(1)'
+  }, [])
+
   return (
     <div
-      onClick={(e) => onOpen(file, e)}
       onContextMenu={(e) => onContextMenu(file, e)}
       onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      onMouseLeave={handleMouseLeave}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
       draggable={!isTrashView}
       onDragStart={(e) => onDragStart?.(file, e)}
       data-grid-tile={file.path}
@@ -255,14 +312,8 @@ export const FileTile = React.memo(({
         transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.15s, opacity 0.35s',
         zIndex: hovered ? 2 : 1
       }}
-      onMouseDown={(e) => {
-        if (e.button === 0) e.currentTarget.style.transform = 'scale(0.97)'
-      }}
-      onMouseUp={(e) => {
-        if (e.button === 0) e.currentTarget.style.transform = 'scale(1)'
-      }}
     >
-      {isPhoto && !error ? (
+      {(isPhoto || isVideo) && (isPhoto ? !error : (hasThumb && !error)) ? (
         <>
           {!loaded && (
             <div style={{ position: 'absolute', inset: 0, background: '#111114', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
@@ -273,34 +324,20 @@ export const FileTile = React.memo(({
             onLoad={() => setLoaded(true)} onError={() => { setError(true); setLoaded(true) }}
             style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: loaded ? 1 : 0, transition: 'opacity 0.2s', willChange: 'transform' }}
           />
+          {isVideo && loaded && (
+            <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.2)' }}>
+              <div style={{ width: '26px', height: '26px', borderRadius: '4px', background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1)' }}>
+                <Play size={12} fill="#ffffff" stroke="none" />
+              </div>
+            </div>
+          )}
         </>
       ) : isVideo ? (
-        hasThumb && !error ? (
-          <>
-            {!loaded && (
-              <div style={{ position: 'absolute', inset: 0, background: '#111114', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <div style={{ width: '16px', height: '16px', border: '1.5px solid #202025', borderTop: '1.5px solid #e11d2e', borderRadius: '0%', animation: 'tileSpin 0.8s linear infinite' }} />
-              </div>
-            )}
-            <img key={imgKey} src={thumbUrl(file)} loading="lazy" decoding="async"
-              onLoad={() => setLoaded(true)} onError={() => { setError(true); setLoaded(true) }}
-              style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: loaded ? 1 : 0, transition: 'opacity 0.2s', willChange: 'transform' }}
-            />
-            {loaded && (
-              <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.2)' }}>
-                <div style={{ width: '26px', height: '26px', borderRadius: '4px', background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1)' }}>
-                  <Play size={12} fill="#ffffff" stroke="none" />
-                </div>
-              </div>
-            )}
-          </>
-        ) : (
-          <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px', background: '#1b1212' }}>
-            <Film size={iconSize} color="#e11d2e" />
-            <div style={{ fontSize: subFontSize, color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{file.ext}</div>
-            {tileSize >= 80 && <div style={{ fontSize: '8px', color: '#8a8a8f', maxWidth: '90%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{file.name}</div>}
-          </div>
-        )
+        <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px', background: '#1b1212' }}>
+          <Film size={iconSize} color="#e11d2e" />
+          <div style={{ fontSize: subFontSize, color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{file.ext}</div>
+          {tileSize >= 80 && <div style={{ fontSize: '8px', color: '#8a8a8f', maxWidth: '90%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{file.name}</div>}
+        </div>
       ) : isDoc ? (
         <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px', background: '#121a1b' }}>
           <FileText size={iconSize} color="#d0d0e0" />
@@ -467,6 +504,9 @@ const MainContentArea: React.FC<{
   scanning: boolean
   scanCount: number
   selectedDrive: string | null
+  drives: DriveInfo[]
+  handleDriveClick: (name: string) => void
+  driveFiles?: Record<string, Record<string, ScannedFile[]>>
   allFiles: ScannedFile[]
   favourites: Set<string>
   selected: Set<string>
@@ -498,6 +538,9 @@ const MainContentArea: React.FC<{
   scanning,
   scanCount,
   selectedDrive,
+  drives,
+  handleDriveClick,
+  driveFiles,
   allFiles,
   favourites,
   selected,
@@ -791,6 +834,7 @@ const MainContentArea: React.FC<{
                 tileSize={tileSize}
                 isDeleting={deletingPaths.has(file.path)}
                 onDragStart={onDragStart}
+                selectedPaths={Array.from(selected)}
               />
             ))}
           </div>
@@ -847,26 +891,20 @@ const MainContentArea: React.FC<{
         return (
           <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', marginBottom: '28px' }}>
             {rowFiles.map((file: ScannedFile) => (
-              <div
+              <FileTile
                 key={file.path}
-                onClick={(e) => handleTileOpen(file, files, e)}
-                onContextMenu={(e) => handleTileContextMenu(file, files, e)}
-                draggable={activeNav !== 'trash'}
-                onDragStart={(e) => onDragStart(file, e)}
-                data-grid-tile={file.path}
-                style={{ width: '80px', height: '80px', borderRadius: '4px', overflow: 'hidden', cursor: 'pointer', background: '#111114', position: 'relative', opacity: deletingPaths.has(file.path) ? 0 : 1, transform: deletingPaths.has(file.path) ? 'scale(0.1)' : 'none', transition: 'all 0.35s' }}
-              >
-                {(photoExts.includes(file.ext.toLowerCase()) || (videoExts.includes(file.ext.toLowerCase()) && file.thumb)) ? (
-                  <>
-                    <img src={thumbUrl(file)} loading="lazy" decoding="async" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                    {videoExts.includes(file.ext.toLowerCase()) && <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.3)' }}><Play size={16} fill="#ffffff" stroke="none" /></div>}
-                  </                  >
-                ) : (
-                  <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#141420' }}>
-                    {videoExts.includes(file.ext.toLowerCase()) ? <Film size={24} color="#e11d2e" /> : <FileText size={24} color="#8a8a8f" />}
-                  </div>
-                )}
-              </div>
+                file={file}
+                onOpen={(f, e) => handleTileOpen(f, files, e)}
+                onFav={handleFav}
+                isFav={favourites.has(file.path)}
+                isSelected={selected.has(file.path)}
+                onSelect={handleSelect}
+                onContextMenu={(f, e) => handleTileContextMenu(f, files, e)}
+                tileSize={80}
+                isDeleting={deletingPaths.has(file.path)}
+                onDragStart={onDragStart}
+                selectedPaths={Array.from(selected)}
+              />
             ))}
             {hasMore && <div style={{ width: '80px', height: '80px', borderRadius: '4px', background: '#161619', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', color: '#e11d2e', cursor: 'pointer', fontWeight: 600 }}>+{remaining} more</div>}
           </div>
@@ -920,7 +958,7 @@ const MainContentArea: React.FC<{
         return (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '5px', marginBottom: '5px' }}>
             {rowFiles.map((file: ScannedFile) => (
-              <FileTile key={file.path} file={file} onOpen={(f, e) => handleTileOpen(f, allFavFiles, e)} onFav={handleFav} isFav={true} isSelected={selected.has(file.path)} onSelect={handleSelect} onContextMenu={(f, e) => handleTileContextMenu(f, allFavFiles, e)} tileSize={100} isDeleting={deletingPaths.has(file.path)} onDragStart={onDragStart} />
+              <FileTile key={file.path} file={file} onOpen={(f, e) => handleTileOpen(f, allFavFiles, e)} onFav={handleFav} isFav={true} isSelected={selected.has(file.path)} onSelect={handleSelect} onContextMenu={(f, e) => handleTileContextMenu(f, allFavFiles, e)} tileSize={100} isDeleting={deletingPaths.has(file.path)} onDragStart={onDragStart} selectedPaths={Array.from(selected)} />
             ))}
           </div>
         )
@@ -1175,13 +1213,13 @@ const MainContentArea: React.FC<{
         </div>
       )}
 
-      {/* Prompt scan drive */}
+      {/* Prompt scan drive / Interactive Drive Selection Grid */}
       {!selectedDrive && activeNav !== 'archive' && activeNav !== 'trash' && activeNav !== 'settings' && (
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '10px' }} className="view-transition-enter">
-          <HardDrive size={48} style={{ color: '#52525b' }} />
-          <div style={{ fontSize: '13px', color: '#8a8a8f', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px' }}>Select a drive to scan and explore</div>
-          <div style={{ fontSize: '10px', color: '#52525b' }}>Smart EXIF-based local photo organizer</div>
-        </div>
+        <DriveSelectionView
+          drives={drives}
+          onDriveSelect={handleDriveClick}
+          driveFiles={driveFiles}
+        />
       )}
 
       {/* Indexing scanner progress */}
@@ -1318,7 +1356,7 @@ export default function App(): React.JSX.Element {
   // File Copy/Cut/Paste States
   const [ioProgress, setIoProgress] = useState<{ completed: number; total: number; currentFile: string } | null>(null)
   const [toastMsg, setToastMsg] = useState<string | null>(null)
-  const [dragOverDrive, setDragOverDrive] = useState<string | null>(null)
+  const [_dragOverDrive, _setDragOverDrive] = useState<string | null>(null)
   const clipboardPathsRef = useRef<string[]>([])
   const clipboardActionRef = useRef<'copy' | 'cut' | null>(null)
 
@@ -1492,7 +1530,7 @@ export default function App(): React.JSX.Element {
     window.api.setTileSize(newSize).catch((err) => console.error(err))
   }
 
-  const handleRescan = useCallback((name: string): void => {
+  const _handleRescan = useCallback((name: string): void => {
     setScanning(true); setScanCount(0); currentDriveRef.current = name
     setSelected(new Set())
     window.electron.ipcRenderer.send('rescan-drive', name)
@@ -1820,23 +1858,23 @@ export default function App(): React.JSX.Element {
   }, [selected])
 
   // Drag and Drop drop-zones (Sidebar Drives)
-  const handleDragOverDrive = useCallback((e: React.DragEvent) => {
+  const _handleDragOverDrive = useCallback((e: React.DragEvent) => {
     e.preventDefault()
   }, [])
 
-  const handleDragEnterDrive = useCallback((driveName: string, e: React.DragEvent) => {
+  const _handleDragEnterDrive = useCallback((driveName: string, e: React.DragEvent) => {
     e.preventDefault()
-    setDragOverDrive(driveName)
+    _setDragOverDrive(driveName)
   }, [])
 
-  const handleDragLeaveDrive = useCallback((e: React.DragEvent) => {
+  const _handleDragLeaveDrive = useCallback((e: React.DragEvent) => {
     e.preventDefault()
-    setDragOverDrive(null)
+    _setDragOverDrive(null)
   }, [])
 
-  const handleDropDrive = useCallback(async (driveName: string, e: React.DragEvent) => {
+  const _handleDropDrive = useCallback(async (driveName: string, e: React.DragEvent) => {
     e.preventDefault()
-    setDragOverDrive(null)
+    _setDragOverDrive(null)
     try {
       const dataStr = e.dataTransfer.getData('text/plain')
       if (!dataStr) return
@@ -1867,6 +1905,8 @@ export default function App(): React.JSX.Element {
       setIoProgress(null)
     }
   }, [])
+
+  void [_handleRescan, _handleDragOverDrive, _handleDragEnterDrive, _handleDragLeaveDrive, _handleDropDrive]
 
   // Keyboard I/O shortcuts (Ctrl+C, Ctrl+X, Ctrl+V)
   useEffect(() => {
@@ -2001,54 +2041,7 @@ export default function App(): React.JSX.Element {
           <div style={{ fontSize: '9px', color: '#8a8a8f', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Universal media indexing</div>
         </div>
 
-        {/* Drives section */}
-        {drives.map(drive => {
-          const pct = drive.total > 0 ? Math.round((drive.used / drive.total) * 100) : 0
-          const sel = selectedDrive === drive.name
-          const isDragOver = dragOverDrive === drive.name
-          return (
-            <div key={drive.name}
-              onClick={() => handleDriveClick(drive.name)} 
-              onDragOver={handleDragOverDrive}
-              onDragEnter={(e) => handleDragEnterDrive(drive.name, e)}
-              onDragLeave={handleDragLeaveDrive}
-              onDrop={(e) => handleDropDrive(drive.name, e)}
-              style={{ 
-                margin: '8px 12px', 
-                background: sel ? 'rgba(225, 29, 46, 0.05)' : isDragOver ? 'rgba(225, 29, 46, 0.1)' : '#111114', 
-                borderRadius: '4px', // CRED sharp corners
-                padding: '12px', 
-                border: `1px solid ${sel ? 'rgba(225, 29, 46, 0.35)' : isDragOver ? '#e11d2e' : 'rgba(255,255,255,0.04)'}`, 
-                cursor: 'pointer',
-                outline: isDragOver ? '1px solid #e11d2e' : 'none',
-                transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.25s, background-color 0.25s'
-              }}
-              onMouseEnter={e => e.currentTarget.style.borderColor = sel ? 'rgba(225, 29, 46, 0.5)' : isDragOver ? '#e11d2e' : 'rgba(255,255,255,0.1)'}
-              onMouseLeave={e => e.currentTarget.style.borderColor = sel ? 'rgba(225, 29, 46, 0.35)' : isDragOver ? '#e11d2e' : 'rgba(255,255,255,0.04)'}
-              onMouseDown={e => { e.currentTarget.style.transform = 'scale(0.97)' }}
-              onMouseUp={e => { e.currentTarget.style.transform = 'scale(1)' }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', fontWeight: 700, color: '#f2f2f0', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                <div style={{ width: '4px', height: '4px', borderRadius: '0%', background: '#e11d2e' }} />
-                {drive.name}
-              </div>
-              <div style={{ fontSize: '9px', color: '#8a8a8f', marginTop: '6px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{drive.total} GB · {drive.free} GB free</div>
-              <div style={{ height: '2px', background: '#1c1c22', borderRadius: '0px', marginTop: '8px', overflow: 'hidden' }}>
-                <div style={{ height: '100%', width: `${pct}%`, background: '#e11d2e' }} />
-              </div>
-              {sel && (
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '8px' }}>
-                  <div style={{ fontSize: '9px', color: '#e11d2e', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>{scanning ? `Indexing... ${scanCount}` : `${scanCount} files`}</div>
-                  {!scanning && scanCount > 0 && (
-                    <div onClick={e => { e.stopPropagation(); handleRescan(drive.name) }} style={{ fontSize: '8px', fontWeight: 700, color: '#f2f2f0', textTransform: 'uppercase', letterSpacing: '0.5px', cursor: 'pointer', padding: '2px 6px', borderRadius: '2px', background: 'rgba(225, 29, 46, 0.25)', border: '1px solid rgba(225,29,46,0.3)' }}>↺ Rescan</div>
-                  )}
-                </div>
-              )}
-            </div>
-          )
-        })}
 
-        <div style={{ height: '1px', background: 'rgba(255,255,255,0.04)', margin: '14px 16px' }} />
 
         {/* Collections */}
         <div style={{ padding: '4px 0' }}>
@@ -2085,9 +2078,49 @@ export default function App(): React.JSX.Element {
         <div style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '14px 22px', borderBottom: '1px solid rgba(255,255,255,0.04)', background: '#0c0c0f', flexShrink: 0 }}>
           
           <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <div style={{ fontSize: '10px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700 }}>
-              {selectedDrive ? <><span style={{ color: '#ffffff' }}>{selectedDrive}</span> · <span style={{ color: '#e11d2e' }}>{activeNav}</span></> : 'Select a drive'}
-            </div>
+            {selectedDrive ? (
+              <div
+                onClick={() => {
+                  setSelectedDrive(null)
+                  setActiveNav('all')
+                }}
+                title="Return to Drive Selection screen"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  cursor: 'pointer',
+                  padding: '4px 8px',
+                  borderRadius: '4px',
+                  background: 'rgba(255, 255, 255, 0.03)',
+                  border: '1px solid rgba(255, 255, 255, 0.06)',
+                  fontSize: '10px',
+                  color: '#8a8a8f',
+                  textTransform: 'uppercase',
+                  letterSpacing: '1px',
+                  fontWeight: 700,
+                  transition: 'all 0.15s cubic-bezier(0.34, 1.56, 0.64, 1)',
+                  userSelect: 'none'
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = 'rgba(225, 29, 46, 0.12)'
+                  e.currentTarget.style.borderColor = 'rgba(225, 29, 46, 0.4)'
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.03)'
+                  e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.06)'
+                }}
+              >
+                <ArrowLeft size={12} color="#e11d2e" />
+                <span>
+                  <span style={{ color: '#ffffff' }}>{selectedDrive}</span> · <span style={{ color: '#e11d2e' }}>{activeNav}</span>
+                </span>
+              </div>
+            ) : (
+              <div style={{ fontSize: '10px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700 }}>
+                Select a drive
+              </div>
+            )}
             
             {/* Search Input */}
             {selectedDrive && (
@@ -2146,6 +2179,9 @@ export default function App(): React.JSX.Element {
           scanning={scanning}
           scanCount={scanCount}
           selectedDrive={selectedDrive}
+          drives={drives}
+          handleDriveClick={handleDriveClick}
+          driveFiles={driveFiles}
           allFiles={allFiles}
           favourites={favourites}
           selected={selected}

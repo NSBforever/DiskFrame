@@ -1,4 +1,4 @@
-import { join } from 'path'
+import { join, basename, extname, dirname } from 'path'
 import * as fs from 'fs'
 import * as cp from 'child_process'
 import exifr from 'exifr'
@@ -24,6 +24,130 @@ function resolveFfmpeg(): string {
   return 'ffmpeg'
 }
 const ffmpegExe = resolveFfmpeg()
+
+function resolveFfprobe(): string {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const ffprobeStatic = require('ffprobe-static')
+    const p = ffprobeStatic?.path as string
+    if (p) {
+      const candidates = [
+        p.replace('app.asar', 'app.asar.unpacked'),
+        p,
+        p + '.exe'
+      ]
+      for (const c of candidates) if (fs.existsSync(c)) return c
+    }
+  } catch {}
+  return 'ffprobe'
+}
+const ffprobeExe = resolveFfprobe()
+
+function parseISO6709(locStr: string): { lat: number; lng: number } | null {
+  const regex = /^([+-]\d+(?:\.\d+)?)([+-]\d+(?:\.\d+)?)(?:[+-]\d+(?:\.\d+)?)?\/$/
+  const match = locStr.match(regex)
+  if (match) {
+    const lat = parseFloat(match[1])
+    const lng = parseFloat(match[2])
+    if (!isNaN(lat) && !isNaN(lng)) {
+      return { lat, lng }
+    }
+  }
+  return null
+}
+
+async function getMovMetadata(filePath: string): Promise<{ date: Date | null; lat: number | null; lng: number | null; rotation: number } | null> {
+  return new Promise((resolve) => {
+    const ffprobeProc = cp.spawn(ffprobeExe, [
+      '-v',
+      'quiet',
+      '-print_format',
+      'json',
+      '-show_format',
+      '-show_streams',
+      filePath
+    ])
+
+    let stdout = ''
+    let err = false
+
+    ffprobeProc.stdout.on('data', (chunk) => {
+      stdout += chunk.toString()
+    })
+
+    ffprobeProc.on('error', () => {
+      err = true
+    })
+
+    ffprobeProc.on('close', (code) => {
+      if (err || code !== 0 || stdout.trim().length === 0) {
+        resolve(null)
+        return
+      }
+
+      try {
+        const data = JSON.parse(stdout)
+        const streams = data.streams || []
+        const format = data.format || {}
+
+        const videoStream = streams.find((s: { codec_type?: string }) => s.codec_type === 'video')
+        
+        let date: Date | null = null
+        let dateStr = ''
+        if (format.tags && format.tags.creation_time) {
+          dateStr = format.tags.creation_time
+        } else if (videoStream && videoStream.tags && videoStream.tags.creation_time) {
+          dateStr = videoStream.tags.creation_time
+        }
+        if (dateStr) {
+          const parsed = new Date(dateStr)
+          if (!isNaN(parsed.getTime())) {
+            date = parsed
+          }
+        }
+
+        let lat: number | null = null
+        let lng: number | null = null
+        let locationStr = ''
+        if (format.tags) {
+          locationStr = format.tags['com.apple.quicktime.location.ISO6709'] ||
+                        format.tags['location'] ||
+                        format.tags['location-eng'] ||
+                        ''
+        }
+        if (locationStr) {
+          const parsedLoc = parseISO6709(locationStr)
+          if (parsedLoc) {
+            lat = parsedLoc.lat
+            lng = parsedLoc.lng
+          }
+        } else if (format.tags) {
+          if (format.tags.GPSLatitude && format.tags.GPSLongitude) {
+            lat = parseFloat(format.tags.GPSLatitude)
+            lng = parseFloat(format.tags.GPSLongitude)
+          }
+        }
+
+        let rotation = 0
+        if (videoStream) {
+          if (videoStream.tags && videoStream.tags.rotate) {
+            rotation = parseInt(videoStream.tags.rotate, 10)
+          } else if (videoStream.side_data_list) {
+            const displayMatrix = videoStream.side_data_list.find((sd: any) => sd.side_data_type === 'Display Matrix')
+            if (displayMatrix && typeof displayMatrix.rotation === 'number') {
+              rotation = (360 - displayMatrix.rotation) % 360
+            }
+          }
+        }
+
+        resolve({ date, lat, lng, rotation })
+      } catch {
+        resolve(null)
+      }
+    })
+  })
+}
+
 
 const dbPath = join(app.getPath('userData'), 'diskframe.db')
 const db = new Database(dbPath)
@@ -414,7 +538,7 @@ function makeHash(fullPath: string): string {
 }
 
 const photoExts = ['.jpg', '.jpeg', '.png', '.heic', '.raw', '.cr2', '.nef', '.webp']
-const videoExts = ['.mp4', '.mov', '.avi', '.mkv', '.wmv']
+const videoExts = ['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.wmv', '.webm']
 const docExts = ['.pdf', '.docx', '.doc', '.txt', '.xlsx', '.pptx', '.csv']
 const allExts = [...photoExts, ...videoExts, ...docExts]
 const sharpExts = ['.jpg', '.jpeg', '.png', '.webp']
@@ -475,7 +599,7 @@ export async function generateThumbForFile(fullPath: string, ext: string): Promi
   return null
 }
 
-function extractRawFrame(fullPath: string, seekSecs: number, tempFramePath: string): Promise<boolean> {
+function extractRawFrame(fullPath: string, seekSecs: number | string, tempFramePath: string): Promise<boolean> {
   return new Promise((resolve) => {
     const args = [
       '-ss',
@@ -538,8 +662,8 @@ async function generateVideoThumb(fullPath: string): Promise<string | null> {
   const tempFramePath = join(osTmp, `df_raw_${hash}_${Date.now()}.png`)
 
   try {
-    // 1. Extract single frame near 1s, fall back to 0s if file is short/fails
-    let success = await extractRawFrame(fullPath, 1, tempFramePath)
+    // 1. Extract single frame near 0.2s mark, fall back to 0s if file is short/fails
+    let success = await extractRawFrame(fullPath, 0.2, tempFramePath)
     if (!success) {
       console.log('[DIAG:FFMPEG_RETRY_0S]', fullPath)
       success = await extractRawFrame(fullPath, 0, tempFramePath)
@@ -550,19 +674,25 @@ async function generateVideoThumb(fullPath: string): Promise<string | null> {
       return null
     }
 
-    // 2. Centered semi-transparent play icon SVG overlay (matching photo thumbnail 300x300 grid)
-    const playOverlaySvg = Buffer.from(`
-      <svg width="300" height="300" viewBox="0 0 300 300" xmlns="http://www.w3.org/2000/svg">
-        <circle cx="150" cy="150" r="32" fill="rgba(0, 0, 0, 0.55)" stroke="rgba(255, 255, 255, 0.85)" stroke-width="2.5"/>
-        <polygon points="142,135 166,150 142,165" fill="#ffffff"/>
-      </svg>
-    `)
+    // 2. Resize extracted frame through Sharp
+    const ext = fullPath.slice(fullPath.lastIndexOf('.')).toLowerCase()
+    let rotationAngle = 0
+    if (ext === '.mov') {
+      const meta = await getMovMetadata(fullPath)
+      if (meta && meta.rotation) {
+        rotationAngle = meta.rotation
+      }
+    }
 
-    // 3. Resize extracted frame through Sharp and composite play-icon overlay
-    await sharp(tempFramePath)
-      .rotate()
+    const image = sharp(tempFramePath)
+    if (ext === '.mov' && rotationAngle) {
+      image.rotate(rotationAngle)
+    } else {
+      image.rotate()
+    }
+
+    await image
       .resize(300, 300, { fit: 'cover', position: 'centre' })
-      .composite([{ input: playOverlaySvg, top: 0, left: 0 }])
       .jpeg({ quality: 80 })
       .toFile(thumbPath)
 
@@ -570,7 +700,7 @@ async function generateVideoThumb(fullPath: string): Promise<string | null> {
     console.log('[DIAG:THUMB_CREATED]', { fullPath, thumbPath, created })
     return created ? thumbPath : null
   } catch (err) {
-    console.error(`[DIAG:SHARP_COMPOSITE_FAILED] for: "${fullPath}"`, err)
+    console.error(`[DIAG:SHARP_FRAME_FAILED] for: "${fullPath}"`, err)
     return null
   } finally {
     // Clean up temporary raw frame image file
@@ -712,21 +842,30 @@ async function enrichExifBackground(
   let enriched = 0
   const total = files.length
 
-  for (const { path: fullPath } of files) {
+  for (const { path: fullPath, ext } of files) {
     try {
-      const exif = await exifr.parse(fullPath, {
-        pick: ['DateTimeOriginal', 'GPSLatitude', 'GPSLongitude'],
-        gps: true
-      })
-      if (!exif) {
-        enriched++
-        continue
-      }
-
       let date: Date | null = null
-      if (exif.DateTimeOriginal) date = new Date(exif.DateTimeOriginal)
-      const lat = typeof exif.latitude === 'number' ? exif.latitude : null
-      const lng = typeof exif.longitude === 'number' ? exif.longitude : null
+      let lat: number | null = null
+      let lng: number | null = null
+
+      if (ext.toLowerCase() === '.mov') {
+        const meta = await getMovMetadata(fullPath)
+        if (meta) {
+          date = meta.date
+          lat = meta.lat
+          lng = meta.lng
+        }
+      } else {
+        const exif = await exifr.parse(fullPath, {
+          pick: ['DateTimeOriginal', 'GPSLatitude', 'GPSLongitude'],
+          gps: true
+        })
+        if (exif) {
+          if (exif.DateTimeOriginal) date = new Date(exif.DateTimeOriginal)
+          lat = typeof exif.latitude === 'number' ? exif.latitude : null
+          lng = typeof exif.longitude === 'number' ? exif.longitude : null
+        }
+      }
 
       if (date || lat !== null) {
         const d = date || new Date()
@@ -748,4 +887,64 @@ async function enrichExifBackground(
   }
 
   if (onProgress) onProgress(total, total)
+}
+
+export function resolveMediaFile(filePath: string): { path: string; relinked: boolean; exists: boolean } {
+  if (!filePath) return { path: filePath, relinked: false, exists: false }
+
+  // 1. Direct stat check
+  if (fs.existsSync(filePath)) {
+    return { path: filePath, relinked: false, exists: true }
+  }
+
+  console.warn(`[PathResilience] File not found at target path: "${filePath}". Searching index for moved/renamed file...`)
+
+  const targetName = basename(filePath)
+  const targetExt = extname(filePath)
+
+  // 2. Search database for files matching exact filename or path
+  const candidates = db
+    .prepare('SELECT * FROM files WHERE name = ? OR path = ?')
+    .all(targetName, filePath) as ScannedFile[]
+
+  // Check if any candidate's path exists on disk right now
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate.path)) {
+      console.log(`[PathResilience] Found moved file at indexed path: "${candidate.path}"`)
+      db.prepare('UPDATE files SET path = ?, name = ? WHERE path = ?').run(candidate.path, basename(candidate.path), filePath)
+      return { path: candidate.path, relinked: true, exists: true }
+    }
+  }
+
+  // 3. Search sibling directories of the old parent folder (e.g. if parent folder was renamed or moved)
+  const dirPath = dirname(filePath)
+  const parentDirPath = dirname(dirPath)
+
+  if (fs.existsSync(parentDirPath)) {
+    try {
+      const subdirs = fs.readdirSync(parentDirPath, { withFileTypes: true })
+      for (const sub of subdirs) {
+        if (sub.isDirectory()) {
+          const candidatePath = join(parentDirPath, sub.name, targetName)
+          if (fs.existsSync(candidatePath)) {
+            console.log(`[PathResilience] Located moved file in renamed parent folder: "${candidatePath}"`)
+            db.prepare('UPDATE files SET path = ?, name = ? WHERE path = ?').run(candidatePath, targetName, filePath)
+            return { path: candidatePath, relinked: true, exists: true }
+          }
+        }
+      }
+    } catch {}
+  }
+
+  // 4. Search across all scanned files in database to check if target file exists on disk anywhere
+  const allDbFiles = db.prepare('SELECT * FROM files WHERE ext = ? OR name = ?').all(targetExt, targetName) as ScannedFile[]
+  for (const file of allDbFiles) {
+    if (fs.existsSync(file.path) && basename(file.path) === targetName) {
+      console.log(`[PathResilience] Relinked moved file across index: "${file.path}"`)
+      db.prepare('UPDATE files SET path = ? WHERE path = ?').run(file.path, filePath)
+      return { path: file.path, relinked: true, exists: true }
+    }
+  }
+
+  return { path: filePath, relinked: false, exists: false }
 }

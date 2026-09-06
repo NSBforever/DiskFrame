@@ -35,8 +35,8 @@ interface ImageLoaderProps {
   onImageLoaded: (dimensions: { width: number; height: number }) => void
 }
 
-const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic']
-const videoExts = ['.mp4', '.mov', '.avi', '.mkv', '.wmv']
+const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif']
+const videoExts = ['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.wmv', '.webm']
 
 function toUrl(p: string): string {
   return 'media:///' + p.replace(/\\/g, '/')
@@ -66,10 +66,12 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   const videoContainerRef = useRef<HTMLDivElement>(null)
 
   // Custom VLC-style video states & streaming pipeline
-  const [videoMode, setVideoMode] = useState<'native' | 'stream' | null>(null)
+  const [videoMode, setVideoMode] = useState<'native' | 'stream' | 'mpv' | null>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [isBuffering, setIsBuffering] = useState(false)
   const [seekOffset, setSeekOffset] = useState(0)
+  const mpvWidthRef = useRef<number | null>(null)
+  const mpvHeightRef = useRef<number | null>(null)
 
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
@@ -148,22 +150,84 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
       setShowSpinner(false)
       setIsBuffering(true)
 
-      // Probe media via main process IPC
-      window.api
-        .getVideoPlayInfo(file.path)
-        .then((info) => {
-          setVideoMode(info.mode)
-          setVideoUrl(info.url)
-          if (info.duration > 0) {
-            setDuration(info.duration)
-          }
+      mpvWidthRef.current = null
+      mpvHeightRef.current = null
+
+      let active = true
+
+      const startPlayback = async () => {
+        if (!videoContainerRef.current) {
+          await new Promise((r) => setTimeout(r, 50))
+        }
+
+        if (!active || !videoContainerRef.current) return
+
+        const rect = videoContainerRef.current.getBoundingClientRect()
+        const bounds = {
+          left: rect.left,
+          top: rect.top,
+          width: rect.width,
+          height: rect.height
+        }
+
+        try {
+          await window.api.playMpv(file.path, bounds)
+          if (!active) return
+          setVideoMode('mpv')
           setIsBuffering(false)
-        })
-        .catch((err) => {
-          console.error('[ImageLoader] Error fetching video info:', err)
-          setVideoError(true)
-          setIsBuffering(false)
-        })
+          setIsPlaying(true)
+        } catch (err) {
+          console.error('[ImageLoader] mpv start failed, falling back to stream server:', err)
+          if (!active) return
+          window.api
+            .getVideoPlayInfo(file.path)
+            .then((info) => {
+              if (!active) return
+              setVideoMode(info.mode)
+              setVideoUrl(info.url)
+              if (info.duration > 0) {
+                setDuration(info.duration)
+              }
+              setIsBuffering(false)
+            })
+            .catch((streamErr) => {
+              console.error('[ImageLoader] Fallback stream failed:', streamErr)
+              if (!active) return
+              setVideoError(true)
+              setIsBuffering(false)
+            })
+        }
+      }
+
+      startPlayback()
+
+      const unbindError = window.api.onMpvError((errObj) => {
+        console.error('[ImageLoader] mpv error event:', errObj.error)
+        if (active) {
+          window.api
+            .getVideoPlayInfo(file.path)
+            .then((info) => {
+              if (!active) return
+              setVideoMode(info.mode)
+              setVideoUrl(info.url)
+              if (info.duration > 0) setDuration(info.duration)
+              setIsBuffering(false)
+            })
+            .catch(() => {
+              if (!active) return
+              setVideoError(true)
+              setIsBuffering(false)
+            })
+        }
+      })
+
+      return () => {
+        active = false
+        clearTimeout(spinnerTimer)
+        unbindError()
+        window.api.closeMpv()
+        window.api.stopVideoStream().catch(() => {})
+      }
     } else {
       clearTimeout(spinnerTimer)
       setLoading(false)
@@ -172,11 +236,91 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
 
     return () => {
       clearTimeout(spinnerTimer)
-      if (isVideo) {
-        window.api.stopVideoStream().catch(() => {})
-      }
     }
   }, [file.path, isPhoto, isVideo, onImageLoaded])
+
+  // Synchronize mpv window bounds on resize
+  useEffect(() => {
+    if (videoMode !== 'mpv' || !videoContainerRef.current) return
+
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0]
+      if (!entry) return
+      const rect = entry.target.getBoundingClientRect()
+      window.api.resizeMpv({
+        left: rect.left,
+        top: rect.top,
+        width: rect.width,
+        height: rect.height
+      })
+    })
+
+    observer.observe(videoContainerRef.current)
+
+    return () => {
+      observer.disconnect()
+    }
+  }, [videoMode])
+
+  // Sync mpv properties with React state
+  useEffect(() => {
+    if (videoMode !== 'mpv') return
+
+    const unbindChange = window.api.onMpvPropertyChange(({ name, value }) => {
+      switch (name) {
+        case 'time-pos':
+          if (typeof value === 'number') {
+            setCurrentTime(value)
+          }
+          break
+        case 'duration':
+          if (typeof value === 'number') {
+            setDuration(value)
+          }
+          break
+        case 'pause':
+          if (typeof value === 'boolean') {
+            setIsPlaying(!value)
+          }
+          break
+        case 'volume':
+          if (typeof value === 'number') {
+            setVolume(value / 100)
+          }
+          break
+        case 'mute':
+          if (typeof value === 'boolean') {
+            setIsMuted(value)
+          }
+          break
+        case 'speed':
+          if (typeof value === 'number') {
+            setPlaybackSpeed(value)
+          }
+          break
+        case 'width':
+          if (typeof value === 'number') {
+            mpvWidthRef.current = value
+            if (mpvHeightRef.current) {
+              onImageLoaded({ width: value, height: mpvHeightRef.current })
+            }
+          }
+          break
+        case 'height':
+          if (typeof value === 'number') {
+            mpvHeightRef.current = value
+            if (mpvWidthRef.current) {
+              onImageLoaded({ width: mpvWidthRef.current, height: value })
+            }
+          }
+          break
+      }
+    })
+
+    return () => {
+      unbindChange()
+    }
+  }, [videoMode, onImageLoaded])
 
   // Time Updates & Metadata Loaded Binds
   const handleTimeUpdate = () => {
@@ -204,12 +348,16 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
 
   // Play/Pause callbacks
   const togglePlay = () => {
-    if (!videoRef.current) return
-    if (videoRef.current.paused) {
-      videoRef.current.play().then(() => setIsPlaying(true)).catch((err) => console.error(err))
+    if (videoMode === 'mpv') {
+      window.api.sendMpvCommand('set_property', ['pause', isPlaying])
     } else {
-      videoRef.current.pause()
-      setIsPlaying(false)
+      if (!videoRef.current) return
+      if (videoRef.current.paused) {
+        videoRef.current.play().then(() => setIsPlaying(true)).catch((err) => console.error(err))
+      } else {
+        videoRef.current.pause()
+        setIsPlaying(false)
+      }
     }
   }
 
@@ -244,7 +392,9 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
     const targetTime = pct * duration
     setCurrentTime(targetTime)
 
-    if (videoMode === 'native') {
+    if (videoMode === 'mpv') {
+      window.api.sendMpvCommand('seek', [targetTime, 'absolute'])
+    } else if (videoMode === 'native') {
       if (videoRef.current) videoRef.current.currentTime = targetTime
     } else if (videoMode === 'stream') {
       setIsBuffering(true)
@@ -281,7 +431,9 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
       const pct = Math.max(0, Math.min(1, x / rect.width))
       const targetTime = pct * duration
 
-      if (videoMode === 'native') {
+      if (videoMode === 'mpv') {
+        window.api.sendMpvCommand('seek', [targetTime, 'absolute'])
+      } else if (videoMode === 'native') {
         if (videoRef.current) videoRef.current.currentTime = targetTime
       } else if (videoMode === 'stream') {
         setIsBuffering(true)
@@ -306,31 +458,40 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
 
   // Volume slider & Mute toggle binds
   const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!videoRef.current) return
     const val = Number(e.target.value)
-    videoRef.current.volume = val
     setVolume(val)
-    if (val === 0) {
-      videoRef.current.muted = true
-      setIsMuted(true)
+    const isM = val === 0
+    setIsMuted(isM)
+    if (videoMode === 'mpv') {
+      window.api.sendMpvCommand('set_property', ['volume', val * 100])
+      window.api.sendMpvCommand('set_property', ['mute', isM])
     } else {
-      videoRef.current.muted = false
-      setIsMuted(false)
+      if (!videoRef.current) return
+      videoRef.current.volume = val
+      videoRef.current.muted = isM
     }
   }
 
   const toggleMute = () => {
-    if (!videoRef.current) return
     const nextMute = !isMuted
-    videoRef.current.muted = nextMute
     setIsMuted(nextMute)
+    if (videoMode === 'mpv') {
+      window.api.sendMpvCommand('set_property', ['mute', nextMute])
+    } else {
+      if (!videoRef.current) return
+      videoRef.current.muted = nextMute
+    }
   }
 
   // Playback multiplier rate selection
   const handleSpeedChange = (rate: number) => {
-    if (!videoRef.current) return
-    videoRef.current.playbackRate = rate
     setPlaybackSpeed(rate)
+    if (videoMode === 'mpv') {
+      window.api.sendMpvCommand('set_property', ['speed', rate])
+    } else {
+      if (!videoRef.current) return
+      videoRef.current.playbackRate = rate
+    }
   }
 
   // Local fullscreen triggers
@@ -403,7 +564,9 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
           e.stopImmediatePropagation()
           const nextTimeL = Math.max(0, currentTime - 5)
           setCurrentTime(nextTimeL)
-          if (videoMode === 'native') {
+          if (videoMode === 'mpv') {
+            window.api.sendMpvCommand('seek', [nextTimeL, 'absolute'])
+          } else if (videoMode === 'native') {
             if (videoRef.current) videoRef.current.currentTime = nextTimeL
           } else if (videoMode === 'stream') {
             setIsBuffering(true)
@@ -424,7 +587,9 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
           e.stopImmediatePropagation()
           const nextTimeR = Math.min(duration, currentTime + 5)
           setCurrentTime(nextTimeR)
-          if (videoMode === 'native') {
+          if (videoMode === 'mpv') {
+            window.api.sendMpvCommand('seek', [nextTimeR, 'absolute'])
+          } else if (videoMode === 'native') {
             if (videoRef.current) videoRef.current.currentTime = nextTimeR
           } else if (videoMode === 'stream') {
             setIsBuffering(true)
@@ -444,10 +609,15 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
           e.stopPropagation()
           e.stopImmediatePropagation()
           const nextVolumeU = Math.min(1, volume + 0.05)
-          if (videoRef.current) videoRef.current.volume = nextVolumeU
           setVolume(nextVolumeU)
-          if (videoRef.current) videoRef.current.muted = false
           setIsMuted(false)
+          if (videoMode === 'mpv') {
+            window.api.sendMpvCommand('set_property', ['volume', nextVolumeU * 100])
+            window.api.sendMpvCommand('set_property', ['mute', false])
+          } else {
+            if (videoRef.current) videoRef.current.volume = nextVolumeU
+            if (videoRef.current) videoRef.current.muted = false
+          }
           break
         }
         case 'ArrowDown': {
@@ -455,14 +625,15 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
           e.stopPropagation()
           e.stopImmediatePropagation()
           const nextVolumeD = Math.max(0, volume - 0.05)
-          if (videoRef.current) videoRef.current.volume = nextVolumeD
           setVolume(nextVolumeD)
-          if (nextVolumeD === 0) {
-            if (videoRef.current) videoRef.current.muted = true
-            setIsMuted(true)
+          const isM = nextVolumeD === 0
+          setIsMuted(isM)
+          if (videoMode === 'mpv') {
+            window.api.sendMpvCommand('set_property', ['volume', nextVolumeD * 100])
+            window.api.sendMpvCommand('set_property', ['mute', isM])
           } else {
-            if (videoRef.current) videoRef.current.muted = false
-            setIsMuted(false)
+            if (videoRef.current) videoRef.current.volume = nextVolumeD
+            if (videoRef.current) videoRef.current.muted = isM
           }
           break
         }
@@ -597,28 +768,32 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
             alignItems: 'center',
             justifyContent: 'center',
             position: 'relative',
-            background: '#000'
+            background: videoMode === 'mpv' ? 'transparent' : '#000'
           }}
         >
-          {videoUrl && !videoError ? (
+          {(!videoError && (videoMode === 'mpv' || videoUrl)) ? (
             <>
-              <video
-                ref={videoRef}
-                src={videoUrl}
-                autoPlay
-                onLoadedMetadata={handleLoadedMetadata}
-                onTimeUpdate={handleTimeUpdate}
-                onPlay={handlePlay}
-                onPause={handlePause}
-                onWaiting={() => setIsBuffering(true)}
-                onPlaying={() => setIsBuffering(false)}
-                onError={() => setVideoError(true)}
-                style={{
-                  maxWidth: '100%',
-                  maxHeight: '100%',
-                  objectFit: 'contain'
-                }}
-              />
+              {videoMode === 'mpv' ? (
+                <div style={{ width: '100%', height: '100%', background: 'transparent' }} />
+              ) : (
+                <video
+                  ref={videoRef}
+                  src={videoUrl || undefined}
+                  autoPlay
+                  onLoadedMetadata={handleLoadedMetadata}
+                  onTimeUpdate={handleTimeUpdate}
+                  onPlay={handlePlay}
+                  onPause={handlePause}
+                  onWaiting={() => setIsBuffering(true)}
+                  onPlaying={() => setIsBuffering(false)}
+                  onError={() => setVideoError(true)}
+                  style={{
+                    maxWidth: '100%',
+                    maxHeight: '100%',
+                    objectFit: 'contain'
+                  }}
+                />
+              )}
 
               {/* Buffering Spinner */}
               {isBuffering && (
@@ -974,29 +1149,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
             >
               <div style={{ fontSize: '64px' }}>🎬</div>
               <div style={{ fontSize: '15px', fontWeight: 600, color: '#f2f2f0' }}>{file.name}</div>
-              <div style={{ fontSize: '12px', color: '#8a8a8f' }}>Fallback system player required for this media</div>
-              <button
-                onClick={() => window.electron.ipcRenderer.send('open-file', file.path)}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                  padding: '10px 24px',
-                  borderRadius: '4px',
-                  border: 'none',
-                  background: '#e11d2e',
-                  color: '#fff',
-                  fontSize: '14px',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  boxShadow: 'none',
-                  transition: 'background 0.2s'
-                }}
-                onMouseEnter={(e) => (e.currentTarget.style.background = '#ff2b3d')}
-                onMouseLeave={(e) => (e.currentTarget.style.background = '#e11d2e')}
-              >
-                ▶ Open in System Player
-              </button>
+              <div style={{ fontSize: '12px', color: '#8a8a8f' }}>Media file could not be loaded or is missing from disk</div>
             </div>
           )}
         </div>

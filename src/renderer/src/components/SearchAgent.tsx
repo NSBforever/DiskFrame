@@ -382,6 +382,7 @@ export default function SearchAgent({
                     onSelect={onSelect}
                     onContextMenu={(f, e) => onContextMenu(f, results, e)}
                     tileSize={100}
+                    selectedPaths={Array.from(selectedPaths)}
                   />
                 ))}
               </div>

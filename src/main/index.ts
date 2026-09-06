@@ -31,11 +31,13 @@ import {
   restoreFiles,
   deleteFilesPermanently,
   emptyTrash,
-  autoPurgeTrash
+  autoPurgeTrash,
+  resolveMediaFile
 } from './scanner'
 import Database from 'better-sqlite3'
 
 import { initStreamServer, probeMedia, killActiveStream, closeStreamServer } from './streamServer'
+import { initMpv, sendMpvCommand, updateMpvBounds, closeMpv, refreshMpvBounds } from './mpvManager'
 
 const ffmpegExe = ffmpegPath ? ffmpegPath.replace('app.asar', 'app.asar.unpacked') : 'ffmpeg'
 
@@ -77,14 +79,17 @@ function createWindow(): void {
     height: 800,
     show: false,
     autoHideMenuBar: true,
-    ...(process.platform === 'linux' ? { icon } : {}),
+    icon,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
       webSecurity: false
     }
   })
+  mainWindow.setBackgroundColor('#00000000')
   mainWindow.on('ready-to-show', () => mainWindow.show())
+  mainWindow.on('move', () => refreshMpvBounds())
+  mainWindow.on('resize', () => refreshMpvBounds())
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
@@ -96,17 +101,53 @@ function createWindow(): void {
   }
 }
 
+function getDrivesPowerShell(): Promise<Array<{ name: string; filesystem: string; total: number; used: number; free: number }>> {
+  return new Promise((resolve) => {
+    const cmd = `powershell -NoProfile -Command "Get-CimInstance Win32_LogicalDisk | Select-Object DeviceID, FileSystem, Size, FreeSpace | ConvertTo-Json"`
+    const { exec } = require('child_process')
+    exec(cmd, (err: any, stdout: string) => {
+      if (err || !stdout) return resolve([])
+      try {
+        const parsed = JSON.parse(stdout)
+        const items = Array.isArray(parsed) ? parsed : [parsed]
+        const drives = items
+          .filter((d: any) => d.Size && d.DeviceID)
+          .map((d: any) => {
+            const totalGB = Math.round(Number(d.Size) / (1024 * 1024 * 1024))
+            const freeGB = Math.round(Number(d.FreeSpace) / (1024 * 1024 * 1024))
+            const usedGB = Math.max(0, totalGB - freeGB)
+            return {
+              name: d.DeviceID,
+              filesystem: d.FileSystem || 'NTFS',
+              total: totalGB,
+              used: usedGB,
+              free: freeGB
+            }
+          })
+        resolve(drives)
+      } catch {
+        resolve([])
+      }
+    })
+  })
+}
+
 async function sendDrives(): Promise<void> {
   try {
-    const disks = await getDiskInfo()
-    const drives = disks.map((disk) => ({
-      name: disk.mounted,
-      filesystem: disk.filesystem,
-      total: Math.round(disk.blocks / 1024 / 1024 / 1024),
-      used: Math.round((disk.blocks - disk.available) / 1024 / 1024 / 1024),
-      free: Math.round(disk.available / 1024 / 1024 / 1024)
-    }))
-    if (mainWindow) mainWindow.webContents.send('drives-updated', drives)
+    let drives: Array<{ name: string; filesystem: string; total: number; used: number; free: number }> = []
+    try {
+      const disks = await getDiskInfo()
+      drives = disks.map((disk) => ({
+        name: disk.mounted,
+        filesystem: disk.filesystem,
+        total: Math.round(disk.blocks / 1024 / 1024 / 1024),
+        used: Math.round((disk.blocks - disk.available) / 1024 / 1024 / 1024),
+        free: Math.round(disk.available / 1024 / 1024 / 1024)
+      }))
+    } catch {
+      drives = await getDrivesPowerShell()
+    }
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('drives-updated', drives)
   } catch (err) {
     console.error('Error getting disk info:', err)
   }
@@ -183,10 +224,67 @@ app.whenReady().then(() => {
   } catch (err) {
     console.error('Error running auto-purge on startup:', err)
   }
+  // Backfill missing thumbnails (photos & videos) on startup
+  backfillAllMissingThumbnails().catch((err) => console.error('Thumbnail backfill error on startup:', err))
 
-  protocol.handle('media', (request) => {
+  protocol.handle('media', async (request) => {
     const url = request.url.replace('media:///', '')
     const filePath = decodeURIComponent(url).replace(/\//g, '\\')
+
+    const lower = filePath.toLowerCase()
+    if (lower.endsWith('.heic') || lower.endsWith('.heif')) {
+      try {
+        const heicCacheDir = join(app.getPath('userData'), 'heic_cache')
+        if (!fs.existsSync(heicCacheDir)) {
+          fs.mkdirSync(heicCacheDir, { recursive: true })
+        }
+        const { createHash } = await import('crypto')
+        const hash = createHash('md5').update(filePath).digest('hex')
+        const cachePath = join(heicCacheDir, `${hash}.jpg`)
+
+        if (fs.existsSync(cachePath) && fs.statSync(cachePath).size > 0) {
+          return net.fetch('file:///' + cachePath.replace(/\\/g, '/'))
+        }
+
+        if (fs.existsSync(filePath)) {
+          let converted = false
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-var-requires
+            const convert = require('heic-convert')
+            const inputBuffer = fs.readFileSync(filePath)
+            const outputBuffer = await convert({
+              buffer: inputBuffer,
+              format: 'JPEG',
+              quality: 0.92
+            })
+            fs.writeFileSync(cachePath, outputBuffer)
+            converted = true
+          } catch (e) {
+            console.warn('[HEIC media protocol] heic-convert failed, attempting ffmpeg fallback:', e)
+          }
+
+          if (!converted) {
+            await new Promise<void>((resolve) => {
+              const ff = spawn(ffmpegExe, ['-i', filePath, '-y', cachePath])
+              ff.on('close', (code) => {
+                if (code === 0 && fs.existsSync(cachePath) && fs.statSync(cachePath).size > 0) {
+                  converted = true
+                }
+                resolve()
+              })
+              ff.on('error', () => resolve())
+            })
+          }
+
+          if (converted && fs.existsSync(cachePath)) {
+            return net.fetch('file:///' + cachePath.replace(/\\/g, '/'))
+          }
+        }
+      } catch (err) {
+        console.error('[media protocol HEIC convert error]:', filePath, err)
+      }
+    }
+
     return net.fetch('file:///' + filePath.replace(/\\/g, '/'))
   })
 
@@ -503,16 +601,21 @@ app.whenReady().then(() => {
   })
 
   ipcMain.handle('get-video-play-info', async (_event, { filePath, startSecs }: { filePath: string; startSecs?: number }) => {
+    const res = resolveMediaFile(filePath)
+    if (!res.exists) {
+      throw new Error(`File not found: ${filePath}`)
+    }
+    const targetPath = res.path
     const port = await initStreamServer()
-    const probe = await probeMedia(filePath)
+    const probe = await probeMedia(targetPath)
     if (probe.isNative) {
       return {
         mode: 'native',
-        url: 'media:///' + filePath.replace(/\\/g, '/'),
+        url: 'media:///' + targetPath.replace(/\\/g, '/'),
         duration: probe.duration
       }
     }
-    const queryPath = encodeURIComponent(filePath)
+    const queryPath = encodeURIComponent(targetPath)
     const startParam = startSecs && startSecs > 0 ? `&start=${startSecs}` : ''
     const url = `http://127.0.0.1:${port}/stream?path=${queryPath}${startParam}`
     return {
@@ -526,6 +629,59 @@ app.whenReady().then(() => {
   ipcMain.handle('stop-video-stream', () => {
     killActiveStream()
     return true
+  })
+
+  ipcMain.handle('start-mpv', (_event, { filePath, relativeBounds }) => {
+    const res = resolveMediaFile(filePath)
+    if (!res.exists) {
+      throw new Error(`File not found on disk: ${filePath}`)
+    }
+    return initMpv(res.path, relativeBounds, mainWindow)
+  })
+
+  ipcMain.on('mpv-command', (_event, { command, args }) => {
+    sendMpvCommand(command, args)
+  })
+
+  ipcMain.on('mpv-resize', (_event, bounds) => {
+    updateMpvBounds(bounds)
+  })
+
+  ipcMain.on('mpv-close', () => {
+    closeMpv()
+  })
+
+  ipcMain.on('start-native-drag', (event, filePaths: string[]) => {
+    if (!Array.isArray(filePaths) || filePaths.length === 0) return
+
+    const validFiles = filePaths.filter((p) => typeof p === 'string' && fs.existsSync(p))
+
+    if (validFiles.length === 0) {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('native-drag-error', {
+          error: 'File(s) no longer exist on disk'
+        })
+      }
+      return
+    }
+
+    const appPath = app.getAppPath()
+    const unpackedPath = appPath.replace('app.asar', 'app.asar.unpacked')
+    let iconPath = app.isPackaged
+      ? join(unpackedPath, 'resources', 'drag-icon.png')
+      : join(appPath, 'resources', 'drag-icon.png')
+
+    if (!fs.existsSync(iconPath)) {
+      iconPath = app.isPackaged
+        ? join(unpackedPath, 'resources', 'icon.png')
+        : join(appPath, 'resources', 'icon.png')
+    }
+
+    event.sender.startDrag({
+      file: validFiles[0],
+      files: validFiles,
+      icon: iconPath
+    })
   })
 
   // ── TRANSCODE (improved: parse duration, reliable spawn) ──
@@ -626,8 +782,18 @@ app.whenReady().then(() => {
   })
 })
 
+app.on('before-quit', () => {
+  closeMpv()
+})
+
+app.on('will-quit', () => {
+  closeMpv()
+  closeStreamServer()
+})
+
 app.on('window-all-closed', () => {
   closeStreamServer()
+  closeMpv()
   if (driveInterval) clearInterval(driveInterval)
   if (process.platform !== 'darwin') app.quit()
 })

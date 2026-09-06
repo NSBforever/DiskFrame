@@ -95,7 +95,38 @@ const api = {
     ipcRenderer.invoke('get-video-play-info', { filePath, startSecs }),
   stopVideoStream: () => ipcRenderer.invoke('stop-video-stream'),
   getTileSize: () => ipcRenderer.invoke('get-tile-size'),
-  setTileSize: (size: number) => ipcRenderer.invoke('set-tile-size', size)
+  setTileSize: (size: number) => ipcRenderer.invoke('set-tile-size', size),
+  playMpv: (filePath: string, relativeBounds: { left: number; top: number; width: number; height: number }) =>
+    ipcRenderer.invoke('start-mpv', { filePath, relativeBounds }),
+  sendMpvCommand: (command: string, args: any[]) =>
+    ipcRenderer.send('mpv-command', { command, args }),
+  resizeMpv: (bounds: { left: number; top: number; width: number; height: number }) =>
+    ipcRenderer.send('mpv-resize', bounds),
+  closeMpv: () =>
+    ipcRenderer.send('mpv-close'),
+  onMpvPropertyChange: (cb: (d: { name: string; value: any }) => void) => {
+    const listener = (_e: unknown, d: any) => cb(d)
+    ipcRenderer.on('mpv-property-change', listener)
+    return () => {
+      ipcRenderer.removeListener('mpv-property-change', listener)
+    }
+  },
+  onMpvError: (cb: (d: { error: string }) => void) => {
+    const listener = (_e: unknown, d: any) => cb(d)
+    ipcRenderer.on('mpv-error', listener)
+    return () => {
+      ipcRenderer.removeListener('mpv-error', listener)
+    }
+  },
+  startNativeDrag: (filePaths: string[]) =>
+    ipcRenderer.send('start-native-drag', filePaths),
+  onNativeDragError: (cb: (d: { error: string }) => void) => {
+    const listener = (_e: unknown, d: any) => cb(d)
+    ipcRenderer.on('native-drag-error', listener)
+    return () => {
+      ipcRenderer.removeListener('native-drag-error', listener)
+    }
+  }
 }
 
 if (process.contextIsolated) {

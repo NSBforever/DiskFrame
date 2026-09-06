@@ -5,11 +5,10 @@ import { useShortcuts } from './ShortcutManager'
 import { ImageLoader } from './ImageLoader'
 import { MediaViewerToolbar } from './MediaViewerToolbar'
 import { MetadataPanel } from './MetadataPanel'
-import { MapPin } from 'lucide-react'
+import { MapPin, ArrowLeft } from 'lucide-react'
 
-const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic']
-const videoExts = ['.mp4', '.mov', '.avi', '.mkv', '.webm']
-
+const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif']
+const videoExts = ['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.wmv', '.webm']
 
 interface ScannedFile {
   path: string
@@ -366,6 +365,48 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
         ...animationStyle
       }}
     >
+      {/* Top-Left Back / Close Button */}
+      {controlsVisible && !isOpening && !isClosing && (
+        <button
+          onClick={handleClose}
+          className="media-viewer-back-btn"
+          title="Back to Grid (Esc)"
+          style={{
+            position: 'absolute',
+            top: '16px',
+            left: '16px',
+            zIndex: 1100,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
+            padding: '8px 14px',
+            borderRadius: '4px',
+            background: 'rgba(10, 10, 12, 0.85)',
+            backdropFilter: 'blur(16px)',
+            border: '1px solid rgba(225, 29, 46, 0.4)',
+            color: '#f2f2f0',
+            fontSize: '12px',
+            fontWeight: 600,
+            cursor: 'pointer',
+            transition: 'all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1)',
+            userSelect: 'none'
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = 'rgba(225, 29, 46, 0.15)'
+            e.currentTarget.style.borderColor = '#e11d2e'
+            e.currentTarget.style.color = '#ffffff'
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = 'rgba(10, 10, 12, 0.85)'
+            e.currentTarget.style.borderColor = 'rgba(225, 29, 46, 0.4)'
+            e.currentTarget.style.color = '#f2f2f0'
+          }}
+        >
+          <ArrowLeft size={16} color="#e11d2e" />
+          <span>Back</span>
+        </button>
+      )}
+
       {/* Top toolbar */}
       {controlsVisible && !isOpening && !isClosing && (
         <MediaViewerToolbar
@@ -551,7 +592,7 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
         <div
           style={{
             position: 'absolute',
-            top: '60px',
+            top: '64px',
             left: '20px',
             background: 'rgba(10, 10, 12, 0.75)',
             backdropFilter: 'blur(8px)',

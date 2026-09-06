@@ -59,6 +59,14 @@ declare global {
       stopVideoStream: () => Promise<boolean>
       getTileSize: () => Promise<number>
       setTileSize: (size: number) => Promise<void>
+      playMpv: (filePath: string, relativeBounds: { left: number; top: number; width: number; height: number }) => Promise<void>
+      sendMpvCommand: (command: string, args: any[]) => void
+      resizeMpv: (bounds: { left: number; top: number; width: number; height: number }) => void
+      closeMpv: () => void
+      onMpvPropertyChange: (callback: (data: { name: string; value: any }) => void) => () => void
+      onMpvError: (callback: (data: { error: string }) => void) => () => void
+      startNativeDrag: (filePaths: string[]) => void
+      onNativeDragError: (callback: (data: { error: string }) => void) => () => void
     }
   }
 }
