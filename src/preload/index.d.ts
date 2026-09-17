@@ -59,6 +59,11 @@ declare global {
       stopVideoStream: () => Promise<boolean>
       getTileSize: () => Promise<number>
       setTileSize: (size: number) => Promise<void>
+      getViewOrder: () => Promise<'default' | 'reverse'>
+      setViewOrder: (order: 'default' | 'reverse') => Promise<void>
+      getHoverPreviews: () => Promise<boolean>
+      setHoverPreviews: (enabled: boolean) => Promise<void>
+      prioritizeThumbnails: (filePaths: string[]) => Promise<(string | null)[]>
       playMpv: (filePath: string, relativeBounds: { left: number; top: number; width: number; height: number }) => Promise<void>
       sendMpvCommand: (command: string, args: any[]) => void
       resizeMpv: (bounds: { left: number; top: number; width: number; height: number }) => void
@@ -67,6 +72,10 @@ declare global {
       onMpvError: (callback: (data: { error: string }) => void) => () => void
       startNativeDrag: (filePaths: string[]) => void
       onNativeDragError: (callback: (data: { error: string }) => void) => () => void
+      getBenchmarkMetrics: () => Promise<{ memoryMB: number; cpuPercent: number }>
+      incrementalSyncDrive: (drivePath: string) => Promise<{ fullScanNeeded: boolean; count: number }>
+      getVolumeId: (drivePath: string) => Promise<string | null>
+      onElevationStatus: (callback: (status: { isElevated: boolean; message: string }) => void) => () => void
     }
   }
 }

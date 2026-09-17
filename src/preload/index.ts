@@ -96,6 +96,11 @@ const api = {
   stopVideoStream: () => ipcRenderer.invoke('stop-video-stream'),
   getTileSize: () => ipcRenderer.invoke('get-tile-size'),
   setTileSize: (size: number) => ipcRenderer.invoke('set-tile-size', size),
+  getViewOrder: () => ipcRenderer.invoke('get-view-order'),
+  setViewOrder: (order: 'default' | 'reverse') => ipcRenderer.invoke('set-view-order', order),
+  getHoverPreviews: () => ipcRenderer.invoke('get-hover-previews'),
+  setHoverPreviews: (enabled: boolean) => ipcRenderer.invoke('set-hover-previews', enabled),
+  prioritizeThumbnails: (filePaths: string[]) => ipcRenderer.invoke('prioritize-thumbnails', filePaths),
   playMpv: (filePath: string, relativeBounds: { left: number; top: number; width: number; height: number }) =>
     ipcRenderer.invoke('start-mpv', { filePath, relativeBounds }),
   sendMpvCommand: (command: string, args: any[]) =>
@@ -125,6 +130,16 @@ const api = {
     ipcRenderer.on('native-drag-error', listener)
     return () => {
       ipcRenderer.removeListener('native-drag-error', listener)
+    }
+  },
+  getBenchmarkMetrics: () => ipcRenderer.invoke('get-benchmark-metrics'),
+  incrementalSyncDrive: (drivePath: string) => ipcRenderer.invoke('incremental-sync-drive', drivePath),
+  getVolumeId: (drivePath: string) => ipcRenderer.invoke('get-volume-id', drivePath),
+  onElevationStatus: (cb: (d: { isElevated: boolean; message: string }) => void) => {
+    const listener = (_e: unknown, d: any) => cb(d)
+    ipcRenderer.on('elevation-status', listener)
+    return () => {
+      ipcRenderer.removeListener('elevation-status', listener)
     }
   }
 }

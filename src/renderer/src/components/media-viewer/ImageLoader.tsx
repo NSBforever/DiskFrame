@@ -6,7 +6,9 @@ import {
   Volume2,
   VolumeX,
   Maximize2,
-  Minimize2
+  Minimize2,
+  SkipBack,
+  SkipForward
 } from 'lucide-react'
 
 interface ScannedFile {
@@ -33,6 +35,8 @@ interface ImageLoaderProps {
   translateX: number
   translateY: number
   onImageLoaded: (dimensions: { width: number; height: number }) => void
+  onNext?: () => void
+  onPrev?: () => void
 }
 
 const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif']
@@ -50,7 +54,9 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   scale,
   translateX,
   translateY,
-  onImageLoaded
+  onImageLoaded,
+  onNext,
+  onPrev
 }) => {
   const [highResSrc, setHighResSrc] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -957,9 +963,35 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
                   }}
                 >
                   {/* Left Controls */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+                    {onPrev && (
+                      <button
+                        onClick={onPrev}
+                        disabled={list.indexOf(file) <= 0}
+                        title="Previous (Queue)"
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          color: list.indexOf(file) <= 0 ? '#4a4a4f' : '#f2f2f0',
+                          cursor: list.indexOf(file) <= 0 ? 'default' : 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          padding: 0
+                        }}
+                        onMouseEnter={(e) => {
+                          if (list.indexOf(file) > 0) e.currentTarget.style.color = '#e11d2e'
+                        }}
+                        onMouseLeave={(e) => {
+                          if (list.indexOf(file) > 0) e.currentTarget.style.color = '#f2f2f0'
+                        }}
+                      >
+                        <SkipBack size={18} />
+                      </button>
+                    )}
+
                     <button
                       onClick={togglePlay}
+                      title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}
                       style={{
                         background: 'transparent',
                         border: 'none',
@@ -974,6 +1006,31 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
                     >
                       {isPlaying ? <Pause size={18} /> : <Play size={18} />}
                     </button>
+
+                    {onNext && (
+                      <button
+                        onClick={onNext}
+                        disabled={list.indexOf(file) >= list.length - 1}
+                        title="Next (Queue)"
+                        style={{
+                          background: 'transparent',
+                          border: 'none',
+                          color: list.indexOf(file) >= list.length - 1 ? '#4a4a4f' : '#f2f2f0',
+                          cursor: list.indexOf(file) >= list.length - 1 ? 'default' : 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          padding: 0
+                        }}
+                        onMouseEnter={(e) => {
+                          if (list.indexOf(file) < list.length - 1) e.currentTarget.style.color = '#e11d2e'
+                        }}
+                        onMouseLeave={(e) => {
+                          if (list.indexOf(file) < list.length - 1) e.currentTarget.style.color = '#f2f2f0'
+                        }}
+                      >
+                        <SkipForward size={18} />
+                      </button>
+                    )}
 
                     <div
                       style={{

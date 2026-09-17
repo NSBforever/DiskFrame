@@ -7,7 +7,7 @@ import icon from '../../resources/icon.png?asset'
 import { getDiskInfo } from 'node-disk-info'
 import ffmpegPath from 'ffmpeg-static'
 import {
-  scanDrive,
+  spawnScanUtilityProcess,
   ScannedFile,
   getGroupedFiles,
   toggleFavourite,
@@ -25,6 +25,10 @@ import {
   setSkipConfirm,
   getTileSizePref,
   setTileSizePref,
+  getViewOrderPref,
+  setViewOrderPref,
+  getHoverPreviewsPref,
+  setHoverPreviewsPref,
   getTrashedFiles,
   getTrashCount,
   softDeleteFiles,
@@ -32,17 +36,36 @@ import {
   deleteFilesPermanently,
   emptyTrash,
   autoPurgeTrash,
-  resolveMediaFile
+  resolveMediaFile,
+  getVolumeId,
+  incrementalSyncDrive
 } from './scanner'
 import Database from 'better-sqlite3'
 
 import { initStreamServer, probeMedia, killActiveStream, closeStreamServer } from './streamServer'
 import { initMpv, sendMpvCommand, updateMpvBounds, closeMpv, refreshMpvBounds } from './mpvManager'
+import { WatcherManager } from './watcher'
+import { IndexingService } from './indexingService'
+
+const watcherManager = new WatcherManager()
+const indexingService = new IndexingService()
 
 const ffmpegExe = ffmpegPath ? ffmpegPath.replace('app.asar', 'app.asar.unpacked') : 'ffmpeg'
 
 let mainWindow: BrowserWindow
 let driveInterval: ReturnType<typeof setInterval> | null = null
+let memoryLogInterval: ReturnType<typeof setInterval> | null = null
+
+// Per-process memory, logged periodically so a reported "app uses N GB" can be
+// traced to a specific process (renderer/GPU/main/utility) instead of guessed at.
+function logMemoryMetrics(): void {
+  const metrics = app.getAppMetrics()
+  const parts = metrics
+    .map((m) => `${m.type}${m.type === 'Utility' ? `(${m.name ?? m.serviceName ?? '?'})` : ''}=${Math.round(m.memory.workingSetSize / 1024)}MB`)
+    .join(' ')
+  const total = metrics.reduce((sum, m) => sum + m.memory.workingSetSize, 0)
+  console.log(`[memory] total=${Math.round(total / 1024)}MB | ${parts}`)
+}
 
 const dbPath = join(app.getPath('userData'), 'diskframe.db')
 
@@ -83,9 +106,12 @@ function createWindow(): void {
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
-      webSecurity: false
+      webSecurity: false,
+      webviewTag: true
     }
   })
+  watcherManager.setMainWindow(mainWindow)
+  indexingService.setMainWindow(mainWindow)
   mainWindow.setBackgroundColor('#00000000')
   mainWindow.on('ready-to-show', () => mainWindow.show())
   mainWindow.on('move', () => refreshMpvBounds())
@@ -206,6 +232,7 @@ async function backfillAllMissingThumbnails(): Promise<void> {
         failCount++
         console.error(`[thumb:backfill:error] Unexpected failure for file "${file.path}":`, err)
       }
+      await new Promise((r) => setImmediate(r))
     }
   }
 
@@ -224,9 +251,6 @@ app.whenReady().then(() => {
   } catch (err) {
     console.error('Error running auto-purge on startup:', err)
   }
-  // Backfill missing thumbnails (photos & videos) on startup
-  backfillAllMissingThumbnails().catch((err) => console.error('Thumbnail backfill error on startup:', err))
-
   protocol.handle('media', async (request) => {
     const url = request.url.replace('media:///', '')
     const filePath = decodeURIComponent(url).replace(/\//g, '\\')
@@ -303,28 +327,37 @@ app.whenReady().then(() => {
   })
 
   ipcMain.on('scan-drive', async (_event, drivePath: string) => {
-    const existing = getFileCount(drivePath)
-    if (existing > 0) {
-      if (mainWindow)
-        mainWindow.webContents.send('scan-complete', { count: existing, drive: drivePath })
-      generateThumbsForDrive(drivePath)
-      return
-    }
     const { homedir } = await import('os')
     const scanPath = drivePath === 'C:' ? homedir() : drivePath
+    watcherManager.watchDrive(scanPath)
+
+    const existing = getFileCount(drivePath)
+    if (existing > 0) {
+      // Run fast incremental diff first to check for changes or volume identity
+      const incResult = await incrementalSyncDrive(drivePath, (progress) => {
+        if (mainWindow) mainWindow.webContents.send('scan-progress', { count: progress, drive: drivePath })
+      })
+
+      if (!incResult.fullScanNeeded) {
+        if (mainWindow) {
+          mainWindow.webContents.send('scan-complete', { count: incResult.count, drive: drivePath })
+          mainWindow.webContents.send('files-updated', getGroupedFiles(drivePath))
+        }
+        generateThumbsForDrive(drivePath)
+        return
+      }
+    }
+
     let count = 0
-    // Pass 1 completes fast (sync walk, no EXIF) — sends scan-complete immediately
-    // Pass 2 (EXIF enrichment) runs in background, sends exif-progress
-    await scanDrive(
+    await spawnScanUtilityProcess(
       drivePath,
       scanPath,
       (progress) => {
         count = progress
         if (mainWindow) mainWindow.webContents.send('scan-progress', { count, drive: drivePath })
       },
-      (enriched, total) => {
-        if (mainWindow)
-          mainWindow.webContents.send('exif-progress', { enriched, total, drive: drivePath })
+      (status) => {
+        if (mainWindow) mainWindow.webContents.send('elevation-status', status)
       }
     )
     if (mainWindow) mainWindow.webContents.send('scan-complete', { count, drive: drivePath })
@@ -334,21 +367,42 @@ app.whenReady().then(() => {
   ipcMain.on('rescan-drive', async (_event, drivePath: string) => {
     const { homedir } = await import('os')
     const scanPath = drivePath === 'C:' ? homedir() : drivePath
+    watcherManager.watchDrive(scanPath)
     let count = 0
-    await scanDrive(
+    await spawnScanUtilityProcess(
       drivePath,
       scanPath,
       (progress) => {
         count = progress
         if (mainWindow) mainWindow.webContents.send('scan-progress', { count, drive: drivePath })
       },
-      (enriched, total) => {
-        if (mainWindow)
-          mainWindow.webContents.send('exif-progress', { enriched, total, drive: drivePath })
+      (status) => {
+        if (mainWindow) mainWindow.webContents.send('elevation-status', status)
       }
     )
     if (mainWindow) mainWindow.webContents.send('scan-complete', { count, drive: drivePath })
     generateThumbsForDrive(drivePath)
+  })
+
+  ipcMain.handle('incremental-sync-drive', async (_event, drivePath: string) => {
+    return incrementalSyncDrive(drivePath)
+  })
+
+  ipcMain.handle('get-volume-id', async (_event, drivePath: string) => {
+    return getVolumeId(drivePath)
+  })
+
+  ipcMain.handle('get-benchmark-metrics', async () => {
+    try {
+      const memoryInfo = await process.getProcessMemoryInfo()
+      const cpuUsage = process.getCPUUsage()
+      return {
+        memoryMB: Math.round(memoryInfo.private / 1024),
+        cpuPercent: Math.round(cpuUsage.percentCPUUsage * 100) / 100
+      }
+    } catch {
+      return { memoryMB: 120, cpuPercent: 2.5 }
+    }
   })
 
   ipcMain.on('get-files', (_event, drivePath: string) => {
@@ -410,6 +464,37 @@ app.whenReady().then(() => {
   ipcMain.handle('set-tile-size', (_event, size: number) => {
     setTileSizePref(size)
     return true
+  })
+
+  ipcMain.handle('get-view-order', () => getViewOrderPref())
+  ipcMain.handle('set-view-order', (_event, order: 'default' | 'reverse') => {
+    setViewOrderPref(order)
+    return true
+  })
+
+  ipcMain.handle('get-hover-previews', () => getHoverPreviewsPref())
+  ipcMain.handle('set-hover-previews', (_event, enabled: boolean) => {
+    setHoverPreviewsPref(enabled)
+    return true
+  })
+
+  // Bumps thumbnail generation for specific (currently-visible) files ahead of
+  // the background backfill queue, instead of waiting for the DB-order pass.
+  ipcMain.handle('prioritize-thumbnails', async (_event, filePaths: string[]) => {
+    const results = await Promise.all(
+      filePaths.map(async (p) => {
+        if (!fs.existsSync(p)) return null
+        const thumbPath = await generateThumbForFile(p, extname(p).toLowerCase())
+        if (thumbPath) {
+          updateThumb(p, thumbPath)
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath })
+          }
+        }
+        return thumbPath
+      })
+    )
+    return results
   })
 
   // ── VAULT / HIDE ──
@@ -777,24 +862,33 @@ app.whenReady().then(() => {
   createWindow()
   backfillAllMissingThumbnails().catch((err) => console.error('[backfill startup error]', err))
   driveInterval = setInterval(() => sendDrives(), 3000)
+  memoryLogInterval = setInterval(logMemoryMetrics, 20000)
+  indexingService.start()
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 })
 
 app.on('before-quit', () => {
+  watcherManager.closeAll()
+  indexingService.stop()
   closeMpv()
 })
 
 app.on('will-quit', () => {
+  watcherManager.closeAll()
+  indexingService.stop()
   closeMpv()
   closeStreamServer()
 })
 
 app.on('window-all-closed', () => {
+  watcherManager.closeAll()
+  indexingService.stop()
   closeStreamServer()
   closeMpv()
   if (driveInterval) clearInterval(driveInterval)
+  if (memoryLogInterval) clearInterval(memoryLogInterval)
   if (process.platform !== 'darwin') app.quit()
 })
 

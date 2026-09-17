@@ -1,0 +1,268 @@
+/* ─── PhotoGrid: Apple Photos–style gallery ─────────────────────────────── */
+.pg-outer {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pg-scroller {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  touch-action: pan-y;
+  will-change: transform;
+  overscroll-behavior: contain;
+}
+
+.pg-content {
+  position: relative;
+  width: 100%;
+  contain: strict;
+}
+
+/* Section header */
+.pg-header {
+  position: absolute;
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  padding-bottom: 10px;
+  box-sizing: border-box;
+}
+.pg-header-title {
+  font-size: 19px;
+  font-weight: 700;
+  color: #fff;
+  letter-spacing: -0.4px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pg-header-count {
+  font-size: 11px;
+  color: #8a8a8f;
+  line-height: 1;
+  padding-bottom: 1px;
+  white-space: nowrap;
+}
+.pg-header-select {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: #8a8a8f;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 4px;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+.pg-header:hover .pg-header-select,
+.pg-header-select.is-active {
+  opacity: 1;
+}
+.pg-header-select:hover,
+.pg-header-select.is-active {
+  color: #e11d2e;
+}
+
+/* Tile */
+.pg-tile {
+  position: absolute;
+  transform-origin: 0 0;
+  contain: layout paint style;
+  cursor: pointer;
+  transition: opacity 0.3s;
+}
+.pg-tile-inner {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: #141417;
+  transition: transform 0.12s ease-out;
+}
+.pg-tile:active .pg-tile-inner {
+  transform: scale(0.96);
+}
+.pg-tile-inner img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  opacity: 0;
+  transition: opacity 0.18s ease-out;
+  -webkit-user-drag: none;
+}
+.pg-preview-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: opacity 0.15s ease-out;
+  pointer-events: none;
+}
+.pg-tile-inner img.pg-loaded {
+  opacity: 1;
+}
+
+.pg-tile::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 0 transparent;
+  transition: box-shadow 0.15s, background-color 0.15s;
+}
+.pg-tile:hover::after {
+  background-color: rgba(255, 255, 255, 0.06);
+}
+.pg-tile.is-selected::after {
+  box-shadow: inset 0 0 0 3px #e11d2e;
+  background-color: rgba(0, 0, 0, 0.18);
+}
+.pg-tile.is-compact.is-selected::after {
+  box-shadow: inset 0 0 0 2px #e11d2e;
+}
+.pg-tile.is-deleting {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pg-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  color: #6b6b72;
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+.pg-placeholder.is-video {
+  background: #1b1214;
+  color: #e11d2e;
+}
+.pg-placeholder.is-doc {
+  background: #12181a;
+  color: #c8c8d4;
+}
+
+.pg-video-badge {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.pg-tile.is-compact .pg-video-badge {
+  width: 12px;
+  height: 12px;
+  right: 3px;
+  bottom: 3px;
+}
+
+.pg-name {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 18px 26px 5px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #f2f2f0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.75), transparent);
+  opacity: 0;
+  transition: opacity 0.15s;
+  pointer-events: none;
+}
+.pg-tile:hover .pg-name {
+  opacity: 1;
+}
+
+.pg-check,
+.pg-fav {
+  position: absolute;
+  top: 5px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s, background-color 0.15s;
+  color: #fff;
+}
+.pg-check {
+  left: 5px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(255, 255, 255, 0.85);
+  background: rgba(0, 0, 0, 0.25);
+  box-sizing: border-box;
+}
+.pg-fav {
+  right: 5px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.4);
+}
+.pg-tile:hover .pg-check,
+.pg-tile:hover .pg-fav,
+.pg-tile.is-selected .pg-check,
+.pg-fav.is-fav {
+  opacity: 1;
+}
+.pg-tile.is-selected .pg-check {
+  background: #e11d2e;
+  border-color: #e11d2e;
+}
+.pg-fav-dot {
+  position: absolute;
+  right: 3px;
+  top: 3px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #e11d2e;
+  pointer-events: none;
+}
+
+/* Floating date pill + hint */
+.pg-date-pill {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: rgba(16, 16, 20, 0.72);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+  font-weight: 600;
+  color: #f2f2f0;
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 5;
+  animation: pgFadeIn 0.2s ease-out;
+}
+@keyframes pgFadeIn {
+  from { opacity: 0; transform: translate(-50%, -4px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}

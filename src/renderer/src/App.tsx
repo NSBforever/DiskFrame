@@ -114,6 +114,8 @@ import MediaViewer from './components/media-viewer/MediaViewer'
 import GlobeView from './components/GlobeView'
 import SearchAgent from './components/SearchAgent'
 import DriveSelectionView from './components/DriveSelectionView'
+import PhotoGrid from './components/PhotoGrid'
+import MagneticDock from './components/MagneticDock'
 import {
   FolderArchive,
   Image as ImageIcon,
@@ -163,38 +165,39 @@ export interface ScannedFile {
 const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic']
 const videoExts = ['.mp4', '.mov', '.avi', '.mkv', '.wmv']
 const docExts = ['.pdf', '.docx', '.doc', '.txt', '.xlsx', '.pptx', '.csv']
-const FadeLoadMore: React.FC<{ monthKey: string; visible: number; onVisible: () => void }> = ({ onVisible }) => {
-  const ref = React.useRef<HTMLDivElement>(null)
 
-  React.useEffect(() => {
-    const observer = new IntersectionObserver(([entry]) => {
-      if (entry.isIntersecting) {
-        onVisible()
-      }
-    }, { rootMargin: '120px' })
-
-    if (ref.current) observer.observe(ref.current)
-    return () => observer.disconnect()
-  }, [onVisible])
-
+const ScanProgressDisplay: React.FC<{ scanning: boolean; scanCount: number }> = React.memo(({ scanning, scanCount }) => {
+  if (!scanning) return null
   return (
     <div
-      ref={ref}
-      onClick={onVisible}
       style={{
-        position: 'relative',
-        height: '60px',
-        marginTop: '-30px',
-        marginBottom: '20px',
-        background: 'linear-gradient(to bottom, transparent, #0a0a0c 90%)',
-        cursor: 'pointer',
-        zIndex: 10,
-        pointerEvents: 'auto'
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        fontSize: '10px',
+        color: '#ffffff',
+        fontWeight: 600,
+        background: 'rgba(225, 29, 46, 0.15)',
+        border: '1px solid rgba(225, 29, 46, 0.4)',
+        borderRadius: '3px',
+        padding: '2px 8px',
+        letterSpacing: '0.5px'
       }}
-    />
+    >
+      <div
+        style={{
+          width: '8px',
+          height: '8px',
+          borderRadius: '50%',
+          border: '2px solid rgba(255,255,255,0.2)',
+          borderTop: '2px solid #e11d2e',
+          animation: 'tileSpin 0.8s linear infinite'
+        }}
+      />
+      <span>Fast Enumeration: <strong style={{ color: '#e11d2e' }}>{scanCount.toLocaleString()}</strong> files mapped</span>
+    </div>
   )
-}
-
+})
 function thumbUrl(file: ScannedFile): string {
   const src = file.thumb || file.path
   return 'media:///' + src.replace(/\\/g, '/')
@@ -204,6 +207,8 @@ export const FileTile = React.memo(({
   file, onOpen, onFav, isFav, isSelected, onSelect, onContextMenu, tileSize, isTrashView, onRestore, onDeletePermanently, isDeleting, onDragStart, selectedPaths
 }: {
   file: ScannedFile
+  /** Changes when file.thumb is patched in place, so memo re-renders. */
+  thumbKey?: string | null
   onOpen: (f: ScannedFile, e: React.MouseEvent) => void
   onFav: (f: ScannedFile) => void
   isFav: boolean
@@ -524,6 +529,7 @@ const MainContentArea: React.FC<{
   tileSize: number
   setTileSize: (size: number) => void
   onTileSizeChange: (percent: number) => void
+  onTileSizeCommit: (size: number) => void
   transitioning: boolean
   setTransitioning: (transitioning: boolean) => void
   sortedGroupedData: { keys: string[]; data: Record<string, ScannedFile[]> }
@@ -532,6 +538,10 @@ const MainContentArea: React.FC<{
   groupBy: string
   onDragStart: (file: ScannedFile, e: React.DragEvent) => void
   setActiveView: (view: string) => void
+  onGridZoomOutBeyond: () => void
+  thumbVersion: number
+  hoverPreviewsEnabled: boolean
+  onHoverPreviewsChange: (enabled: boolean) => void
 }> = React.memo(({
   activeNav,
   activeView,
@@ -556,18 +566,20 @@ const MainContentArea: React.FC<{
   yearFilter,
   setYearFilter,
   tileSize,
-  setTileSize,
   onTileSizeChange,
+  onTileSizeCommit,
   transitioning,
-  setTransitioning,
   sortedGroupedData,
   handleWheel,
   handleGroupCheckboxClick,
   groupBy,
   onDragStart,
-  setActiveView
+  setActiveView,
+  onGridZoomOutBeyond,
+  thumbVersion,
+  hoverPreviewsEnabled,
+  onHoverPreviewsChange
 }) => {
-  const [visibleCount, setVisibleCount] = useState<Record<string, number>>({})
   const [placesSubView, setPlacesSubView] = useState<'map' | 'globe'>('map')
   const [windowWidth, setWindowWidth] = useState(window.innerWidth)
 
@@ -579,11 +591,6 @@ const MainContentArea: React.FC<{
     return () => window.removeEventListener('resize', handleResize)
   }, [])
 
-  const getVisible = useCallback((key: string): number => visibleCount[key] ?? 40, [visibleCount])
-  const handleShowMore = useCallback((key: string, visible: number) => {
-    setVisibleCount(prev => ({ ...prev, [key]: visible + 40 }))
-  }, [])
-
   const allFavFiles = useMemo(() => allFiles.filter(f => favourites.has(f.path)), [allFiles, favourites])
 
   const chunkArray = <T,>(array: T[], size: number): T[][] => {
@@ -593,59 +600,6 @@ const MainContentArea: React.FC<{
     }
     return result
   }
-
-  // 1. Grid Items construction
-  const gridItems = useMemo(() => {
-    if (activeView !== 'Grid') return []
-    const items: any[] = []
-    const tilesPerRow = Math.max(1, Math.floor((windowWidth - 260) / (tileSize + 5)))
-
-    sortedGroupedData.keys.forEach(monthKey => {
-      const files = sortedGroupedData.data[monthKey]
-      const visible = getVisible(monthKey)
-      const hasMore = files.length > visible
-      const actualVisible = hasMore ? Math.max(tilesPerRow, Math.floor(visible / tilesPerRow) * tilesPerRow) : visible
-      const slicedFiles = files.slice(0, actualVisible)
-
-      items.push({
-        type: 'header',
-        key: `header-${monthKey}-${files.length}`,
-        monthKey,
-        filesCount: files.length,
-        allSel: files.every(f => selected.has(f.path))
-      })
-
-      const chunked = chunkArray(slicedFiles, tilesPerRow)
-      chunked.forEach((rowFiles, rowIndex) => {
-        items.push({
-          type: 'row',
-          key: `row-${monthKey}-${rowIndex}`,
-          monthKey,
-          rowFiles,
-          rowIndex,
-          files,
-          isLastRowOfSection: rowIndex === chunked.length - 1 && files.length <= actualVisible
-        })
-      })
-
-      if (files.length > actualVisible) {
-        items.push({
-          type: 'show-more',
-          key: `show-more-${monthKey}`,
-          monthKey,
-          visible,
-          remaining: files.length - actualVisible
-        })
-      }
-    })
-    return items
-  }, [sortedGroupedData, getVisible, selected, tileSize, activeView, windowWidth])
-
-  // Keep a reference to the latest gridItems for scrolling from YearsView click
-  const latestGridItemsRef = useRef<any[]>([])
-  useEffect(() => {
-    latestGridItemsRef.current = gridItems
-  }, [gridItems])
 
   // 2. Timeline Items construction
   const timelineItems = useMemo(() => {
@@ -682,12 +636,15 @@ const MainContentArea: React.FC<{
       key: 'years-header'
     })
     const yearMap: Record<string, ScannedFile[]> = {}
-    for (const [key, files] of Object.entries(sortedGroupedData.data)) {
-      const year = key.split('-')[0]
-      if (!yearMap[year]) yearMap[year] = []
-      yearMap[year].push(...files)
+    for (const key of sortedGroupedData.keys) {
+      for (const f of sortedGroupedData.data[key]) {
+        const year = f.year || 'Unknown'
+        const bucket = yearMap[year]
+        if (bucket) bucket.push(f); else yearMap[year] = [f]
+      }
     }
-    const years = Object.keys(yearMap).sort((a, b) => Number(b) - Number(a))
+    const yearNum = (y: string): number => (/^\d+$/.test(y) ? Number(y) : -Infinity)
+    const years = Object.keys(yearMap).sort((a, b) => yearNum(b) - yearNum(a))
 
     const yearsPerRow = Math.max(1, Math.floor((windowWidth - 260) / (200 + 16)))
     const chunked = chunkArray(years, yearsPerRow)
@@ -746,110 +703,23 @@ const MainContentArea: React.FC<{
   const virtualItems = useMemo(() => {
     if (activeNav === 'favourites') return favouritesItems
     if (activeNav === 'trash') return trashItems
-    if (activeView === 'Grid') return gridItems
     if (activeView === 'Timeline') return timelineItems
     if (activeView === 'Years') return yearsItems
     return []
-  }, [activeNav, activeView, favouritesItems, trashItems, gridItems, timelineItems, yearsItems])
+  }, [activeNav, activeView, favouritesItems, trashItems, timelineItems, yearsItems])
 
-  const handleYearClick = useCallback((year: string) => {
-    setYearFilter(year)
-    setTileSize(120)
+  const [gridScrollRequest, setGridScrollRequest] = useState<{ key: string; nonce: number } | null>(null)
+  const jumpToGroup = useCallback((key: string | undefined) => {
     setActiveView('Grid')
-    setTransitioning(true)
-    setTimeout(() => {
-      const targetMonthKey = Object.keys(sortedGroupedData.data).find(m => m.includes(year))
-      if (targetMonthKey) {
-        const index = latestGridItemsRef.current.findIndex(item => item.type === 'header' && item.monthKey === targetMonthKey)
-        if (index !== -1) {
-          virtuosoRef.current?.scrollToIndex({
-            index,
-            align: 'start',
-            behavior: 'smooth'
-          })
-        }
-      }
-      setTransitioning(false)
-    }, 150)
-  }, [sortedGroupedData, setYearFilter, setTileSize, setActiveView, setTransitioning])
+    if (key) setGridScrollRequest({ key, nonce: Date.now() })
+  }, [setActiveView])
+  const handleYearClick = useCallback((year: string) => {
+    setYearFilter(null)
+    jumpToGroup(sortedGroupedData.keys.find(k => sortedGroupedData.data[k]?.[0]?.year === year))
+  }, [sortedGroupedData, setYearFilter, jumpToGroup])
 
   const renderItem = (item: any) => {
     switch (item.type) {
-      case 'header': {
-        const { monthKey, filesCount, allSel } = item
-        return (
-          <div style={{ marginTop: '16px', marginBottom: '12px' }}>
-            <div className="group-header" style={{ display: 'flex', alignItems: 'center', gap: '8px', height: '24px' }}>
-              <div style={{ fontSize: '18px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.3px', lineHeight: 1 }}>
-                {monthKey}
-              </div>
-              {groupBy === 'day' && (
-                <div
-                  onClick={(e) => handleGroupCheckboxClick(monthKey, e)}
-                  className={`group-header-checkbox ${allSel ? 'group-header-checkbox-active' : ''}`}
-                  style={{
-                    width: '16px',
-                    height: '16px',
-                    borderRadius: '2px',
-                    background: allSel ? '#e11d2e' : 'rgba(0,0,0,0.6)',
-                    border: `1.5px solid ${allSel ? '#e11d2e' : 'rgba(255,255,255,0.3)'}`,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: '9px',
-                    cursor: 'pointer',
-                    color: '#f2f2f0',
-                    marginLeft: '4px'
-                  }}
-                >
-                  {allSel && <Check size={10} strokeWidth={3} />}
-                </div>
-              )}
-            </div>
-            <div style={{ fontSize: '9px', color: '#8a8a8f', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{filesCount} files</div>
-          </div>
-        )
-      }
-      case 'row': {
-        const { rowFiles, files, isLastRowOfSection } = item
-        return (
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: `repeat(auto-fill, minmax(${tileSize}px, 1fr))`,
-              gap: '5px',
-              marginBottom: isLastRowOfSection ? '28px' : '5px'
-            }}
-          >
-            {rowFiles.map((file: ScannedFile) => (
-              <FileTile
-                key={file.path}
-                file={file}
-                onOpen={(f, e) => handleTileOpen(f, files, e)}
-                onFav={handleFav}
-                isFav={favourites.has(file.path)}
-                isSelected={selected.has(file.path)}
-                onSelect={handleSelect}
-                onContextMenu={(f, e) => handleTileContextMenu(f, files, e)}
-                tileSize={tileSize}
-                isDeleting={deletingPaths.has(file.path)}
-                onDragStart={onDragStart}
-                selectedPaths={Array.from(selected)}
-              />
-            ))}
-          </div>
-        )
-      }
-      case 'show-more': {
-        const { monthKey, visible } = item
-        return (
-          <FadeLoadMore
-            monthKey={monthKey}
-            visible={visible}
-            onVisible={() => handleShowMore(monthKey, visible)}
-          />
-        )
-      }
       case 'timeline-header': {
         const { monthKey, filesCount, allSel } = item
         return (
@@ -887,13 +757,14 @@ const MainContentArea: React.FC<{
         )
       }
       case 'timeline-row': {
-        const { rowFiles, files, hasMore, remaining } = item
+        const { rowFiles, files, hasMore, remaining, monthKey } = item
         return (
           <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', marginBottom: '28px' }}>
             {rowFiles.map((file: ScannedFile) => (
+              <div key={file.path} style={{ width: '80px', height: '80px', flexShrink: 0 }}>
               <FileTile
-                key={file.path}
                 file={file}
+                thumbKey={file.thumb}
                 onOpen={(f, e) => handleTileOpen(f, files, e)}
                 onFav={handleFav}
                 isFav={favourites.has(file.path)}
@@ -905,8 +776,9 @@ const MainContentArea: React.FC<{
                 onDragStart={onDragStart}
                 selectedPaths={Array.from(selected)}
               />
+              </div>
             ))}
-            {hasMore && <div style={{ width: '80px', height: '80px', borderRadius: '4px', background: '#161619', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', color: '#e11d2e', cursor: 'pointer', fontWeight: 600 }}>+{remaining} more</div>}
+            {hasMore && <div onClick={() => jumpToGroup(monthKey)} title="Show all in grid" style={{ width: '80px', height: '80px', borderRadius: '4px', background: '#161619', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', color: '#e11d2e', cursor: 'pointer', fontWeight: 600 }}>+{remaining} more</div>}
           </div>
         )
       }
@@ -923,7 +795,9 @@ const MainContentArea: React.FC<{
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '16px', marginBottom: '16px' }}>
             {rowYears.map((year: string) => {
               const files = yearMap[year]
-              const previewFiles = [...files.filter(f => f.thumb), ...files.filter(f => photoExts.includes(f.ext.toLowerCase()) && !f.thumb)].slice(0, 4)
+              const previewFiles: ScannedFile[] = []
+              for (const f of files) { if (f.thumb) { previewFiles.push(f); if (previewFiles.length === 4) break } }
+              for (const f of files) { if (previewFiles.length === 4) break; if (!f.thumb && photoExts.includes(f.ext.toLowerCase())) previewFiles.push(f) }
               return (
                 <div key={year} onClick={() => handleYearClick(year)}
                   style={{ background: '#111114', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.04)', overflow: 'hidden', cursor: 'pointer', transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.25s' }}
@@ -958,7 +832,7 @@ const MainContentArea: React.FC<{
         return (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '5px', marginBottom: '5px' }}>
             {rowFiles.map((file: ScannedFile) => (
-              <FileTile key={file.path} file={file} onOpen={(f, e) => handleTileOpen(f, allFavFiles, e)} onFav={handleFav} isFav={true} isSelected={selected.has(file.path)} onSelect={handleSelect} onContextMenu={(f, e) => handleTileContextMenu(f, allFavFiles, e)} tileSize={100} isDeleting={deletingPaths.has(file.path)} onDragStart={onDragStart} selectedPaths={Array.from(selected)} />
+              <FileTile key={file.path} file={file} thumbKey={file.thumb} onOpen={(f, e) => handleTileOpen(f, allFavFiles, e)} onFav={handleFav} isFav={true} isSelected={selected.has(file.path)} onSelect={handleSelect} onContextMenu={(f, e) => handleTileContextMenu(f, allFavFiles, e)} tileSize={100} isDeleting={deletingPaths.has(file.path)} onDragStart={onDragStart} selectedPaths={Array.from(selected)} />
             ))}
           </div>
         )
@@ -978,6 +852,7 @@ const MainContentArea: React.FC<{
               <FileTile 
                 key={file.path} 
                 file={file} 
+                thumbKey={file.thumb}
                 onOpen={(f, e) => handleTileOpen(f, trashedFiles, e)} 
                 onFav={handleFav} 
                 isFav={false} 
@@ -1064,16 +939,20 @@ const MainContentArea: React.FC<{
   }, [activeView, activeNav])
 
   const overscanPx = useMemo(() => {
-    if (activeView === 'Grid') return Math.max(300, 5 * (tileSize + 5))
     if (activeView === 'Timeline') return 550
     if (activeView === 'Years') return 1000
     return 500
-  }, [activeView, tileSize])
+  }, [activeView])
 
   const tileSizePercent = (tileSize / 120) * 100
 
+  // Cached files for this drive are already loaded (see hasFiles below) - background
+  // scanning/indexing must never hide them. Only a genuinely empty, never-scanned
+  // drive falls through to the full-screen "indexing" state further down.
+  const hasFiles = allFiles.length > 0
+
   const isVirtualized =
-    !scanning &&
+    (hasFiles || !scanning) &&
     selectedDrive &&
     activeNav !== 'places' &&
     activeNav !== 'archive' &&
@@ -1081,6 +960,31 @@ const MainContentArea: React.FC<{
     activeView !== 'Map' &&
     !(activeNav === 'trash' && trashedFiles.length === 0) &&
     !(activeNav === 'favourites' && allFavFiles.length === 0)
+
+  if (isVirtualized && activeView === 'Grid' && activeNav !== 'favourites' && activeNav !== 'trash') {
+    return (
+      <div className="view-transition-enter" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, ...animationStyle }}>
+        <PhotoGrid
+          keys={sortedGroupedData.keys}
+          data={sortedGroupedData.data}
+          selected={selected}
+          favourites={favourites}
+          deletingPaths={deletingPaths}
+          tileSize={tileSize}
+          onTileSizeCommit={onTileSizeCommit}
+          onZoomOutBeyond={onGridZoomOutBeyond}
+          onOpen={handleTileOpen}
+          onSelect={handleSelect}
+          onFav={handleFav}
+          onContextMenu={handleTileContextMenu}
+          onGroupCheckboxClick={handleGroupCheckboxClick}
+          scrollRequest={gridScrollRequest}
+          thumbVersion={thumbVersion}
+          hoverPreviewsEnabled={hoverPreviewsEnabled}
+        />
+      </div>
+    )
+  }
 
   if (isVirtualized) {
     return (
@@ -1173,6 +1077,26 @@ const MainContentArea: React.FC<{
               </div>
             </div>
 
+            {/* Playback Section */}
+            <div>
+              <h3 style={{ fontSize: '13px', fontWeight: 700, color: '#ffffff', letterSpacing: '0.5px', textTransform: 'uppercase', margin: '0 0 16px 0', borderBottom: '1px solid rgba(255,255,255,0.04)', paddingBottom: '8px' }}>
+                Playback
+              </h3>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <label htmlFor="settings-hover-previews" style={{ fontSize: '12px', fontWeight: 600, color: '#f2f2f0' }}>Video hover previews</label>
+                <input
+                  id="settings-hover-previews"
+                  type="checkbox"
+                  checked={hoverPreviewsEnabled}
+                  onChange={(e) => onHoverPreviewsChange(e.target.checked)}
+                  style={{ accentColor: '#e11d2e', width: '16px', height: '16px', cursor: 'pointer' }}
+                />
+              </div>
+              <div style={{ fontSize: '10px', color: '#8a8a8f', marginTop: '4px' }}>
+                Play a short muted preview when hovering a video tile.
+              </div>
+            </div>
+
             {/* Placeholder for future sections */}
             <div>
               <h3 style={{ fontSize: '13px', fontWeight: 700, color: '#8a8a8f', letterSpacing: '0.5px', textTransform: 'uppercase', margin: '0 0 8px 0', opacity: 0.5 }}>
@@ -1222,8 +1146,10 @@ const MainContentArea: React.FC<{
         />
       )}
 
-      {/* Indexing scanner progress */}
-      {scanning && activeNav !== 'archive' && activeNav !== 'trash' && (
+      {/* Indexing scanner progress - only shown when a drive has never been indexed yet.
+          Once any cached files exist, isVirtualized takes over and the grid renders
+          instead, with the scan running quietly in the status bar (ScanProgressDisplay). */}
+      {scanning && !hasFiles && activeNav !== 'archive' && activeNav !== 'trash' && (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '12px' }} className="view-transition-enter">
           <div style={{ fontSize: '13px', color: '#e11d2e', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px' }}>Indexing media on {selectedDrive}...</div>
           <div style={{ fontSize: '10px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{scanCount} files mapped</div>
@@ -1330,7 +1256,6 @@ export default function App(): React.JSX.Element {
   const [lightbox, setLightbox] = useState<{ file: ScannedFile; list: ScannedFile[]; rect?: DOMRect } | null>(null)
   const [activeView, setActiveView] = useState('Grid')
 
-  const zoomLevelRef = useRef(1.0)
   const [tileSize, setTileSize] = useState(120)
   const [transitioning, setTransitioning] = useState(false)
   const zoomTicksRef = useRef(0)
@@ -1338,6 +1263,8 @@ export default function App(): React.JSX.Element {
 
   // Redesign / Trash / AI State
   const [groupBy, setGroupBy] = useState<'day' | 'month' | 'year' | 'location' | 'favorites'>('day')
+  const [viewOrder, setViewOrder] = useState<'default' | 'reverse'>('default')
+  const [hoverPreviewsEnabled, setHoverPreviewsEnabled] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; file: ScannedFile; currentList: ScannedFile[] } | null>(null)
   const [fileToDelete, setFileToDelete] = useState<ScannedFile | null>(null)
@@ -1362,6 +1289,8 @@ export default function App(): React.JSX.Element {
 
   // Queue to buffer thumbnail ready events, preventing multiple full re-renders
   const thumbQueueRef = useRef<{ filePath: string; thumbPath: string }[]>([])
+  const fileIndexRef = useRef<Map<string, ScannedFile>>(new Map())
+  const [thumbVersion, setThumbVersion] = useState(0)
 
   const refreshTrash = useCallback(async () => {
     try {
@@ -1400,26 +1329,15 @@ export default function App(): React.JSX.Element {
 
       const batchMap = new Map(batch.map(item => [item.filePath, item.thumbPath]))
 
-      setDriveFiles(prev => {
-        const updated: Record<string, Record<string, ScannedFile[]>> = {}
-        for (const drive in prev) {
-          updated[drive] = {}
-          for (const month in prev[drive]) {
-            let hasChanges = false
-            const newFiles = prev[drive][month].map(f => {
-              const t = batchMap.get(f.path)
-              if (t) {
-                hasChanges = true
-                return { ...f, thumb: t }
-              }
-              return f
-            })
-            // Only update month mapping array if there are actual thumbnail changes
-            updated[drive][month] = hasChanges ? newFiles : prev[drive][month]
-          }
-        }
-        return updated
-      })
+      // Thumbnails don't change grouping or order, so patch the file objects in place and
+      // bump a version counter instead of rebuilding (and re-sorting) the whole library.
+      const index = fileIndexRef.current
+      let patched = false
+      for (const [filePath, thumbPath] of batchMap) {
+        const f = index.get(filePath)
+        if (f && f.thumb !== thumbPath) { f.thumb = thumbPath; patched = true }
+      }
+      if (patched) setThumbVersion(v => v + 1)
 
       setTrashedFiles(prev => {
         let hasChanges = false
@@ -1460,6 +1378,13 @@ export default function App(): React.JSX.Element {
     const unsubThumb = window.api.onThumbReady((d) => {
       thumbQueueRef.current.push(d)
     })
+    const unsubElevation = window.api.onElevationStatus
+      ? window.api.onElevationStatus((status) => {
+          if (!status.isElevated) {
+            setToastMsg(`MFT Notice: ${status.message}`)
+          }
+        })
+      : () => {}
     const unsubToggled = window.api.onFavouriteToggled((d) => {
       setFavourites(prev => {
         const next = new Set(prev)
@@ -1470,12 +1395,19 @@ export default function App(): React.JSX.Element {
 
     window.api.getTileSize()
       .then((size) => {
-        if (size && size >= 55) {
+        if (size && size >= 30) {
           setTileSize(size)
-          zoomLevelRef.current = Math.max(0.3, Math.min(1.0, size / 120))
         }
       })
       .catch((err) => console.error('Error loading tile size preference:', err))
+
+    window.api.getViewOrder()
+      .then((order) => setViewOrder(order === 'reverse' ? 'reverse' : 'default'))
+      .catch((err) => console.error('Error loading view order preference:', err))
+
+    window.api.getHoverPreviews()
+      .then((enabled) => setHoverPreviewsEnabled(enabled !== false))
+      .catch((err) => console.error('Error loading hover previews preference:', err))
 
     window.api.getDrives()
     window.api.getFavourites()
@@ -1488,6 +1420,7 @@ export default function App(): React.JSX.Element {
       unsubComplete()
       unsubFiles()
       unsubThumb()
+      unsubElevation()
       unsubToggled()
     }
   }, [refreshTrash])
@@ -1515,19 +1448,29 @@ export default function App(): React.JSX.Element {
   const handleDriveClick = (name: string): void => {
     setSelectedDrive(name); currentDriveRef.current = name
     setScanning(true); setScanCount(0); setActiveNav('all'); setActiveView('Grid')
-    zoomLevelRef.current = 1.0; setTileSize(120); setSelected(new Set())
-    
-    // Force prune previous drive files cache immediately on click
-    setDriveFiles({ [name]: {} })
-    
+    setSelected(new Set())
+
+    // Show whatever's already indexed for this drive instantly (no scan wait);
+    // scanDrive's incremental sync runs in the background and will replace
+    // this with fresher data via the same files-updated event once it lands.
+    window.api.getFiles(name)
     window.api.scanDrive(name)
   }
 
   const handleSettingsTileSizeChange = (percent: number) => {
     const newSize = Math.max(55, Math.round((percent / 100) * 120))
     setTileSize(newSize)
-    zoomLevelRef.current = Math.max(0.3, Math.min(1.0, newSize / 120))
     window.api.setTileSize(newSize).catch((err) => console.error(err))
+  }
+
+  const handleViewOrderChange = (order: 'default' | 'reverse') => {
+    setViewOrder(order)
+    window.api.setViewOrder(order).catch((err) => console.error(err))
+  }
+
+  const handleHoverPreviewsChange = (enabled: boolean) => {
+    setHoverPreviewsEnabled(enabled)
+    window.api.setHoverPreviews(enabled).catch((err) => console.error(err))
   }
 
   const _handleRescan = useCallback((name: string): void => {
@@ -1549,49 +1492,48 @@ export default function App(): React.JSX.Element {
   const handleReveal = useCallback((file: ScannedFile): void => { window.electron.ipcRenderer.send('reveal-file', file.path) }, [])
   const openLightbox = useCallback((file: ScannedFile, list: ScannedFile[], rect?: DOMRect): void => { setLightbox({ file, list, rect }) }, [])
 
-  const groupedFiles = selectedDrive && driveFiles[selectedDrive] ? driveFiles[selectedDrive] : {}
+  const groupedFiles = useMemo<Record<string, ScannedFile[]>>(
+    () => (selectedDrive && driveFiles[selectedDrive]) || {},
+    [selectedDrive, driveFiles]
+  )
   const allFiles = useMemo(() => Object.values(groupedFiles).flat(), [groupedFiles])
+  useEffect(() => {
+    fileIndexRef.current = new Map(allFiles.map(f => [f.path, f]))
+  }, [allFiles])
   const allFavFiles = useMemo(() => allFiles.filter(f => favourites.has(f.path)), [allFiles, favourites])
   const totalFiles = allFiles.length
 
+  const handleGridTileSizeCommit = useCallback((size: number): void => {
+    setTileSize(size)
+    window.api.setTileSize(size).catch((err) => console.error(err))
+  }, [])
+
+  const switchView = useCallback((view: string): void => {
+    setTransitioning(true)
+    zoomTicksRef.current = 0
+    setTimeout(() => { setActiveView(view); setTransitioning(false) }, 280)
+  }, [])
+
+  const handleGridZoomOutBeyond = useCallback((): void => {
+    if (!transitioning) switchView('Timeline')
+  }, [transitioning, switchView])
+
+  // Ctrl+wheel / pinch on the Timeline and Years views (the Grid handles its own zoom).
+  // Grid ⇄ Timeline ⇄ Years, like All Photos ⇄ Months ⇄ Years.
   const handleWheel = useCallback((e: React.WheelEvent): void => {
-    if (!e.ctrlKey) return
-    e.preventDefault()
-    if (activeView !== 'Grid' && activeView !== 'Timeline' && activeView !== 'Years') return
+    if (!e.ctrlKey || transitioning) return
+    if (activeView !== 'Timeline' && activeView !== 'Years') return
 
     const dir: 'in' | 'out' = e.deltaY > 0 ? 'out' : 'in'
     if (dir !== lastZoomDirRef.current) { zoomTicksRef.current = 0; lastZoomDirRef.current = dir }
-    zoomTicksRef.current++
+    // Trackpads fire many small events; count accumulated distance instead of raw events.
+    zoomTicksRef.current += Math.min(1, Math.abs(e.deltaY) / 40)
+    if (zoomTicksRef.current < 2) return
 
-    const newZoom = Math.max(0.3, Math.min(1.0, zoomLevelRef.current + (dir === 'in' ? 0.025 : -0.025)))
-    zoomLevelRef.current = newZoom
-    const newTileSize = Math.max(55, Math.round(120 * Math.min(newZoom * 1.8, 1)))
-    setTileSize(newTileSize)
-    window.api.setTileSize(newTileSize).catch((err) => console.error(err))
-
-    if (transitioning) return
-
-    if (activeView === 'Grid' && newTileSize <= 58 && zoomTicksRef.current >= 3) {
-      setTransitioning(true); zoomTicksRef.current = 0
-      setTimeout(() => { setActiveView('Timeline'); zoomLevelRef.current = 1.0; setTileSize(120); setTransitioning(false) }, 320)
-      return
-    }
-    if (activeView === 'Timeline' && dir === 'in' && zoomTicksRef.current >= 3) {
-      setTransitioning(true); zoomTicksRef.current = 0
-      setTimeout(() => { setActiveView('Grid'); zoomLevelRef.current = 1.0; setTileSize(120); setTransitioning(false) }, 320)
-      return
-    }
-    if (activeView === 'Timeline' && dir === 'out' && zoomTicksRef.current >= 4) {
-      setTransitioning(true); zoomTicksRef.current = 0
-      setTimeout(() => { setActiveView('Years'); zoomLevelRef.current = 1.0; setTileSize(120); setTransitioning(false) }, 320)
-      return
-    }
-    if (activeView === 'Years' && dir === 'in' && zoomTicksRef.current >= 3) {
-      setTransitioning(true); zoomTicksRef.current = 0
-      setTimeout(() => { setActiveView('Timeline'); zoomLevelRef.current = 1.0; setTileSize(120); setTransitioning(false) }, 320)
-      return
-    }
-  }, [activeView, transitioning])
+    if (activeView === 'Timeline') switchView(dir === 'in' ? 'Grid' : 'Years')
+    else if (dir === 'in') switchView('Timeline')
+    else zoomTicksRef.current = 0
+  }, [activeView, transitioning, switchView])
 
   const getFiltered = useCallback((files: ScannedFile[]): ScannedFile[] => {
     let filtered = files
@@ -1644,15 +1586,15 @@ export default function App(): React.JSX.Element {
     return filtered
   }, [activeNav, favourites, searchQuery])
 
+  const orderedGroupsRef = useRef<{ keys: string[]; data: Record<string, ScannedFile[]> }>({ keys: [], data: {} })
   const handleSelect = useCallback((file: ScannedFile, e: React.MouseEvent): void => {
     setSelected(prev => {
       const next = new Set(prev)
       const isSelected = next.has(file.path)
 
       if (e.shiftKey && lastSelectedPathRef.current) {
-        const allGridFiles = Object.keys(groupedFiles)
-          .sort()
-          .flatMap(monthKey => getFiltered(groupedFiles[monthKey] || []))
+        const { keys, data } = orderedGroupsRef.current
+        const allGridFiles = keys.flatMap(k => data[k] || [])
         const lastIdx = allGridFiles.findIndex(f => f.path === lastSelectedPathRef.current)
         const currentIdx = allGridFiles.findIndex(f => f.path === file.path)
 
@@ -1672,7 +1614,7 @@ export default function App(): React.JSX.Element {
       lastSelectedPathRef.current = file.path
       return next
     })
-  }, [groupedFiles, getFiltered])
+  }, [])
 
   const lastSelectedPathRef = useRef<string | null>(null)
 
@@ -1746,53 +1688,64 @@ export default function App(): React.JSX.Element {
   }, [selected, handleBatchDelete])
 
   // Custom Grouping Logic (Year, Month, Day, Location, Favorites)
-  const getDayKey = (file: ScannedFile) => {
-    if (!file.date) return 'Unknown Date'
-    const d = new Date(file.date)
-    return d.toLocaleDateString('default', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
-  }
-
-  const getMonthKey = (file: ScannedFile) => {
-    return `${file.month || 'Unknown'} ${file.year || ''}`.trim()
-  }
-
-  const getYearKey = (file: ScannedFile) => {
-    return file.year || 'Unknown Year'
-  }
-
   const sortedGroupedData = useMemo(() => {
     const filtered = getFiltered(allFiles)
-    const groups: Record<string, ScannedFile[]> = {}
+    const dayFmt = new Intl.DateTimeFormat(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+    const dayKeyCache = new Map<number, string>()
+    const time = (f: ScannedFile): number => {
+      const t = Date.parse(f.date)
+      return Number.isNaN(t) ? -Infinity : t
+    }
 
-    filtered.forEach(file => {
-      let key = 'Other'
+    const groups: Record<string, ScannedFile[]> = {}
+    const newest: Record<string, number> = {}
+    for (const file of filtered) {
+      let key: string
+      const t = time(file)
       if (groupBy === 'day') {
-        key = getDayKey(file)
+        if (t === -Infinity) key = 'Unknown Date'
+        else {
+          const d = new Date(t)
+          const day = d.getFullYear() * 10000 + d.getMonth() * 100 + d.getDate()
+          key = dayKeyCache.get(day) ?? ''
+          if (!key) { key = dayFmt.format(t); dayKeyCache.set(day, key) }
+        }
       } else if (groupBy === 'month') {
-        key = getMonthKey(file)
+        key = `${file.month || 'Unknown'} ${file.year || ''}`.trim()
       } else if (groupBy === 'year') {
-        key = getYearKey(file)
+        key = file.year || 'Unknown Year'
       } else if (groupBy === 'location') {
-        key = file.lat && file.lng 
-          ? `📍 Coords (${Math.round(file.lat * 2) / 2}, ${Math.round(file.lng * 2) / 2})` 
+        key = file.lat != null && file.lng != null
+          ? `📍 Coords (${Math.round(file.lat * 2) / 2}, ${Math.round(file.lng * 2) / 2})`
           : 'No Location Info'
-      } else if (groupBy === 'favorites') {
+      } else {
         key = favourites.has(file.path) ? '❤️ Favourites' : 'Other Files'
       }
-      
-      if (!groups[key]) groups[key] = []
-      groups[key].push(file)
+      const g = groups[key]
+      if (g) g.push(file); else groups[key] = [file]
+      if (!(key in newest) || t > newest[key]) newest[key] = t
+    }
+
+    // Newest first, inside and across groups; undated groups go last.
+    for (const key in groups) {
+      if (groups[key].length > 1) groups[key].sort((a, b) => time(b) - time(a) || a.name.localeCompare(b.name))
+    }
+    const keys = Object.keys(groups).sort((a, b) => {
+      const d = newest[b] - newest[a]
+      return Number.isNaN(d) ? 0 : d || a.localeCompare(b)
     })
 
-    const keys = Object.keys(groups).sort((a, b) => {
-      const fileA = groups[a][0]
-      const fileB = groups[b][0]
-      if (!fileA || !fileB) return 0
-      return new Date(fileB.date).getTime() - new Date(fileA.date).getTime()
-    })
+    // Reverse (both group order and items within each group) rather than
+    // re-deriving a separate comparator - the tie-break above is already
+    // deterministic, so reversing it stays deterministic.
+    if (viewOrder === 'reverse') {
+      keys.reverse()
+      for (const key in groups) groups[key].reverse()
+    }
 
     return { keys, data: groups }
-  }, [allFiles, groupBy, favourites, getFiltered])
+  }, [allFiles, groupBy, favourites, getFiltered, viewOrder])
+  orderedGroupsRef.current = sortedGroupedData
 
   // Day bulk select & contiguous shift click
   const lastSelectedGroupRef = useRef<string | null>(null)
@@ -2034,143 +1987,161 @@ export default function App(): React.JSX.Element {
         ::-webkit-scrollbar-thumb:hover { background: #e11d2e; }
       `}</style>
 
-      {/* Sidebar */}
-      <div style={{ width: '230px', minWidth: '230px', background: '#0c0c0f', borderRight: '1px solid rgba(255,255,255,0.04)', display: 'flex', flexDirection: 'column', height: '100vh', overflowY: 'auto' }}>
-        <div style={{ padding: '20px 22px 14px', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-          <div style={{ fontSize: '12px', fontWeight: 700, color: '#ffffff', letterSpacing: '1px', textTransform: 'uppercase' }}>DiskFrame</div>
-          <div style={{ fontSize: '9px', color: '#8a8a8f', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Universal media indexing</div>
+      {/* Sidebar - only rendered after a drive is selected */}
+      {selectedDrive && (
+        <div style={{ width: '230px', minWidth: '230px', background: '#0c0c0f', borderRight: '1px solid rgba(255,255,255,0.04)', display: 'flex', flexDirection: 'column', height: '100vh', overflowY: 'auto' }}>
+          <div style={{ padding: '20px 22px 14px', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+            <div style={{ fontSize: '12px', fontWeight: 700, color: '#ffffff', letterSpacing: '1px', textTransform: 'uppercase' }}>DiskFrame</div>
+            <div style={{ fontSize: '9px', color: '#8a8a8f', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Universal media indexing</div>
+          </div>
+
+          {/* Collections */}
+          <div style={{ padding: '4px 0' }}>
+            <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '1px', padding: '0 22px', marginBottom: '8px', fontWeight: 700 }}>Collections</div>
+            {[
+              { id: 'all', label: 'All files', icon: <FolderArchive size={14} /> },
+              { id: 'photos', label: 'Photos', icon: <ImageIcon size={14} /> },
+              { id: 'videos', label: 'Videos', icon: <Film size={14} /> },
+              { id: 'docs', label: 'Documents', icon: <FileText size={14} /> },
+              { id: 'screenshots', label: 'Screenshots', icon: <Camera size={14} /> },
+              { id: 'places', label: 'Places Map', icon: <MapIcon size={14} /> },
+              { id: 'favourites', label: 'Favourites', icon: <Star size={14} /> },
+              { id: 'trash', label: 'Trash', icon: <Trash2 size={14} /> },
+              { id: 'settings', label: 'Settings', icon: <Settings size={14} /> }
+            ].map(item => (
+              <div key={item.id} onClick={() => setActiveNav(item.id)} className={`snav ${activeNav === item.id ? 'active' : ''}`}>
+                <span style={{ display: 'flex', alignItems: 'center', marginRight: '12px', color: activeNav === item.id ? '#e11d2e' : '#8a8a8f' }}>{item.icon}</span>
+                <span style={{ flex: 1, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{item.label}</span>
+                {item.id === 'favourites' && allFavFiles.length > 0 && (
+                  <span style={{ fontSize: '9px', color: '#f2f2f0', background: 'rgba(225, 29, 46, 0.25)', borderRadius: '2px', padding: '2px 5px', fontWeight: 700 }}>{allFavFiles.length}</span>
+                )}
+                {item.id === 'trash' && trashCount > 0 && (
+                  <span style={{ fontSize: '9px', color: '#f2f2f0', background: '#e11d2e', borderRadius: '2px', padding: '2px 5px', fontWeight: 700 }}>{trashCount}</span>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
-
-
-
-        {/* Collections */}
-        <div style={{ padding: '4px 0' }}>
-          <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '1px', padding: '0 22px', marginBottom: '8px', fontWeight: 700 }}>Collections</div>
-          {[
-            { id: 'all', label: 'All files', icon: <FolderArchive size={14} /> },
-            { id: 'photos', label: 'Photos', icon: <ImageIcon size={14} /> },
-            { id: 'videos', label: 'Videos', icon: <Film size={14} /> },
-            { id: 'docs', label: 'Documents', icon: <FileText size={14} /> },
-            { id: 'screenshots', label: 'Screenshots', icon: <Camera size={14} /> },
-            { id: 'places', label: 'Places Map', icon: <MapIcon size={14} /> },
-            { id: 'favourites', label: 'Favourites', icon: <Star size={14} /> },
-            { id: 'trash', label: 'Trash', icon: <Trash2 size={14} /> },
-            { id: 'settings', label: 'Settings', icon: <Settings size={14} /> }
-          ].map(item => (
-            <div key={item.id} onClick={() => setActiveNav(item.id)} className={`snav ${activeNav === item.id ? 'active' : ''}`}>
-              <span style={{ display: 'flex', alignItems: 'center', marginRight: '12px', color: activeNav === item.id ? '#e11d2e' : '#8a8a8f' }}>{item.icon}</span>
-              <span style={{ flex: 1, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{item.label}</span>
-              {item.id === 'favourites' && allFavFiles.length > 0 && (
-                <span style={{ fontSize: '9px', color: '#f2f2f0', background: 'rgba(225, 29, 46, 0.25)', borderRadius: '2px', padding: '2px 5px', fontWeight: 700 }}>{allFavFiles.length}</span>
-              )}
-              {item.id === 'trash' && trashCount > 0 && (
-                <span style={{ fontSize: '9px', color: '#f2f2f0', background: '#e11d2e', borderRadius: '2px', padding: '2px 5px', fontWeight: 700 }}>{trashCount}</span>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
+      )}
 
       {/* Main Container */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden', minWidth: 0, background: '#0a0a0c' }}>
         
-        {/* Top bar header */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '14px 22px', borderBottom: '1px solid rgba(255,255,255,0.04)', background: '#0c0c0f', flexShrink: 0 }}>
-          
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '12px' }}>
-            {selectedDrive ? (
-              <div
-                onClick={() => {
-                  setSelectedDrive(null)
-                  setActiveNav('all')
-                }}
-                title="Return to Drive Selection screen"
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  cursor: 'pointer',
-                  padding: '4px 8px',
-                  borderRadius: '4px',
-                  background: 'rgba(255, 255, 255, 0.03)',
-                  border: '1px solid rgba(255, 255, 255, 0.06)',
-                  fontSize: '10px',
-                  color: '#8a8a8f',
-                  textTransform: 'uppercase',
-                  letterSpacing: '1px',
-                  fontWeight: 700,
-                  transition: 'all 0.15s cubic-bezier(0.34, 1.56, 0.64, 1)',
-                  userSelect: 'none'
-                }}
-                onMouseEnter={(e) => {
-                  e.currentTarget.style.background = 'rgba(225, 29, 46, 0.12)'
-                  e.currentTarget.style.borderColor = 'rgba(225, 29, 46, 0.4)'
-                }}
-                onMouseLeave={(e) => {
-                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.03)'
-                  e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.06)'
-                }}
-              >
-                <ArrowLeft size={12} color="#e11d2e" />
-                <span>
-                  <span style={{ color: '#ffffff' }}>{selectedDrive}</span> · <span style={{ color: '#e11d2e' }}>{activeNav}</span>
-                </span>
-              </div>
-            ) : (
-              <div style={{ fontSize: '10px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700 }}>
-                Select a drive
+        {/* Top bar header - only rendered after a drive is selected */}
+        {selectedDrive && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '14px 22px', borderBottom: '1px solid rgba(255,255,255,0.04)', background: '#0c0c0f', flexShrink: 0 }}>
+            
+            <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '12px' }}>
+              {selectedDrive ? (
+                <div
+                  onClick={() => {
+                    setSelectedDrive(null)
+                    setActiveNav('all')
+                  }}
+                  title="Return to Drive Selection screen"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    cursor: 'pointer',
+                    padding: '4px 8px',
+                    borderRadius: '4px',
+                    background: 'rgba(255, 255, 255, 0.03)',
+                    border: '1px solid rgba(255, 255, 255, 0.06)',
+                    fontSize: '10px',
+                    color: '#8a8a8f',
+                    textTransform: 'uppercase',
+                    letterSpacing: '1px',
+                    fontWeight: 700,
+                    transition: 'all 0.15s cubic-bezier(0.34, 1.56, 0.64, 1)',
+                    userSelect: 'none'
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background = 'rgba(225, 29, 46, 0.12)'
+                    e.currentTarget.style.borderColor = 'rgba(225, 29, 46, 0.4)'
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.03)'
+                    e.currentTarget.style.borderColor = 'rgba(255, 255, 255, 0.06)'
+                  }}
+                >
+                  <ArrowLeft size={12} color="#e11d2e" />
+                  <span>
+                    <span style={{ color: '#ffffff' }}>{selectedDrive}</span> · <span style={{ color: '#e11d2e' }}>{activeNav}</span>
+                  </span>
+                </div>
+              ) : (
+                <div style={{ fontSize: '10px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700 }}>
+                  Select a drive
+                </div>
+              )}
+              
+              {/* Search Input */}
+              {selectedDrive && (
+                <input
+                  type="text"
+                  placeholder="Search file, camera:, date:, ext:, loc: ..."
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  className="cred-input"
+                  style={{ width: '260px', padding: '4px 10px', fontSize: '11px', height: '24px', border: '1px solid rgba(225,29,46,0.1)' }}
+                />
+              )}
+            </div>
+
+            {selected.size > 0 && activeNav !== 'trash' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '10px', color: '#f2f2f0', background: 'rgba(225,29,46,0.08)', border: '1px solid rgba(225,29,46,0.35)', borderRadius: '2px', padding: '3px 10px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                <span>{selected.size} selected</span>
+                <button onClick={handleBatchFavorite} style={{ background: 'transparent', border: 'none', color: '#e11d2e', cursor: 'pointer', fontWeight: 700, textTransform: 'uppercase' }}>❤️ Fav</button>
+                <button onClick={handleBatchDelete} style={{ background: 'transparent', border: 'none', color: '#e11d2e', cursor: 'pointer', fontWeight: 700, textTransform: 'uppercase' }}>🗑️ Delete</button>
+                <span onClick={() => setSelected(new Set())} style={{ cursor: 'pointer', color: '#8a8a8f', marginLeft: '2px' }}>✕</span>
               </div>
             )}
-            
-            {/* Search Input */}
-            {selectedDrive && (
-              <input
-                type="text"
-                placeholder="Search file, camera:, date:, ext:, loc: ..."
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
+
+            {/* Group By selector */}
+            {selectedDrive && (activeView === 'Grid' || activeView === 'Timeline') && activeNav !== 'trash' && (
+              <select
+                value={groupBy}
+                onChange={e => setGroupBy(e.target.value as any)}
                 className="cred-input"
-                style={{ width: '260px', padding: '4px 10px', fontSize: '11px', height: '24px', border: '1px solid rgba(225,29,46,0.1)' }}
-              />
+                style={{ padding: '2px 8px', fontSize: '10px', background: '#111113', border: '1px solid rgba(255,255,255,0.05)', height: '24px', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}
+              >
+                <option value="day">Group by Day</option>
+                <option value="month">Group by Month</option>
+                <option value="year">Group by Year</option>
+                <option value="location">Group by Location</option>
+                <option value="favorites">Group by Favorites</option>
+              </select>
+            )}
+
+            {(activeView === 'Grid' || activeView === 'Timeline' || activeView === 'Years') && activeNav !== 'trash' && <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>{activeView === 'Grid' ? 'Pinch to zoom' : 'Pinch to switch views'}</div>}
+
+            {/* View order */}
+            {selectedDrive && (activeView === 'Grid' || activeView === 'Timeline') && activeNav !== 'trash' && (
+              <select
+                value={viewOrder}
+                onChange={e => handleViewOrderChange(e.target.value as 'default' | 'reverse')}
+                className="cred-input"
+                title="View order"
+                style={{ padding: '2px 8px', fontSize: '10px', background: '#111113', border: '1px solid rgba(255,255,255,0.05)', height: '24px', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}
+              >
+                <option value="default">Top to bottom</option>
+                <option value="reverse">Bottom to top</option>
+              </select>
+            )}
+
+            {/* Views selector tab */}
+            {activeNav !== 'trash' && (
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <div style={{ display: 'flex', gap: '2px', background: '#111113', borderRadius: '4px', padding: '2px', border: '1px solid rgba(255,255,255,0.04)' }}>
+                  {['Grid', 'Timeline', 'Years', 'Map'].map(v => (
+                    <div key={v} onClick={() => setActiveView(v)} style={{ padding: '3px 10px', borderRadius: '3px', cursor: 'pointer', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', background: activeView === v ? '#1e1e24' : 'transparent', color: activeView === v ? '#ffffff' : '#8a8a8f', transition: 'all 0.15s ease' }}>{v}</div>
+                  ))}
+                </div>
+              </div>
             )}
           </div>
-
-          {selected.size > 0 && activeNav !== 'trash' && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '10px', color: '#f2f2f0', background: 'rgba(225,29,46,0.08)', border: '1px solid rgba(225,29,46,0.35)', borderRadius: '2px', padding: '3px 10px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-              <span>{selected.size} selected</span>
-              <button onClick={handleBatchFavorite} style={{ background: 'transparent', border: 'none', color: '#e11d2e', cursor: 'pointer', fontWeight: 700, textTransform: 'uppercase' }}>❤️ Fav</button>
-              <button onClick={handleBatchDelete} style={{ background: 'transparent', border: 'none', color: '#e11d2e', cursor: 'pointer', fontWeight: 700, textTransform: 'uppercase' }}>🗑️ Delete</button>
-              <span onClick={() => setSelected(new Set())} style={{ cursor: 'pointer', color: '#8a8a8f', marginLeft: '2px' }}>✕</span>
-            </div>
-          )}
-
-          {/* Group By selector */}
-          {selectedDrive && (activeView === 'Grid' || activeView === 'Timeline') && activeNav !== 'trash' && (
-            <select
-              value={groupBy}
-              onChange={e => setGroupBy(e.target.value as any)}
-              className="cred-input"
-              style={{ padding: '2px 8px', fontSize: '10px', background: '#111113', border: '1px solid rgba(255,255,255,0.05)', height: '24px', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}
-            >
-              <option value="day">Group by Day</option>
-              <option value="month">Group by Month</option>
-              <option value="year">Group by Year</option>
-              <option value="location">Group by Location</option>
-              <option value="favorites">Group by Favorites</option>
-            </select>
-          )}
-
-          {activeView === 'Grid' && activeNav !== 'trash' && activeNav !== 'globe' && <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Ctrl+Scroll to resize</div>}
-
-          {/* Views selector tab */}
-          {activeNav !== 'trash' && (
-            <div style={{ display: 'flex', gap: '2px', background: '#111113', borderRadius: '4px', padding: '2px', border: '1px solid rgba(255,255,255,0.04)' }}>
-              {['Grid', 'Timeline', 'Years', 'Map'].map(v => (
-                <div key={v} onClick={() => setActiveView(v)} style={{ padding: '3px 10px', borderRadius: '3px', cursor: 'pointer', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', background: activeView === v ? '#1e1e24' : 'transparent', color: activeView === v ? '#ffffff' : '#8a8a8f', transition: 'all 0.15s ease' }}>{v}</div>
-              ))}
-            </div>
-          )}
-        </div>
+        )}
 
         {/* Isolated Scroll Content Area */}
         <MainContentArea
@@ -2207,19 +2178,48 @@ export default function App(): React.JSX.Element {
           groupBy={groupBy}
           onDragStart={handleDragStart}
           setActiveView={setActiveView}
+          onTileSizeCommit={handleGridTileSizeCommit}
+          onGridZoomOutBeyond={handleGridZoomOutBeyond}
+          thumbVersion={thumbVersion}
+          hoverPreviewsEnabled={hoverPreviewsEnabled}
+          onHoverPreviewsChange={handleHoverPreviewsChange}
         />
 
-        {/* Status bar */}
-        <div style={{ borderTop: '1px solid rgba(255,255,255,0.04)', padding: '8px 22px', display: 'flex', alignItems: 'center', gap: '16px', background: '#08080a', flexShrink: 0 }}>
-          <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#f2f2f0', fontWeight: 700 }}>{drives.length}</span> drives</div>
-          <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#f2f2f0', fontWeight: 700 }}>{totalFiles}</span> files</div>
-          <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#f2f2f0', fontWeight: 700 }}>{sortedGroupedData.keys.length}</span> groupings</div>
-          <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#e11d2e', fontWeight: 700 }}><Heart size={8} fill="#e11d2e" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} /> {allFavFiles.length}</span> favourites</div>
-          {selected.size > 0 && <div style={{ fontSize: '9px', color: '#e11d2e', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}><Check size={8} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} /> {selected.size} selected</div>}
-          {activeView === 'Grid' && <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}>tile: <span style={{ color: '#f2f2f0', fontWeight: 700 }}>{tileSize}px</span></div>}
-          <div style={{ marginLeft: 'auto', fontSize: '8px', color: '#e11d2e', background: 'rgba(225, 29, 46, 0.08)', border: '1px solid rgba(225, 29, 46, 0.2)', borderRadius: '2px', padding: '1px 6px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>● index live</div>
-        </div>
+        {/* Status bar - only rendered after a drive is selected */}
+        {selectedDrive && (
+          <div style={{ borderTop: '1px solid rgba(255,255,255,0.04)', padding: '8px 22px', display: 'flex', alignItems: 'center', gap: '16px', background: '#08080a', flexShrink: 0 }}>
+            <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#f2f2f0', fontWeight: 700 }}>{drives.length}</span> drives</div>
+            <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#f2f2f0', fontWeight: 700 }}>{totalFiles}</span> files</div>
+            <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#f2f2f0', fontWeight: 700 }}>{sortedGroupedData.keys.length}</span> groupings</div>
+            <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#e11d2e', fontWeight: 700 }}><Heart size={8} fill="#e11d2e" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} /> {allFavFiles.length}</span> favourites</div>
+            {selected.size > 0 && <div style={{ fontSize: '9px', color: '#e11d2e', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}><Check size={8} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} /> {selected.size} selected</div>}
+            {activeView === 'Grid' && <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}>tile: <span style={{ color: '#f2f2f0', fontWeight: 700 }}>{tileSize}px</span></div>}
+            <div style={{ marginLeft: 'auto' }}>
+              {scanning ? (
+                <ScanProgressDisplay scanning={scanning} scanCount={scanCount} />
+              ) : (
+                <div style={{ fontSize: '8px', color: '#e11d2e', background: 'rgba(225, 29, 46, 0.08)', border: '1px solid rgba(225, 29, 46, 0.2)', borderRadius: '2px', padding: '1px 6px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}>● index live</div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Magnetic glass navigation dock, floating above the status bar */}
+      {selectedDrive && (
+        <div style={{ position: 'fixed', bottom: '55px', left: '50%', transform: 'translateX(-50%)', zIndex: 1999 }}>
+          <MagneticDock
+            items={[
+              { id: 'all', label: 'All files', icon: <FolderArchive size={18} />, isActive: activeNav === 'all', onClick: () => setActiveNav('all') },
+              { id: 'photos', label: 'Photos', icon: <ImageIcon size={18} />, isActive: activeNav === 'photos', onClick: () => setActiveNav('photos') },
+              { id: 'videos', label: 'Videos', icon: <Film size={18} />, isActive: activeNav === 'videos', onClick: () => setActiveNav('videos') },
+              { id: 'favourites', label: 'Favourites', icon: <Star size={18} />, isActive: activeNav === 'favourites', badge: allFavFiles.length, onClick: () => setActiveNav('favourites') },
+              { id: 'trash', label: 'Trash', icon: <Trash2 size={18} />, isActive: activeNav === 'trash', badge: trashCount, onClick: () => setActiveNav('trash') },
+              { id: 'settings', label: 'Settings', icon: <Settings size={18} />, isActive: activeNav === 'settings', onClick: () => setActiveNav('settings') }
+            ]}
+          />
+        </div>
+      )}
 
       {/* Floating AI search action button (offset bottom: 55px to float above status bar) */}
       {selectedDrive && (

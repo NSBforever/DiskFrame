@@ -544,6 +544,8 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
           translateX={translateX}
           translateY={translateY}
           onImageLoaded={setImgDimensions}
+          onNext={handleNext}
+          onPrev={handlePrev}
         />
       </div>
 

@@ -3,9 +3,10 @@ import * as fs from 'fs'
 import * as cp from 'child_process'
 import exifr from 'exifr'
 import Database from 'better-sqlite3'
-import { app } from 'electron'
+import { app, utilityProcess } from 'electron'
 import sharp from 'sharp'
 import { createHash } from 'crypto'
+import { Worker } from 'worker_threads'
 
 function resolveFfmpeg(): string {
   try {
@@ -151,6 +152,8 @@ async function getMovMetadata(filePath: string): Promise<{ date: Date | null; la
 
 const dbPath = join(app.getPath('userData'), 'diskframe.db')
 const db = new Database(dbPath)
+db.pragma('journal_mode = WAL')
+db.pragma('synchronous = NORMAL')
 
 const thumbDir = join(app.getPath('userData'), 'thumbs')
 if (!fs.existsSync(thumbDir)) fs.mkdirSync(thumbDir, { recursive: true })
@@ -177,7 +180,10 @@ db.exec(`
     locked INTEGER DEFAULT 0,
     hidden INTEGER DEFAULT 0,
     vault_path TEXT,
-    trashed_at TEXT
+    trashed_at TEXT,
+    mtime INTEGER,
+    hash TEXT,
+    ino INTEGER
   );
 
   CREATE TABLE IF NOT EXISTS vault_pin (
@@ -188,6 +194,13 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS delete_prefs (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     skip_confirm INTEGER DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS volume_drives (
+    volume_id TEXT PRIMARY KEY,
+    drive_letter TEXT,
+    label TEXT,
+    last_seen TEXT
   );
 
   CREATE INDEX IF NOT EXISTS idx_files_drive_hidden_trashed_date ON files (drive, hidden, trashed_at, date DESC);
@@ -203,6 +216,9 @@ if (!cols.includes('hidden'))
   db.prepare('ALTER TABLE files ADD COLUMN hidden INTEGER DEFAULT 0').run()
 if (!cols.includes('vault_path')) db.prepare('ALTER TABLE files ADD COLUMN vault_path TEXT').run()
 if (!cols.includes('trashed_at')) db.prepare('ALTER TABLE files ADD COLUMN trashed_at TEXT').run()
+if (!cols.includes('mtime')) db.prepare('ALTER TABLE files ADD COLUMN mtime INTEGER').run()
+if (!cols.includes('hash')) db.prepare('ALTER TABLE files ADD COLUMN hash TEXT').run()
+if (!cols.includes('ino')) db.prepare('ALTER TABLE files ADD COLUMN ino INTEGER').run()
 
 const deletePrefsCols = (db.prepare('PRAGMA table_info(delete_prefs)').all() as { name: string }[]).map((c) => c.name)
 if (!deletePrefsCols.includes('tile_size')) {
@@ -210,6 +226,20 @@ if (!deletePrefsCols.includes('tile_size')) {
     db.prepare('ALTER TABLE delete_prefs ADD COLUMN tile_size INTEGER DEFAULT 120').run()
   } catch (e) {
     console.error('Error migrating delete_prefs:', e)
+  }
+}
+if (!deletePrefsCols.includes('view_order')) {
+  try {
+    db.prepare("ALTER TABLE delete_prefs ADD COLUMN view_order TEXT DEFAULT 'default'").run()
+  } catch (e) {
+    console.error('Error migrating delete_prefs (view_order):', e)
+  }
+}
+if (!deletePrefsCols.includes('hover_previews')) {
+  try {
+    db.prepare('ALTER TABLE delete_prefs ADD COLUMN hover_previews INTEGER DEFAULT 1').run()
+  } catch (e) {
+    console.error('Error migrating delete_prefs (hover_previews):', e)
   }
 }
 
@@ -230,6 +260,9 @@ export interface ScannedFile {
   hidden: number
   vault_path: string | null
   trashed_at: string | null
+  mtime?: number
+  hash?: string
+  ino?: number | null
 }
 
 // ─── PIN MANAGEMENT ───────────────────────────────────────────────────────────
@@ -283,6 +316,54 @@ export function setTileSizePref(size: number): void {
     }
   } catch (e) {
     console.error('Error saving tile size pref:', e)
+  }
+}
+
+export function getViewOrderPref(): 'default' | 'reverse' {
+  try {
+    const row = db.prepare('SELECT view_order FROM delete_prefs WHERE id = 1').get() as
+      | { view_order: string }
+      | undefined
+    return row?.view_order === 'reverse' ? 'reverse' : 'default'
+  } catch {
+    return 'default'
+  }
+}
+
+export function setViewOrderPref(order: 'default' | 'reverse'): void {
+  try {
+    const exists = db.prepare('SELECT id FROM delete_prefs WHERE id = 1').get()
+    if (exists) {
+      db.prepare('UPDATE delete_prefs SET view_order = ? WHERE id = 1').run(order)
+    } else {
+      db.prepare('INSERT OR REPLACE INTO delete_prefs (id, view_order) VALUES (1, ?)').run(order)
+    }
+  } catch (e) {
+    console.error('Error saving view order pref:', e)
+  }
+}
+
+export function getHoverPreviewsPref(): boolean {
+  try {
+    const row = db.prepare('SELECT hover_previews FROM delete_prefs WHERE id = 1').get() as
+      | { hover_previews: number }
+      | undefined
+    return (row?.hover_previews ?? 1) === 1
+  } catch {
+    return true
+  }
+}
+
+export function setHoverPreviewsPref(enabled: boolean): void {
+  try {
+    const exists = db.prepare('SELECT id FROM delete_prefs WHERE id = 1').get()
+    if (exists) {
+      db.prepare('UPDATE delete_prefs SET hover_previews = ? WHERE id = 1').run(enabled ? 1 : 0)
+    } else {
+      db.prepare('INSERT OR REPLACE INTO delete_prefs (id, hover_previews) VALUES (1, ?)').run(enabled ? 1 : 0)
+    }
+  } catch (e) {
+    console.error('Error saving hover previews pref:', e)
   }
 }
 
@@ -947,4 +1028,314 @@ export function resolveMediaFile(filePath: string): { path: string; relinked: bo
   }
 
   return { path: filePath, relinked: false, exists: false }
+}
+
+export function removeFileRecord(filePath: string): void {
+  const row = db.prepare('SELECT thumb FROM files WHERE path = ?').get(filePath) as { thumb: string | null } | undefined
+  if (row?.thumb && fs.existsSync(row.thumb)) {
+    try {
+      fs.unlinkSync(row.thumb)
+    } catch {}
+  }
+  db.prepare('DELETE FROM files WHERE path = ?').run(filePath)
+}
+
+export async function updateFileInPlace(filePath: string, statInput?: fs.Stats): Promise<ScannedFile | null> {
+  let stat = statInput
+  if (!stat) {
+    try {
+      if (!fs.existsSync(filePath)) {
+        removeFileRecord(filePath)
+        return null
+      }
+      stat = fs.statSync(filePath)
+    } catch {
+      return null
+    }
+  }
+
+  const existing = db.prepare('SELECT * FROM files WHERE path = ?').get(filePath) as ScannedFile | undefined
+
+  const mtimeMs = Math.round(stat.mtimeMs)
+  const date = new Date(stat.mtime)
+  const year = date.getFullYear().toString()
+  const month = date.toLocaleString('default', { month: 'long' })
+  const ext = extname(filePath).toLowerCase()
+  const drive = filePath.slice(0, 2).toUpperCase()
+
+  // Invalidate old thumb if exists
+  if (existing?.thumb && fs.existsSync(existing.thumb)) {
+    try {
+      fs.unlinkSync(existing.thumb)
+    } catch {}
+  }
+
+  let newThumb: string | null = null
+  try {
+    newThumb = await generateThumbForFile(filePath, ext)
+  } catch (e) {
+    console.error(`[updateFileInPlace] Thumb generation failed for ${filePath}:`, e)
+  }
+
+  if (existing) {
+    db.prepare(`
+      UPDATE files
+      SET size = ?, date = ?, year = ?, month = ?, thumb = ?, mtime = ?, ino = ?
+      WHERE path = ?
+    `).run(stat.size, date.toISOString(), year, month, newThumb, mtimeMs, stat.ino ? Number(stat.ino) : null, filePath)
+  } else {
+    db.prepare(`
+      INSERT OR REPLACE INTO files (path, name, ext, size, date, year, month, lat, lng, drive, thumb, locked, hidden, mtime, ino)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+    `).run(filePath, basename(filePath), ext, stat.size, date.toISOString(), year, month, null, null, drive, newThumb, mtimeMs, stat.ino ? Number(stat.ino) : null)
+  }
+
+  const updated = db.prepare('SELECT * FROM files WHERE path = ?').get(filePath) as ScannedFile | undefined
+  return updated || null
+}
+
+export function getFileIno(filePath: string): number | null {
+  const row = db.prepare('SELECT ino FROM files WHERE path = ?').get(filePath) as { ino: number | null } | undefined
+  return row?.ino ?? null
+}
+
+export function relinkMovedFile(oldPath: string, newPath: string, stat: fs.Stats): ScannedFile | null {
+  const existing = db.prepare('SELECT * FROM files WHERE path = ?').get(oldPath) as ScannedFile | undefined
+  if (!existing) return null
+
+  const mtimeMs = Math.round(stat.mtimeMs)
+  const ext = extname(newPath).toLowerCase()
+  const drive = newPath.slice(0, 2).toUpperCase()
+
+  db.prepare(`
+    UPDATE files
+    SET path = ?, name = ?, ext = ?, drive = ?, size = ?, mtime = ?, ino = ?
+    WHERE path = ?
+  `).run(newPath, basename(newPath), ext, drive, stat.size, mtimeMs, stat.ino ? Number(stat.ino) : null, oldPath)
+
+  const updated = db.prepare('SELECT * FROM files WHERE path = ?').get(newPath) as ScannedFile | undefined
+  return updated || null
+}
+
+export function getAllKnownDrives(): string[] {
+  const rows = db.prepare("SELECT DISTINCT drive FROM files WHERE drive IS NOT NULL AND drive != ''").all() as {
+    drive: string
+  }[]
+  return rows.map((r) => r.drive)
+}
+
+export function getVolumeId(drivePath: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const letter = drivePath.slice(0, 2).toUpperCase()
+    const cmd = `powershell -NoProfile -Command "Get-CimInstance Win32_Volume | Where-Object { $_.DriveLetter -eq '${letter}' } | Select-Object DeviceID, VolumeSerialNumber, Label | ConvertTo-Json"`
+    cp.exec(cmd, (err, stdout) => {
+      if (err || !stdout) return resolve(null)
+      try {
+        const parsed = JSON.parse(stdout)
+        const item = Array.isArray(parsed) ? parsed[0] : parsed
+        if (item) {
+          const serial = item.VolumeSerialNumber ? String(item.VolumeSerialNumber).trim() : ''
+          const deviceId = item.DeviceID ? String(item.DeviceID).trim() : ''
+          const volId = serial || deviceId || `${letter}_VOLUME`
+          return resolve(volId)
+        }
+        resolve(null)
+      } catch {
+        resolve(null)
+      }
+    })
+  })
+}
+
+export function saveVolumeDrive(volumeId: string, driveLetter: string, label: string = ''): void {
+  db.prepare(`
+    INSERT OR REPLACE INTO volume_drives (volume_id, drive_letter, label, last_seen)
+    VALUES (?, ?, ?, ?)
+  `).run(volumeId, driveLetter.toUpperCase(), label, new Date().toISOString())
+}
+
+export function getStoredVolumeId(driveLetter: string): string | null {
+  const row = db.prepare('SELECT volume_id FROM volume_drives WHERE drive_letter = ?').get(driveLetter.toUpperCase()) as { volume_id: string } | undefined
+  return row?.volume_id ?? null
+}
+
+// ponytail: module-level guard, single process. Fine for one Electron app instance.
+const syncsInProgress = new Set<string>()
+
+export async function incrementalSyncDrive(
+  drivePath: string,
+  onProgress?: (count: number) => void
+): Promise<{ fullScanNeeded: boolean; count: number }> {
+  const driveKey = drivePath.slice(0, 2).toUpperCase()
+  if (syncsInProgress.has(driveKey)) {
+    return { fullScanNeeded: false, count: getFileCount(driveKey) }
+  }
+  syncsInProgress.add(driveKey)
+  try {
+    return await incrementalSyncDriveInner(drivePath, onProgress)
+  } finally {
+    syncsInProgress.delete(driveKey)
+  }
+}
+
+async function incrementalSyncDriveInner(
+  drivePath: string,
+  onProgress?: (count: number) => void
+): Promise<{ fullScanNeeded: boolean; count: number }> {
+  const currentVolId = await getVolumeId(drivePath)
+  const storedVolId = getStoredVolumeId(drivePath)
+
+  if (storedVolId && currentVolId && storedVolId !== currentVolId) {
+    console.log(`[incrementalSync] Volume ID mismatch for ${drivePath} (stored: ${storedVolId}, current: ${currentVolId}). Full scan required.`)
+    return { fullScanNeeded: true, count: 0 }
+  }
+
+  if (currentVolId) {
+    saveVolumeDrive(currentVolId, drivePath)
+  }
+
+  const driveNorm = drivePath.slice(0, 2).toUpperCase()
+  const dbFiles = db
+    .prepare('SELECT path, size, mtime, ino, thumb FROM files WHERE drive = ? AND trashed_at IS NULL')
+    .all(driveNorm) as Pick<ScannedFile, 'path' | 'size' | 'mtime' | 'ino' | 'thumb'>[]
+
+  // The expensive part - stat-ing every known file plus a readdir of every known
+  // folder to catch new files - runs in a worker_thread so it never blocks the
+  // main process (IPC, window, other drives) while checking thousands of files.
+  const { changed, removed, added } = await runIncrementalSyncWorker(dbFiles, onProgress)
+
+  for (const path of removed) {
+    removeFileRecord(path)
+  }
+
+  // Concurrent, yielding queue (mirrors backfillAllMissingThumbnails' pattern)
+  // instead of one-at-a-time awaits - a large changed/added set (routine on a
+  // dev drive with heavy file churn) would otherwise serialize thousands of
+  // thumbnail regenerations on the main thread with no yielding in between.
+  const toUpdate = [...changed, ...added]
+  const CONCURRENCY = 4
+  let cursor = 0
+  async function updateWorker(): Promise<void> {
+    while (cursor < toUpdate.length) {
+      const path = toUpdate[cursor++]
+      try {
+        await updateFileInPlace(path)
+      } catch {
+        /* skip errors */
+      }
+      await new Promise((resolve) => setImmediate(resolve))
+    }
+  }
+  await Promise.all(Array.from({ length: CONCURRENCY }, () => updateWorker()))
+
+  const totalCount = getFileCount(driveNorm)
+  if (onProgress) onProgress(totalCount)
+  return { fullScanNeeded: false, count: totalCount }
+}
+
+function runIncrementalSyncWorker(
+  files: Pick<ScannedFile, 'path' | 'size' | 'mtime' | 'ino' | 'thumb'>[],
+  onProgress?: (count: number) => void
+): Promise<{ changed: string[]; removed: string[]; added: string[] }> {
+  return new Promise((resolve, reject) => {
+    const workerScript = join(__dirname, 'incrementalSyncWorker.js')
+    const worker = new Worker(workerScript, {
+      workerData: { files, allExts }
+    })
+
+    worker.on('message', (msg) => {
+      if (msg.type === 'progress') {
+        if (onProgress) onProgress(msg.count)
+      } else if (msg.type === 'complete') {
+        resolve({ changed: msg.changed, removed: msg.removed, added: msg.added })
+      }
+    })
+    worker.on('error', (err) => {
+      console.error('[incrementalSyncWorker error]:', err)
+      reject(err)
+    })
+    worker.on('exit', (code) => {
+      if (code !== 0) console.warn(`[incrementalSyncWorker] Worker stopped with exit code ${code}`)
+    })
+  })
+}
+
+export function scanDriveInWorker(
+  drivePath: string,
+  scanPath: string,
+  onProgress: (count: number) => void
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const workerScript = join(__dirname, 'scanWorker.js')
+    console.log(`[scanDriveInWorker] Spawning worker_thread for: ${scanPath} (script: ${workerScript})`)
+    const worker = new Worker(workerScript, {
+      workerData: {
+        drivePath,
+        scanPath,
+        dbPath
+      }
+    })
+
+    let finalCount = 0
+
+    worker.on('message', (msg) => {
+      if (msg.type === 'progress') {
+        onProgress(msg.count)
+      } else if (msg.type === 'complete') {
+        finalCount = msg.count
+        onProgress(finalCount)
+        resolve(finalCount)
+      } else if (msg.type === 'error') {
+        console.error('[scanWorker error]:', msg.error)
+        reject(new Error(msg.error))
+      }
+    })
+
+    worker.on('error', (err) => {
+      console.error('[scanWorker process error]:', err)
+      reject(err)
+    })
+
+    worker.on('exit', (code) => {
+      if (code !== 0) {
+        console.warn(`[scanWorker] Worker stopped with exit code ${code}`)
+      }
+    })
+  })
+}
+
+export function spawnScanUtilityProcess(
+  drivePath: string,
+  scanPath: string,
+  onProgress: (count: number) => void,
+  onElevationStatus?: (status: { isElevated: boolean; message: string }) => void
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const utilityScript = join(__dirname, 'scanUtility.js')
+    console.log(`[spawnScanUtilityProcess] Spawning Electron utilityProcess for ${drivePath} (script: ${utilityScript})`)
+
+    const child = utilityProcess.fork(utilityScript, [drivePath, scanPath, dbPath])
+    let finalCount = 0
+
+    child.on('message', (msg: any) => {
+      if (msg.type === 'elevation-status' && onElevationStatus) {
+        onElevationStatus({ isElevated: msg.isElevated, message: msg.message })
+      } else if (msg.type === 'progress') {
+        onProgress(msg.count)
+      } else if (msg.type === 'complete') {
+        finalCount = msg.count
+        onProgress(finalCount)
+        resolve(finalCount)
+      } else if (msg.type === 'error') {
+        console.error('[scanUtility error]:', msg.error)
+        reject(new Error(msg.error))
+      }
+    })
+
+    child.on('exit', (code) => {
+      if (code !== 0) {
+        console.warn(`[scanUtility] Process exited with code ${code}`)
+      }
+    })
+  })
 }

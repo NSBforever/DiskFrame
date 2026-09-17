@@ -138,6 +138,14 @@ export default function DriveSelectGrid({ onSelectDrive, drives: propDrives, dri
 
   return (
     <div className="drive-grid-container">
+      <div style={{ textAlign: 'center', marginBottom: '32px' }}>
+        <h1 style={{ fontSize: '20px', fontWeight: 800, color: '#ffffff', letterSpacing: '2px', textTransform: 'uppercase', margin: 0 }}>
+          SELECT A DRIVE
+        </h1>
+        <div style={{ fontSize: '11px', color: '#8a8a8f', marginTop: '6px', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 600 }}>
+          Choose a storage volume to scan and organize media files
+        </div>
+      </div>
       <div className="drive-grid">
         {drives.map((drive) => (
           <button
@@ -155,7 +163,7 @@ export default function DriveSelectGrid({ onSelectDrive, drives: propDrives, dri
               {drive.label}
             </div>
             <div className="drive-space">
-              {formatBytes(drive.totalBytes - drive.freeBytes)} used of {formatBytes(drive.totalBytes)}
+              {formatBytes(drive.totalBytes - drive.freeBytes)} used of {formatBytes(drive.totalBytes)} — {formatBytes(drive.freeBytes)} free
             </div>
             <div className="drive-progress">
               <div
