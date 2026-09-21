@@ -7,7 +7,9 @@ import {
   isUsableCaptureDate,
   isMassRemoval,
   isIndexableMedia,
-  canHaveThumbnail
+  canHaveThumbnail,
+  isGeneratedAsset,
+  isIndexableUserMedia
 } from './validation.ts'
 
 test('isSafeLocalPath accepts absolute local paths', () => {
@@ -119,4 +121,41 @@ test('canHaveThumbnail excludes documents that reach the index legitimately', ()
   assert.ok(canHaveThumbnail('C:\\x\\a.mov'))
   assert.ok(!canHaveThumbnail('C:\\x\\a.pdf'), 'indexed, but no thumbnail pipeline')
   assert.ok(!canHaveThumbnail('C:\\x\\a.txt'))
+})
+
+// Regression: the app's own generated thumbnails were indexed as photos, so
+// every video and photo appeared a second time as a tile of its own thumbnail.
+// Measured on a real library: 25,974 such rows, 25,873 of them exactly some
+// other row's `thumb`.
+test('isGeneratedAsset catches the app own output', () => {
+  assert.ok(isGeneratedAsset('C:\\Users\\me\\AppData\\Roaming\\diskframe\\thumbs\\a257529c.jpg'))
+  assert.ok(isGeneratedAsset('C:\\Users\\me\\AppData\\Roaming\\diskframe\\heic_cache\\x.jpg'))
+  assert.ok(isGeneratedAsset('C:\\Users\\me\\AppData\\Roaming\\diskframe\\transcoded\\x.mp4'))
+  assert.ok(isGeneratedAsset('C:\\Users\\me\\AppData\\Local\\DiskFrame-Diagnostics\\thumbs\\x.jpg'))
+  assert.ok(isGeneratedAsset('C:\\Temp\\df_raw_1c5d198e_1789.png'), 'temp extraction frame')
+  assert.ok(isGeneratedAsset('C:\\proj\\node_modules\\pkg\\demo.jpg'))
+})
+
+test('isGeneratedAsset handles forward slashes too', () => {
+  assert.ok(isGeneratedAsset('C:/Users/me/AppData/Roaming/diskframe/thumbs/a.jpg'))
+})
+
+// The vault holds real user media the app relocated. Those rows are genuine.
+test('isGeneratedAsset does not touch the vault or real media', () => {
+  assert.ok(!isGeneratedAsset('C:\\Users\\me\\AppData\\Roaming\\diskframe\\vault\\abc.jpg'), 'vault is real media')
+  assert.ok(!isGeneratedAsset('C:\\Users\\me\\Pictures\\thumbs of my trip\\a.jpg'), 'user folder merely named thumbs')
+  assert.ok(!isGeneratedAsset('E:\\Camera Roll\\IMG_1131.mov'))
+  assert.ok(!isGeneratedAsset(''))
+})
+
+test('isIndexableUserMedia combines both rules', () => {
+  assert.ok(isIndexableUserMedia('E:\\trip\\IMG_1131.mov'))
+  assert.ok(!isIndexableUserMedia('C:\\x\\AppData\\Roaming\\diskframe\\thumbs\\a.jpg'), 'generated')
+  assert.ok(!isIndexableUserMedia('C:\\x\\notes.ts'), 'not media at all')
+})
+
+test('isGeneratedAsset excludes the app own build output', () => {
+  assert.ok(isGeneratedAsset('C:\\Users\\me\\diskframe\\out\\renderer\\assets\\earth-dark.jpg'))
+  assert.ok(isGeneratedAsset('C:\\Users\\me\\diskframe\\dist\\win-unpacked\\x.png'))
+  assert.ok(!isGeneratedAsset('C:\\Users\\me\\Pictures\\out\\holiday.jpg'), 'a user folder named out')
 })

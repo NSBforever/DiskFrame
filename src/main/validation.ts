@@ -35,6 +35,44 @@ export function canHaveThumbnail(filePath: string): boolean {
   return thumbnailExts.includes(extensionOf(filePath))
 }
 
+/**
+ * Assets DiskFrame produced itself, which must never enter the media index.
+ *
+ * Every generated thumbnail was being indexed as a photo in its own right, so
+ * each video and photo appeared twice: once as itself, and once as a tile
+ * showing its own thumbnail. Measured on a real library: 25,974 such rows, of
+ * which 25,873 were exactly some other row's `thumb`.
+ *
+ * `vault/` is deliberately NOT excluded - that holds real user media the app
+ * moved there, and those rows are genuine.
+ */
+const GENERATED_DIR_SEGMENTS = [
+  'diskframe\\thumbs\\',
+  'diskframe\\heic_cache\\',
+  'diskframe\\transcoded\\',
+  'diskframe-diagnostics\\thumbs\\',
+  'node_modules\\',
+  // The app's own build output, which ships sample imagery.
+  'diskframe\\out\\',
+  'diskframe\\dist\\'
+]
+
+export function isGeneratedAsset(filePath: string): boolean {
+  if (typeof filePath !== 'string' || !filePath) return false
+  const p = filePath.toLowerCase().replace(/\//g, '\\')
+  for (const seg of GENERATED_DIR_SEGMENTS) if (p.includes(seg)) return true
+  // Temporary frames extracted while building a video thumbnail.
+  const slash = p.lastIndexOf('\\')
+  const name = slash === -1 ? p : p.slice(slash + 1)
+  if (name.startsWith('df_raw_')) return true
+  return false
+}
+
+/** Indexable AND not something the app generated. */
+export function isIndexableUserMedia(filePath: string): boolean {
+  return isIndexableMedia(filePath) && !isGeneratedAsset(filePath)
+}
+
 /** Absolute local paths only - no UNC shares, no relative or traversal input. */
 export function isSafeLocalPath(value: unknown): value is string {
   if (typeof value !== 'string' || value.length === 0 || value.length > 4096) return false

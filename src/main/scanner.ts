@@ -17,7 +17,8 @@ import {
 import {
   isUsableCaptureDate,
   isMassRemoval,
-  isIndexableMedia,
+  isGeneratedAsset,
+  isIndexableUserMedia,
   videoExts,
   allExts,
   thumbnailExts
@@ -1023,7 +1024,10 @@ export async function updateFileInPlace(filePath: string, statInput?: fs.Stats):
   // activity filed .ts, .json, .db, settings.dat and extensionless files like
   // "Local State" into a media index, then queued each one for thumbnail
   // generation. Guarding here covers every caller at once.
-  if (!isIndexableMedia(filePath)) return null
+  // Also excludes the app's own thumbnails, cache and temp frames. Indexing
+  // those made every photo and video appear twice: once as itself, and once as
+  // a tile of its own generated thumbnail.
+  if (!isIndexableUserMedia(filePath)) return null
 
   let stat = statInput
   if (!stat) {
@@ -1131,6 +1135,34 @@ export function recordMovedFile(srcPath: string, destPath: string, destDrive: st
   recordCopiedFile(srcPath, destPath, destDrive)
 }
 
+/**
+ * Removes index rows for assets DiskFrame generated itself.
+ *
+ * Deliberately deletes ROWS ONLY. removeFileRecord() unlinks the thumbnail file
+ * it finds in the row, and here the row's own path IS a thumbnail that some
+ * other row still depends on - using it would delete the thumbnails of the very
+ * media we are trying to fix. Nothing on disk is touched.
+ *
+ * Idempotent, so it can run on every launch as a migration.
+ */
+export function purgeGeneratedAssetRows(): { removed: number; scanned: number } {
+  const candidates = db
+    .prepare('SELECT id, path FROM files')
+    .all() as { id: number; path: string }[]
+  const doomed = candidates.filter((r) => isGeneratedAsset(r.path))
+  if (doomed.length === 0) return { removed: 0, scanned: candidates.length }
+
+  const del = db.prepare('DELETE FROM files WHERE id = ?')
+  const tx = db.transaction((rows: { id: number }[]) => {
+    for (const r of rows) del.run(r.id)
+  })
+  tx(doomed)
+  console.log(
+    `[purge] removed ${doomed.length} generated-asset index rows (files on disk untouched)`
+  )
+  return { removed: doomed.length, scanned: candidates.length }
+}
+
 // ─── PAGINATED LIBRARY READS ─────────────────────────────────────────────────
 /** Hard ceiling on a single page, so a bad or hostile request cannot ask for
  *  the whole library in one call and undo the point of paginating. */
@@ -1218,7 +1250,7 @@ export function indexSampleFolder(folder: string, maxFiles: number): { count: nu
       }
       if (!entry.isFile()) continue
       const fullPath = join(dir, entry.name)
-      if (!isIndexableMedia(fullPath)) {
+      if (!isIndexableUserMedia(fullPath)) {
         skipped++
         continue
       }

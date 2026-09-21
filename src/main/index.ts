@@ -47,7 +47,8 @@ import {
   SAMPLE_DRIVE_KEY,
   getLibrarySummary,
   getLibraryPage,
-  MAX_PAGE_SIZE
+  MAX_PAGE_SIZE,
+  purgeGeneratedAssetRows
 } from './scanner'
 import type { LibraryQuery } from './libraryQuery'
 
@@ -417,6 +418,15 @@ app.whenReady().then(() => {
   } catch (err) {
     console.error('[startup] crashReporter unavailable', err)
   }
+  // One-time (idempotent) cleanup of index rows for the app's own generated
+  // thumbnails and cache files. Rows only - nothing on disk is removed.
+  try {
+    const purged = purgeGeneratedAssetRows()
+    if (purged.removed > 0) diag('purge', `removed ${purged.removed} generated-asset rows of ${purged.scanned} scanned`)
+  } catch (err) {
+    console.error('[purge] failed', err)
+  }
+
   // Auto-purge permanently deletes trashed files older than 30 days. A
   // diagnostic session must never destroy anything, so it stays off there.
   if (safeMode.enabled) {

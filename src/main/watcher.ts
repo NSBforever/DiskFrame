@@ -2,7 +2,7 @@ import chokidar, { FSWatcher } from 'chokidar'
 import * as fs from 'fs'
 import { BrowserWindow } from 'electron'
 import { updateFileInPlace, removeFileRecord, getGroupedFiles, getFileIno, relinkMovedFile } from './scanner'
-import { isIndexableMedia } from './validation'
+import { isIndexableUserMedia } from './validation'
 
 // How long a removed file's inode is remembered as a "possible move" before
 // being treated as a genuine delete. Windows reports a move/rename as a plain
@@ -88,7 +88,7 @@ export class WatcherManager {
   }
 
   private handleUnlink(filePath: string, driveKey: string): void {
-    if (!isIndexableMedia(filePath)) return
+    if (!isIndexableUserMedia(filePath)) return
 
     if (this.pendingUnlinks.has(filePath)) {
       clearTimeout(this.pendingUnlinks.get(filePath)!)
@@ -123,7 +123,7 @@ export class WatcherManager {
   private async handleAddOrChange(filePath: string, driveKey: string): Promise<void> {
     // Cheap reject before any stat or database work - most watcher traffic on a
     // real machine is not media.
-    if (!isIndexableMedia(filePath)) return
+    if (!isIndexableUserMedia(filePath)) return
 
     // If pending unlink existed for this path, cancel it (coalesced replacement)
     if (this.pendingUnlinks.has(filePath)) {
