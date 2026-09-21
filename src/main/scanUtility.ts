@@ -122,7 +122,13 @@ async function executeScan(drivePath: string, scanPath: string, dbPath: string):
           const ext = item.ext ? item.ext.toLowerCase() : ''
           if (!allExts.includes(ext)) continue
 
-          const date = new Date(item.mtime_ms || Date.now())
+          // A missing MFT timestamp used to fall back to Date.now(), which
+          // filed the record under today. Records without a usable timestamp
+          // are skipped so the incremental pass can pick them up from a real
+          // stat() instead of inventing a date.
+          if (!item.mtime_ms) continue
+          const date = new Date(item.mtime_ms)
+          if (isNaN(date.getTime())) continue
           batch.push([
             item.path,
             item.name,
@@ -135,7 +141,7 @@ async function executeScan(drivePath: string, scanPath: string, dbPath: string):
             null,
             drivePath,
             null,
-            item.mtime_ms || Date.now(),
+            item.mtime_ms,
             null
           ])
           count++

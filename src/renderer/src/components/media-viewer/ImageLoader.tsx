@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { imageCache } from './ImageCache'
+import { useReducedMotionPref } from '../../hooks/useReducedMotionPref'
 import {
   Play,
   Pause,
@@ -37,6 +38,9 @@ interface ImageLoaderProps {
   onImageLoaded: (dimensions: { width: number; height: number }) => void
   onNext?: () => void
   onPrev?: () => void
+  /** True during the close animation, before unmount - stop audio immediately
+   * rather than letting it play through the animation. */
+  isClosing?: boolean
 }
 
 const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif']
@@ -56,7 +60,8 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   translateY,
   onImageLoaded,
   onNext,
-  onPrev
+  onPrev,
+  isClosing
 }) => {
   const [highResSrc, setHighResSrc] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -86,8 +91,35 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   const [isMuted, setIsMuted] = useState(false)
   const [playbackSpeed, setPlaybackSpeed] = useState(1.0)
   const [controlsVisible, setControlsVisible] = useState(true)
+  const [pointerOverControls, setPointerOverControls] = useState(false)
+  const [controlsFocused, setControlsFocused] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
-  const lastMouseMoveRef = useRef(Date.now())
+  const hideTimerRef = useRef<number | undefined>(undefined)
+  const reducedMotion = useReducedMotionPref()
+
+  // Single source of truth for "something happened, controls should be
+  // visible for the next 3s" - both DOM mousemove and mpv's own forwarded
+  // mouse-pos activity (see the mpv-property-change effect below) call this.
+  const registerActivity = useCallback(() => {
+    setControlsVisible(true)
+    window.clearTimeout(hideTimerRef.current)
+    hideTimerRef.current = window.setTimeout(() => setControlsVisible(false), 3000)
+  }, [])
+
+  // Show immediately when the player opens or the video changes, and cancel
+  // any timer left over from the previous file.
+  useEffect(() => {
+    if (!isVideo) return
+    registerActivity()
+    return () => window.clearTimeout(hideTimerRef.current)
+  }, [isVideo, file.path, registerActivity])
+
+  // Decoded originals are large (tens of MB each). Holding them past the life
+  // of the viewer is what let renderer memory climb across repeated open/close
+  // cycles without ever coming back down.
+  useEffect(() => {
+    return () => imageCache.clear()
+  }, [])
 
   // Preloading adjacent files
   useEffect(() => {
@@ -304,6 +336,11 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
             setPlaybackSpeed(value)
           }
           break
+        case 'mouse-pos':
+          // mpv's own embedded window forwards its mouse activity here since
+          // it never reaches the DOM directly (see mpvManager.ts).
+          registerActivity()
+          break
         case 'width':
           if (typeof value === 'number') {
             mpvWidthRef.current = value
@@ -326,7 +363,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
     return () => {
       unbindChange()
     }
-  }, [videoMode, onImageLoaded])
+  }, [videoMode, onImageLoaded, registerActivity])
 
   // Time Updates & Metadata Loaded Binds
   const handleTimeUpdate = () => {
@@ -353,7 +390,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   }
 
   // Play/Pause callbacks
-  const togglePlay = () => {
+  const togglePlay = useCallback(() => {
     if (videoMode === 'mpv') {
       window.api.sendMpvCommand('set_property', ['pause', isPlaying])
     } else {
@@ -365,7 +402,18 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
         setIsPlaying(false)
       }
     }
-  }
+  }, [videoMode, isPlaying])
+
+  // Stop audio immediately on close request, rather than letting it play
+  // through the ~320ms close animation before unmount actually tears it down.
+  useEffect(() => {
+    if (!isClosing || !isVideo) return
+    if (videoMode === 'mpv') {
+      window.api.sendMpvCommand('set_property', ['pause', true])
+    } else if (videoRef.current) {
+      videoRef.current.pause()
+    }
+  }, [isClosing, isVideo, videoMode])
 
   const handlePlay = () => setIsPlaying(true)
   const handlePause = () => setIsPlaying(false)
@@ -478,7 +526,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
     }
   }
 
-  const toggleMute = () => {
+  const toggleMute = useCallback(() => {
     const nextMute = !isMuted
     setIsMuted(nextMute)
     if (videoMode === 'mpv') {
@@ -487,7 +535,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
       if (!videoRef.current) return
       videoRef.current.muted = nextMute
     }
-  }
+  }, [isMuted, videoMode])
 
   // Playback multiplier rate selection
   const handleSpeedChange = (rate: number) => {
@@ -501,7 +549,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   }
 
   // Local fullscreen triggers
-  const toggleFullscreen = () => {
+  const toggleFullscreen = useCallback(() => {
     if (!videoContainerRef.current) return
     if (!document.fullscreenElement) {
       videoContainerRef.current.requestFullscreen().catch((err) => console.error(err))
@@ -510,7 +558,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
       document.exitFullscreen().catch(() => {})
       setIsFullscreen(false)
     }
-  }
+  }, [])
 
   useEffect(() => {
     const handleFsChange = () => {
@@ -520,30 +568,35 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
     return () => document.removeEventListener('fullscreenchange', handleFsChange)
   }, [])
 
-  // Auto-hide control bar listener after 3s inactivity
+  // DOM mousemove anywhere over the player counts as activity. This covers
+  // the chrome/toolbar area and the native/stream <video> path; the mpv path
+  // is covered separately via the mouse-pos forwarding above.
   useEffect(() => {
     if (!isVideo) return
-    const handleMouseMove = () => {
-      setControlsVisible(true)
-      lastMouseMoveRef.current = Date.now()
-    }
     const container = videoContainerRef.current
-    if (container) {
-      container.addEventListener('mousemove', handleMouseMove)
-    }
-    const timer = setInterval(() => {
-      if (Date.now() - lastMouseMoveRef.current > 3000) {
-        setControlsVisible(false)
-      }
-    }, 500)
+    if (!container) return
+    container.addEventListener('mousemove', registerActivity)
+    return () => container.removeEventListener('mousemove', registerActivity)
+  }, [isVideo, registerActivity])
 
-    return () => {
-      if (container) {
-        container.removeEventListener('mousemove', handleMouseMove)
-      }
-      clearInterval(timer)
+  // Conditions that must keep the controls visible regardless of the timer:
+  // paused, actively seeking, pointer resting over the controls themselves,
+  // the speed menu open, or a control focused via keyboard. When none of
+  // these hold anymore, that's the moment interaction "ends" - restart the
+  // timer fresh from now rather than leaving whatever was left of the old one.
+  const forceVisible = !isPlaying || isDraggingSeek || pointerOverControls || showSpeedMenu || controlsFocused
+  useEffect(() => {
+    if (!isVideo) return
+    if (forceVisible) {
+      window.clearTimeout(hideTimerRef.current)
+      setControlsVisible(true)
+    } else {
+      registerActivity()
     }
-  }, [isVideo])
+  }, [isVideo, forceVisible, registerActivity])
+
+  // Idle-playback cursor hiding, restored immediately on any activity.
+  const hideCursor = isVideo && isPlaying && !controlsVisible && !forceVisible
 
   // Capture-phase keydown listener for strict keyboard shortcuts overrides
   useEffect(() => {
@@ -673,7 +726,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
     return `${m}:${s < 10 ? '0' : ''}${s}`
   }
 
-  const showControls = controlsVisible || !isPlaying
+  const showControls = controlsVisible || forceVisible
 
   const thumbSrc = file.thumb ? toUrl(file.thumb) : null
   const mediaSrc = toUrl(file.path)
@@ -774,7 +827,8 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
             alignItems: 'center',
             justifyContent: 'center',
             position: 'relative',
-            background: videoMode === 'mpv' ? 'transparent' : '#000'
+            background: videoMode === 'mpv' ? 'transparent' : '#000',
+            cursor: hideCursor ? 'none' : 'default'
           }}
         >
           {(!videoError && (videoMode === 'mpv' || videoUrl)) ? (
@@ -842,6 +896,11 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
 
               {/* Custom YouTube-style Video Control Overlay */}
               <div
+                className="media-viewer-controls"
+                onMouseEnter={() => setPointerOverControls(true)}
+                onMouseLeave={() => setPointerOverControls(false)}
+                onFocus={() => setControlsFocused(true)}
+                onBlur={() => setControlsFocused(false)}
                 style={{
                   position: 'absolute',
                   bottom: 0,
@@ -854,8 +913,10 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
                   flexDirection: 'column',
                   justifyContent: 'flex-end',
                   opacity: showControls ? 1 : 0,
-                  transform: showControls ? 'translateY(0)' : 'translateY(8px)',
-                  transition: 'opacity 0.25s cubic-bezier(0.22, 1, 0.36, 1), transform 0.25s cubic-bezier(0.22, 1, 0.36, 1)',
+                  transform: reducedMotion || showControls ? 'translateY(0)' : 'translateY(8px)',
+                  transition: reducedMotion
+                    ? 'opacity 0.2s linear'
+                    : 'opacity 0.2s cubic-bezier(0.22, 1, 0.36, 1), transform 0.2s cubic-bezier(0.22, 1, 0.36, 1)',
                   zIndex: 200,
                   pointerEvents: showControls ? 'auto' : 'none',
                   userSelect: 'none',

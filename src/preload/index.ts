@@ -3,6 +3,7 @@ import { electronAPI } from '@electron-toolkit/preload'
 
 const api = {
   getDrives: () => ipcRenderer.send('get-drives'),
+  getDriveFileCounts: () => ipcRenderer.invoke('get-drive-file-counts'),
   onDrivesUpdated: (cb: (drives: unknown[]) => void) => {
     const listener = (_e: unknown, d: any) => cb(d)
     ipcRenderer.on('drives-updated', listener)
@@ -26,7 +27,7 @@ const api = {
       ipcRenderer.removeListener('scan-complete', listener)
     }
   },
-  onFilesUpdated: (cb: (g: Record<string, unknown[]>) => void) => {
+  onFilesUpdated: (cb: (payload: { drive: string; groups: Record<string, unknown[]>; reason: string }) => void) => {
     const listener = (_e: unknown, g: any) => cb(g)
     ipcRenderer.on('files-updated', listener)
     return () => {
@@ -132,9 +133,15 @@ const api = {
       ipcRenderer.removeListener('native-drag-error', listener)
     }
   },
-  getBenchmarkMetrics: () => ipcRenderer.invoke('get-benchmark-metrics'),
   incrementalSyncDrive: (drivePath: string) => ipcRenderer.invoke('incremental-sync-drive', drivePath),
   getVolumeId: (drivePath: string) => ipcRenderer.invoke('get-volume-id', drivePath),
+  onSafeModeSample: (cb: (d: { drive: string; folder: string; count: number }) => void) => {
+    const listener = (_e: unknown, d: any) => cb(d)
+    ipcRenderer.on('safe-mode-sample', listener)
+    return () => {
+      ipcRenderer.removeListener('safe-mode-sample', listener)
+    }
+  },
   onElevationStatus: (cb: (d: { isElevated: boolean; message: string }) => void) => {
     const listener = (_e: unknown, d: any) => cb(d)
     ipcRenderer.on('elevation-status', listener)

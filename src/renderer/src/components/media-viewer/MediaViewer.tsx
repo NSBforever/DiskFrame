@@ -191,7 +191,9 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
     }
   }, [isFullscreen])
 
-  // Escape key down listener for closing lightbox viewer cleanly
+  // Escape key down listener - one press closes the viewer and returns to the
+  // gallery at its previous scroll position, exiting fullscreen as part of
+  // that same action rather than requiring a second press.
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -203,6 +205,9 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
             active.getAttribute('contenteditable') === 'true')
         ) {
           return // Let the active input element handle the Escape press internally
+        }
+        if (document.fullscreenElement) {
+          document.exitFullscreen().catch(() => {})
         }
         handleClose()
       }
@@ -217,7 +222,6 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
     onPrev: handlePrev,
     onFirst: handleFirst,
     onLast: handleLast,
-    onClose: handleClose,
     onZoomIn: () => zoomTo(scale + 0.5),
     onZoomOut: () => zoomTo(scale - 0.5),
     onZoomReset: reset,
@@ -546,6 +550,7 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
           onImageLoaded={setImgDimensions}
           onNext={handleNext}
           onPrev={handlePrev}
+          isClosing={isClosing}
         />
       </div>
 

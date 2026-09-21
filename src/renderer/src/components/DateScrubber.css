@@ -1,0 +1,85 @@
+.date-scrubber {
+  position: fixed;
+  right: 6px;
+  top: 90px;
+  bottom: 60px;
+  width: 44px;
+  z-index: 1500;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+}
+
+.date-scrubber:focus-visible {
+  outline: 2px solid #e11d2e;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.date-scrubber-track {
+  position: absolute;
+  right: 6px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 1px;
+}
+
+.date-scrubber-year {
+  position: absolute;
+  right: 12px;
+  transform: translateY(-50%);
+  font-size: 9px;
+  font-weight: 700;
+  color: #8a8a8f;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.date-scrubber-tick {
+  position: absolute;
+  right: 5px;
+  width: 4px;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.18);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.date-scrubber-current {
+  position: absolute;
+  right: 3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #e11d2e;
+  box-shadow: 0 0 6px rgba(225, 29, 46, 0.6);
+  transform: translate(2px, -50%);
+  transition: top 0.15s ease-out;
+  pointer-events: none;
+}
+
+.date-scrubber-label {
+  position: absolute;
+  right: 52px;
+  transform: translateY(-50%);
+  background: #1b1b1f;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #f2f2f0;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 5px 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .date-scrubber-current {
+    transition: none;
+  }
+}

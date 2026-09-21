@@ -11,6 +11,12 @@ let ipcSocket: net.Socket | null = null
 let currentPipeName = ''
 let hostWindowRef: BrowserWindow | null = null
 let cachedRelativeBounds = { left: 0, top: 0, width: 0, height: 0 }
+// closeMpv() kills the process, which fires 'close' with a non-zero code and
+// used to be reported to the renderer as a playback failure. The renderer
+// reacts to that by falling back to the stream server, i.e. spawning an ffmpeg
+// transcode for a video the user just closed. Set while we are the ones doing
+// the killing so a deliberate shutdown is not mistaken for a crash.
+let closingDeliberately = false
 
 function getMpvPath(): string {
   const isDev = !app.isPackaged
@@ -164,8 +170,13 @@ export async function initMpv(
     }
   })
 
+  const thisProcess = mpvProcess
   mpvProcess.on('close', (code) => {
     console.log('[mpvManager] Process closed with code:', code)
+    // Only report a failure for the session that is still current and that we
+    // did not kill ourselves. A late 'close' from a previous video would
+    // otherwise make the video now on screen fall back to transcoding.
+    if (closingDeliberately || thisProcess !== mpvProcess) return
     if (code !== 0 && hostWindow && !hostWindow.isDestroyed()) {
       hostWindow.webContents.send('mpv-error', { error: `MPV exited with code ${code}` })
     }
@@ -232,6 +243,13 @@ function setupIpcListeners(socket: net.Socket, hostWindow: BrowserWindow) {
   sendCommand(socket, ['observe_property', 7, 'hwdec-current'])
   sendCommand(socket, ['observe_property', 8, 'width'])
   sendCommand(socket, ['observe_property', 9, 'height'])
+  // mpv embeds as a real native child window (--wid), so mouse events over the
+  // video pixels go to mpv's own window, never to the DOM - the renderer's
+  // mousemove-driven controls-visibility timer would otherwise never fire
+  // while hovering the video itself. Observing mouse-pos gives mpv's own
+  // input as an activity signal we can forward back over the existing
+  // mpv-property-change channel.
+  sendCommand(socket, ['observe_property', 10, 'mouse-pos'])
 
   let hasTriedHwdecFallback = false
   let buffer = ''
@@ -280,19 +298,23 @@ export function sendMpvCommand(command: string, args: any[]) {
 
 export function closeMpv() {
   console.log('[mpvManager] Closing active mpv session')
+  closingDeliberately = true
 
   if (ipcSocket) {
     try {
+      ipcSocket.removeAllListeners()
       ipcSocket.destroy()
     } catch {}
     ipcSocket = null
   }
 
   if (mpvProcess) {
-    try {
-      mpvProcess.kill('SIGKILL')
-    } catch {}
+    const proc = mpvProcess
     mpvProcess = null
+    try {
+      proc.removeAllListeners('error')
+      proc.kill('SIGKILL')
+    } catch {}
   }
 
   if (mpvWindow) {
@@ -303,4 +325,9 @@ export function closeMpv() {
   }
 
   hostWindowRef = null
+  // Cleared on the next tick so the 'close' event this kill produces is still
+  // seen as deliberate.
+  setTimeout(() => {
+    closingDeliberately = false
+  }, 0)
 }

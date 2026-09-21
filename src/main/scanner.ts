@@ -7,6 +7,14 @@ import { app, utilityProcess } from 'electron'
 import sharp from 'sharp'
 import { createHash } from 'crypto'
 import { Worker } from 'worker_threads'
+import {
+  isUsableCaptureDate,
+  isMassRemoval,
+  isIndexableMedia,
+  videoExts,
+  allExts,
+  thumbnailExts
+} from './validation'
 
 function resolveFfmpeg(): string {
   try {
@@ -43,6 +51,22 @@ function resolveFfprobe(): string {
   return 'ffprobe'
 }
 const ffprobeExe = resolveFfprobe()
+
+// sharp is libvips in-process in the main process, so when it faults it takes
+// the whole app with it - which is exactly what the confirmed crash was
+// (electron.exe, faulting module sharp-win32-x64.node, 0xc0000409 / BEX64).
+// Two defaults make that far more likely under a bulk thumbnail pass:
+//   - concurrency defaults to one thread per CPU core, so a single call can
+//     fan out to 16 native threads here, multiplied by our own queue width;
+//   - cache() keeps decoded operation results in native memory, invisible to
+//     V8 and to any JS-side accounting.
+// Both are pinned down. Thumbnailing is throughput-insensitive background work.
+try {
+  sharp.concurrency(1)
+  sharp.cache(false)
+} catch (err) {
+  console.error('[sharp] could not apply concurrency/cache limits', err)
+}
 
 function parseISO6709(locStr: string): { lat: number; lng: number } | null {
   const regex = /^([+-]\d+(?:\.\d+)?)([+-]\d+(?:\.\d+)?)(?:[+-]\d+(?:\.\d+)?)?\/$/
@@ -219,6 +243,19 @@ if (!cols.includes('trashed_at')) db.prepare('ALTER TABLE files ADD COLUMN trash
 if (!cols.includes('mtime')) db.prepare('ALTER TABLE files ADD COLUMN mtime INTEGER').run()
 if (!cols.includes('hash')) db.prepare('ALTER TABLE files ADD COLUMN hash TEXT').run()
 if (!cols.includes('ino')) db.prepare('ALTER TABLE files ADD COLUMN ino INTEGER').run()
+// Marks rows the capture-date backfill has already looked at, so the pass is
+// resumable across launches instead of re-parsing the whole library each time.
+if (!cols.includes('exif_checked'))
+  db.prepare('ALTER TABLE files ADD COLUMN exif_checked INTEGER DEFAULT 0').run()
+
+// Left behind by an older schema that had an `is_vaulted` column. SQLite keeps
+// the index definition around, and every write to `files` has to consider it.
+try {
+  db.prepare('DROP INDEX IF EXISTS idx_files_vaulted').run()
+} catch {
+  /* index referenced a dropped column - nothing to clean up */
+}
+
 
 const deletePrefsCols = (db.prepare('PRAGMA table_info(delete_prefs)').all() as { name: string }[]).map((c) => c.name)
 if (!deletePrefsCols.includes('tile_size')) {
@@ -405,32 +442,6 @@ export function unhideFile(filePath: string, pin: string): boolean {
   }
 }
 
-export function deleteFileToRecycleBin(filePath: string): boolean {
-  try {
-    // Use PowerShell to send to recycle bin on Windows
-    const script = `Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('${filePath.replace(/'/g, "''")}', 'OnlyErrorDialogs', 'SendToRecycleBin')`
-    cp.execSync(`powershell -Command "${script}"`, { timeout: 10000 })
-    db.prepare('DELETE FROM files WHERE path = ?').run(filePath)
-    return true
-  } catch (e) {
-    console.error('[delete] recycle bin failed', e)
-    return false
-  }
-}
-
-export function deleteMultipleToRecycleBin(filePaths: string[]): {
-  success: string[]
-  failed: string[]
-} {
-  const success: string[] = []
-  const failed: string[] = []
-  for (const p of filePaths) {
-    if (deleteFileToRecycleBin(p)) success.push(p)
-    else failed.push(p)
-  }
-  return { success, failed }
-}
-
 // ─── TRASH / RECYCLE BIN LIFECYCLE ───────────────────────────────────────────
 export function getTrashedFiles(): ScannedFile[] {
   return db
@@ -561,12 +572,20 @@ export async function autoPurgeTrash(): Promise<void> {
 }
 
 // ─── GROUPED FILES (exclude hidden and trashed) ──────────────────────────────
+// Only the columns the renderer actually reads. `SELECT *` also shipped id,
+// locked, hidden, vault_path, mtime, hash and ino for every row - dead weight
+// in a payload that is structured-cloned across the IPC boundary and then held
+// in the renderer heap for the whole session (measured: ~17MB of JSON for a
+// 40k-file drive before this).
+const GROUPED_COLS =
+  'path, name, ext, size, date, year, month, lat, lng, drive, favourited, thumb'
+
 export function getGroupedFiles(drivePath?: string): Record<string, ScannedFile[]> {
   const files = drivePath
     ? (db
-        .prepare('SELECT * FROM files WHERE drive = ? AND hidden = 0 AND trashed_at IS NULL ORDER BY date DESC')
+        .prepare(`SELECT ${GROUPED_COLS} FROM files WHERE drive = ? AND hidden = 0 AND trashed_at IS NULL ORDER BY date DESC`)
         .all(drivePath) as ScannedFile[])
-    : (db.prepare('SELECT * FROM files WHERE hidden = 0 AND trashed_at IS NULL ORDER BY date DESC').all() as ScannedFile[])
+    : (db.prepare(`SELECT ${GROUPED_COLS} FROM files WHERE hidden = 0 AND trashed_at IS NULL ORDER BY date DESC`).all() as ScannedFile[])
 
   const grouped: Record<string, ScannedFile[]> = {}
   for (const file of files) {
@@ -585,10 +604,15 @@ export function getFavourites(): ScannedFile[] {
     .all() as ScannedFile[]
 }
 
-export function toggleFavourite(filePath: string): void {
+/** Returns the resulting state, so callers don't need a second read. */
+export function toggleFavourite(filePath: string): boolean {
   db.prepare(
     'UPDATE files SET favourited = CASE WHEN favourited = 1 THEN 0 ELSE 1 END WHERE path = ?'
   ).run(filePath)
+  const row = db.prepare('SELECT favourited FROM files WHERE path = ?').get(filePath) as
+    | { favourited: number }
+    | undefined
+  return (row?.favourited ?? 0) === 1
 }
 
 export function getFileCount(drivePath?: string): number {
@@ -602,33 +626,42 @@ export function getFileCount(drivePath?: string): number {
   return row.count
 }
 
-export function getFilesWithoutThumbs(drivePath: string): ScannedFile[] {
-  return db
-    .prepare("SELECT * FROM files WHERE drive = ? AND (thumb IS NULL OR thumb = '') AND trashed_at IS NULL ORDER BY date DESC")
-    .all(drivePath) as ScannedFile[]
+// The drive-select screen's "indexed" status must reflect the real DB count,
+// not the renderer's session cache (which is empty for any drive not opened
+// yet this session - showing "not indexed" for drives that actually are).
+export function getFileCountsByDrive(): Record<string, number> {
+  const rows = db
+    .prepare("SELECT drive, COUNT(*) as count FROM files WHERE trashed_at IS NULL AND drive IS NOT NULL AND drive != '' GROUP BY drive")
+    .all() as { drive: string; count: number }[]
+  const result: Record<string, number> = {}
+  for (const r of rows) result[r.drive] = r.count
+  return result
 }
 
+// Restricted to extensions a thumbnail can actually be produced from. The
+// unrestricted version handed the backfill thousands of .db/.json/.ts/no-ext
+// rows, each costing a failed sharp or ffmpeg spawn at startup.
 export function getAllFilesWithoutThumbs(): ScannedFile[] {
+  const thumbable = thumbnailExts
+  const placeholders = thumbable.map(() => '?').join(',')
   return db
-    .prepare("SELECT * FROM files WHERE (thumb IS NULL OR thumb = '') AND trashed_at IS NULL ORDER BY date DESC")
-    .all() as ScannedFile[]
+    .prepare(
+      `SELECT * FROM files
+       WHERE (thumb IS NULL OR thumb = '') AND trashed_at IS NULL AND ext IN (${placeholders})
+       ORDER BY date DESC`
+    )
+    .all(...thumbable) as ScannedFile[]
 }
 
 function makeHash(fullPath: string): string {
   return createHash('md5').update(fullPath).digest('hex')
 }
 
-const photoExts = ['.jpg', '.jpeg', '.png', '.heic', '.raw', '.cr2', '.nef', '.webp']
-const videoExts = ['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.wmv', '.webm']
-const docExts = ['.pdf', '.docx', '.doc', '.txt', '.xlsx', '.pptx', '.csv']
-const allExts = [...photoExts, ...videoExts, ...docExts]
 const sharpExts = ['.jpg', '.jpeg', '.png', '.webp']
-const MIN_PHOTO_SIZE = 50 * 1024
 
 // ─── THUMBNAIL GENERATION ─────────────────────────────────────────────────────
 export async function generateThumbForFile(fullPath: string, ext: string): Promise<string | null> {
   const lowerExt = ext.toLowerCase()
-  console.log('[DIAG:IDENTIFY]', { fullPath, ext, lowerExt })
 
   if (sharpExts.includes(lowerExt)) {
     try {
@@ -641,17 +674,14 @@ export async function generateThumbForFile(fullPath: string, ext: string): Promi
         .toFile(thumbPath)
       return fs.existsSync(thumbPath) ? thumbPath : null
     } catch (e) {
-      console.error('[DIAG:SHARP_FAILED]', fullPath, e)
       return null
     }
   }
 
   if (lowerExt === '.heic') {
-    console.log('[DIAG:HEIC_DETECT]', fullPath)
     try {
       const thumbPath = join(thumbDir, `${makeHash(fullPath)}.jpg`)
       if (fs.existsSync(thumbPath)) return thumbPath
-      console.log('[DIAG:HEIC_CONVERT_BEFORE]', fullPath)
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const convert = require('heic-convert')
       const inputBuffer = fs.readFileSync(fullPath)
@@ -665,10 +695,8 @@ export async function generateThumbForFile(fullPath: string, ext: string): Promi
         .resize(300, 300, { fit: 'cover', position: 'centre' })
         .jpeg({ quality: 80 })
         .toFile(thumbPath)
-      console.log('[DIAG:HEIC_CONVERT_SUCCESS]', { fullPath, thumbPath })
       return fs.existsSync(thumbPath) ? thumbPath : null
     } catch (err) {
-      console.error('[DIAG:HEIC_CONVERT_FAILED]', fullPath, err)
       return null
     }
   }
@@ -698,35 +726,26 @@ function extractRawFrame(fullPath: string, seekSecs: number | string, tempFrameP
       '-y',
       tempFramePath
     ]
-    console.log('[DIAG:FFMPEG_BEFORE]', { exe: ffmpegExe, args: args.join(' ') })
     const ff = cp.spawn(ffmpegExe, args)
-    let stderr = ''
-    ff.stderr.on('data', (d: Buffer) => {
-      stderr += d.toString()
-    })
+    // Drained but not accumulated: a stalled ffmpeg whose stderr nobody reads
+    // blocks on a full pipe, and buffering it was only ever feeding a
+    // per-thumbnail debug log.
+    ff.stderr.resume()
 
     const killTimer = setTimeout(() => {
       try {
-        console.error('[DIAG:FFMPEG_TIMEOUT]', fullPath)
         ff.kill()
       } catch {}
     }, 15000)
 
-    ff.on('error', (err) => {
+    ff.on('error', () => {
       clearTimeout(killTimer)
-      console.error('[DIAG:FFMPEG_SPAWN_ERROR]', fullPath, err)
       resolve(false)
     })
 
-    ff.on('close', (code) => {
+    ff.on('close', () => {
       clearTimeout(killTimer)
       const exists = fs.existsSync(tempFramePath) && fs.statSync(tempFramePath).size > 0
-      console.log('[DIAG:FFMPEG_AFTER]', {
-        fullPath,
-        code,
-        stderr: stderr.slice(-300),
-        exists
-      })
       resolve(exists)
     })
   })
@@ -746,7 +765,6 @@ async function generateVideoThumb(fullPath: string): Promise<string | null> {
     // 1. Extract single frame near 0.2s mark, fall back to 0s if file is short/fails
     let success = await extractRawFrame(fullPath, 0.2, tempFramePath)
     if (!success) {
-      console.log('[DIAG:FFMPEG_RETRY_0S]', fullPath)
       success = await extractRawFrame(fullPath, 0, tempFramePath)
     }
 
@@ -778,7 +796,6 @@ async function generateVideoThumb(fullPath: string): Promise<string | null> {
       .toFile(thumbPath)
 
     const created = fs.existsSync(thumbPath) && fs.statSync(thumbPath).size > 0
-    console.log('[DIAG:THUMB_CREATED]', { fullPath, thumbPath, created })
     return created ? thumbPath : null
   } catch (err) {
     console.error(`[DIAG:SHARP_FRAME_FAILED] for: "${fullPath}"`, err)
@@ -794,22 +811,8 @@ async function generateVideoThumb(fullPath: string): Promise<string | null> {
 }
 
 export function updateThumb(filePath: string, thumbPath: string): void {
-  console.log('[DIAG:SQLITE_WRITE]', { filePath, thumbPath })
   db.prepare('UPDATE files SET thumb = ? WHERE path = ?').run(thumbPath, filePath)
 }
-
-// ─── SCANNER ──────────────────────────────────────────────────────────────────
-const SKIP_DIRS = [
-  'windows',
-  'program files',
-  'program files (x86)',
-  '$recycle.bin',
-  'system volume information',
-  'programdata',
-  'node_modules',
-  '.git',
-  'appdata'
-]
 
 const EXIF_EXTS = new Set([
   '.jpg',
@@ -824,151 +827,125 @@ const EXIF_EXTS = new Set([
   '.mov'
 ])
 
-// Insert stmt reused for perf
-const insertStmt = db.prepare(
-  `INSERT OR IGNORE INTO files (path, name, ext, size, date, year, month, lat, lng, drive, thumb, locked, hidden)
-   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)`
-)
-
 const updateExifStmt = db.prepare(
   `UPDATE files SET date=?, year=?, month=?, lat=?, lng=? WHERE path=? AND lat IS NULL`
 )
 
-export async function scanDrive(
-  drivePath: string,
-  scanPath: string,
-  onProgress: (count: number) => void,
-  onExifProgress?: (enriched: number, total: number) => void
-): Promise<void> {
-  // ── PASS 1: fast walk, insert with mtime only, no EXIF ──────────────────
-  const newPaths: { path: string; ext: string }[] = []
-  let count = 0
+// A file with GPS but no capture date must keep whatever date it already has
+// (the filesystem mtime from the scan pass). Writing new Date() here stamped it
+// with "today", which is why a large share of the library collapsed into the
+// current month and sorted above genuinely recent photos.
+const updateGpsOnlyStmt = db.prepare(
+  `UPDATE files SET lat=?, lng=? WHERE path=? AND lat IS NULL`
+)
 
-  function walkSync(dir: string): void {
-    let entries: fs.Dirent[] = []
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true })
-    } catch {
-      return
-    }
+const markExifCheckedStmt = db.prepare('UPDATE files SET exif_checked = 1 WHERE path = ?')
 
-    // Batch inserts in a transaction for speed
-    const batch: Parameters<typeof insertStmt.run>[] = []
+let exifBackfillRunning = false
 
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        const nameLower = entry.name.toLowerCase()
-        if (SKIP_DIRS.some((s) => nameLower === s)) continue
-        if (entry.name.startsWith('.')) continue
-        walkSync(join(dir, entry.name))
-        continue
-      }
-      if (!entry.isFile()) continue
-      const ext = entry.name.slice(entry.name.lastIndexOf('.')).toLowerCase()
-      if (!allExts.includes(ext)) continue
-      const fullPath = join(dir, entry.name)
-      try {
-        const stat = fs.statSync(fullPath)
-        if (photoExts.includes(ext) && stat.size < MIN_PHOTO_SIZE) continue
+/**
+ * Reads the real capture date (and GPS) for indexed files that have never been
+ * checked, and corrects the placeholder date the scan pass wrote.
+ *
+ * The scan pass only records filesystem mtime, which is the *copy* time for
+ * anything transferred off a phone or camera - that is what collapsed a large
+ * share of the library into the current month. This replaces it with
+ * DateTimeOriginal / QuickTime creation_time where the file actually has one,
+ * and leaves the mtime in place where it doesn't (never "today", never 1970).
+ * `exif_checked` makes the pass resumable, so a relaunch continues instead of
+ * re-parsing the whole library.
+ */
+export async function enrichExifBackfill(shouldStop?: () => boolean): Promise<number> {
+  if (exifBackfillRunning) return 0
+  exifBackfillRunning = true
+  try {
+    const extList = [...EXIF_EXTS]
+    const placeholders = extList.map(() => '?').join(',')
+    const pending = db
+      .prepare(
+        `SELECT path, ext FROM files
+         WHERE exif_checked = 0 AND trashed_at IS NULL AND ext IN (${placeholders})
+         ORDER BY date DESC`
+      )
+      .all(...extList) as { path: string; ext: string }[]
 
-        const exists = db.prepare('SELECT 1 FROM files WHERE path = ?').get(fullPath)
-        if (!exists) {
-          const date = new Date(stat.mtime)
-          const year = date.getFullYear().toString()
-          const month = date.toLocaleString('default', { month: 'long' })
-          batch.push([
-            fullPath,
-            entry.name,
-            ext,
-            stat.size,
-            date.toISOString(),
-            year,
-            month,
-            null,
-            null,
-            drivePath,
-            null
-          ])
-          if (EXIF_EXTS.has(ext)) newPaths.push({ path: fullPath, ext })
+    const total = pending.length
+    if (total === 0) return 0
+    console.log(`[exif:backfill:start] ${total} files need a capture-date check`)
+
+    let checked = 0
+    let corrected = 0
+    // Bounded like the thumbnail backfill: exifr and ffprobe both compete with
+    // the renderer for CPU, and browsing has to stay responsive while this runs.
+    const CONCURRENCY = 2
+    let cursor = 0
+
+    async function worker(): Promise<void> {
+      while (cursor < pending.length) {
+        if (shouldStop?.()) return
+        const { path: fullPath, ext } = pending[cursor++]
+        const lowerExt = ext.toLowerCase()
+        try {
+          let date: Date | null = null
+          let lat: number | null = null
+          let lng: number | null = null
+
+          if (lowerExt === '.mov' || lowerExt === '.mp4') {
+            const meta = await getMovMetadata(fullPath)
+            if (meta) {
+              date = meta.date
+              lat = meta.lat
+              lng = meta.lng
+            }
+          } else {
+            const exif = await exifr.parse(fullPath, {
+              pick: ['DateTimeOriginal', 'GPSLatitude', 'GPSLongitude'],
+              gps: true
+            })
+            if (exif) {
+              if (exif.DateTimeOriginal) date = new Date(exif.DateTimeOriginal)
+              lat = typeof exif.latitude === 'number' ? exif.latitude : null
+              lng = typeof exif.longitude === 'number' ? exif.longitude : null
+            }
+          }
+
+          if (isUsableCaptureDate(date)) {
+            const d = date as Date
+            updateExifStmt.run(
+              d.toISOString(),
+              d.getFullYear().toString(),
+              d.toLocaleString('default', { month: 'long' }),
+              lat,
+              lng,
+              fullPath
+            )
+            corrected++
+          } else if (lat !== null) {
+            updateGpsOnlyStmt.run(lat, lng, fullPath)
+          }
+        } catch {
+          /* unreadable, or simply has no metadata - the mtime date stands */
         }
+        // Marked either way, so a file that genuinely has no EXIF is not
+        // re-parsed on every launch for the rest of the library's life.
+        markExifCheckedStmt.run(fullPath)
 
-        count++
-        if (count % 50 === 0) onProgress(count)
-      } catch {
-        /* skip */
+        checked++
+        if (checked % 500 === 0) {
+          console.log(`[exif:backfill] ${checked}/${total} checked, ${corrected} dates corrected`)
+        }
+        await new Promise((r) => setImmediate(r))
       }
     }
 
-    // Commit batch
-    if (batch.length > 0) {
-      const tx = db.transaction(() => {
-        for (const row of batch) insertStmt.run(...row)
-      })
-      tx()
-    }
+    await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()))
+    console.log(`[exif:backfill:complete] ${checked} checked, ${corrected} capture dates corrected`)
+    return corrected
+  } finally {
+    exifBackfillRunning = false
   }
-
-  walkSync(scanPath)
-  onProgress(count)
-
-  // ── PASS 2: async EXIF enrichment in background ───────────────────────────
-  // Don't await — caller returns immediately, EXIF fills in behind the scenes
-  enrichExifBackground(newPaths, onExifProgress).catch((e) => console.error('[exif enrich]', e))
 }
 
-async function enrichExifBackground(
-  files: { path: string; ext: string }[],
-  onProgress?: (enriched: number, total: number) => void
-): Promise<void> {
-  let enriched = 0
-  const total = files.length
-
-  for (const { path: fullPath, ext } of files) {
-    try {
-      let date: Date | null = null
-      let lat: number | null = null
-      let lng: number | null = null
-
-      if (ext.toLowerCase() === '.mov') {
-        const meta = await getMovMetadata(fullPath)
-        if (meta) {
-          date = meta.date
-          lat = meta.lat
-          lng = meta.lng
-        }
-      } else {
-        const exif = await exifr.parse(fullPath, {
-          pick: ['DateTimeOriginal', 'GPSLatitude', 'GPSLongitude'],
-          gps: true
-        })
-        if (exif) {
-          if (exif.DateTimeOriginal) date = new Date(exif.DateTimeOriginal)
-          lat = typeof exif.latitude === 'number' ? exif.latitude : null
-          lng = typeof exif.longitude === 'number' ? exif.longitude : null
-        }
-      }
-
-      if (date || lat !== null) {
-        const d = date || new Date()
-        updateExifStmt.run(
-          d.toISOString(),
-          d.getFullYear().toString(),
-          d.toLocaleString('default', { month: 'long' }),
-          lat,
-          lng,
-          fullPath
-        )
-      }
-    } catch {
-      /* skip */
-    }
-
-    enriched++
-    if (enriched % 100 === 0 && onProgress) onProgress(enriched, total)
-  }
-
-  if (onProgress) onProgress(total, total)
-}
 
 export function resolveMediaFile(filePath: string): { path: string; relinked: boolean; exists: boolean } {
   if (!filePath) return { path: filePath, relinked: false, exists: false }
@@ -981,7 +958,6 @@ export function resolveMediaFile(filePath: string): { path: string; relinked: bo
   console.warn(`[PathResilience] File not found at target path: "${filePath}". Searching index for moved/renamed file...`)
 
   const targetName = basename(filePath)
-  const targetExt = extname(filePath)
 
   // 2. Search database for files matching exact filename or path
   const candidates = db
@@ -1017,16 +993,6 @@ export function resolveMediaFile(filePath: string): { path: string; relinked: bo
     } catch {}
   }
 
-  // 4. Search across all scanned files in database to check if target file exists on disk anywhere
-  const allDbFiles = db.prepare('SELECT * FROM files WHERE ext = ? OR name = ?').all(targetExt, targetName) as ScannedFile[]
-  for (const file of allDbFiles) {
-    if (fs.existsSync(file.path) && basename(file.path) === targetName) {
-      console.log(`[PathResilience] Relinked moved file across index: "${file.path}"`)
-      db.prepare('UPDATE files SET path = ? WHERE path = ?').run(file.path, filePath)
-      return { path: file.path, relinked: true, exists: true }
-    }
-  }
-
   return { path: filePath, relinked: false, exists: false }
 }
 
@@ -1041,6 +1007,13 @@ export function removeFileRecord(filePath: string): void {
 }
 
 export async function updateFileInPlace(filePath: string, statInput?: fs.Stats): Promise<ScannedFile | null> {
+  // The scan pass filters by extension, but this function is also the watcher's
+  // entry point and used to index whatever changed - so ordinary desktop
+  // activity filed .ts, .json, .db, settings.dat and extensionless files like
+  // "Local State" into a media index, then queued each one for thumbnail
+  // generation. Guarding here covers every caller at once.
+  if (!isIndexableMedia(filePath)) return null
+
   let stat = statInput
   if (!stat) {
     try {
@@ -1092,6 +1065,133 @@ export async function updateFileInPlace(filePath: string, statInput?: fs.Stats):
 
   const updated = db.prepare('SELECT * FROM files WHERE path = ?').get(filePath) as ScannedFile | undefined
   return updated || null
+}
+
+/**
+ * Records a file that was just copied into `destDrive`, carrying the source
+ * row's capture date and GPS across when we already know them.
+ *
+ * A copy resets the filesystem mtime to "now", so an unknown source would
+ * otherwise land the new file in today's group. `exif_checked = 0` leaves it
+ * queued for the capture-date backfill, which reads the real date out of the
+ * file itself.
+ */
+export function recordCopiedFile(srcPath: string, destPath: string, destDrive: string): void {
+  const row = db.prepare('SELECT * FROM files WHERE path = ?').get(srcPath) as ScannedFile | undefined
+  const stat = fs.statSync(destPath)
+  const fallback = new Date(stat.mtime)
+  const date = row?.date ?? fallback.toISOString()
+  const year = row?.year ?? fallback.getFullYear().toString()
+  const month = row?.month ?? fallback.toLocaleString('default', { month: 'long' })
+
+  db.prepare(
+    `INSERT OR REPLACE INTO files
+       (path, name, ext, size, date, year, month, lat, lng, drive, thumb, favourited, locked, hidden, vault_path, trashed_at, mtime, exif_checked)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, NULL, NULL, ?, ?)`
+  ).run(
+    destPath,
+    basename(destPath),
+    extname(destPath).toLowerCase(),
+    stat.size,
+    date,
+    year,
+    month,
+    row?.lat ?? null,
+    row?.lng ?? null,
+    destDrive,
+    row?.thumb ?? null,
+    Math.round(stat.mtimeMs),
+    row ? 1 : 0
+  )
+}
+
+/** Moves an existing row to its new path, or indexes the file if it was untracked. */
+export function recordMovedFile(srcPath: string, destPath: string, destDrive: string): void {
+  const exists = db.prepare('SELECT 1 FROM files WHERE path = ?').get(srcPath)
+  if (exists) {
+    db.prepare('UPDATE files SET path = ?, name = ?, drive = ? WHERE path = ?').run(
+      destPath,
+      basename(destPath),
+      destDrive,
+      srcPath
+    )
+    return
+  }
+  recordCopiedFile(srcPath, destPath, destDrive)
+}
+
+/** Drive key used for the diagnostic sample folder, kept apart from real drives. */
+export const SAMPLE_DRIVE_KEY = 'SAMPLE:'
+
+/**
+ * Indexes one explicitly chosen folder, with a hard ceiling on how many files
+ * are admitted. Nothing here touches a real drive, spawns a utility process or
+ * starts a watcher - it is the smallest dataset that still exercises the grid,
+ * the thumbnail path and the viewer.
+ *
+ * Rows live under their own drive key so the sample can be re-indexed or
+ * cleared without disturbing the user's real index.
+ */
+export function indexSampleFolder(folder: string, maxFiles: number): { count: number; skipped: number } {
+  db.prepare('DELETE FROM files WHERE drive = ?').run(SAMPLE_DRIVE_KEY)
+
+  const insert = db.prepare(
+    `INSERT OR IGNORE INTO files
+       (path, name, ext, size, date, year, month, lat, lng, drive, thumb, locked, hidden, mtime, exif_checked)
+     VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, 0, 0, ?, 1)`
+  )
+
+  const rows: Parameters<typeof insert.run>[] = []
+  let skipped = 0
+  // Iterative walk with an explicit stack and a depth cap: a deep or
+  // symlink-looped tree must not become unbounded recursion here.
+  const stack: { dir: string; depth: number }[] = [{ dir: folder, depth: 0 }]
+  while (stack.length > 0 && rows.length < maxFiles) {
+    const { dir, depth } = stack.pop()!
+    if (depth > 6) continue
+    let entries: fs.Dirent[] = []
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      if (rows.length >= maxFiles) break
+      if (entry.isDirectory()) {
+        if (!entry.name.startsWith('.')) stack.push({ dir: join(dir, entry.name), depth: depth + 1 })
+        continue
+      }
+      if (!entry.isFile()) continue
+      const fullPath = join(dir, entry.name)
+      if (!isIndexableMedia(fullPath)) {
+        skipped++
+        continue
+      }
+      try {
+        const stat = fs.statSync(fullPath)
+        const date = new Date(stat.mtime)
+        rows.push([
+          fullPath,
+          entry.name,
+          extname(fullPath).toLowerCase(),
+          stat.size,
+          date.toISOString(),
+          date.getFullYear().toString(),
+          date.toLocaleString('default', { month: 'long' }),
+          SAMPLE_DRIVE_KEY,
+          Math.round(stat.mtimeMs)
+        ])
+      } catch {
+        skipped++
+      }
+    }
+  }
+
+  const tx = db.transaction(() => {
+    for (const r of rows) insert.run(...r)
+  })
+  tx()
+  return { count: rows.length, skipped }
 }
 
 export function getFileIno(filePath: string): number | null {
@@ -1204,8 +1304,22 @@ async function incrementalSyncDriveInner(
   // main process (IPC, window, other drives) while checking thousands of files.
   const { changed, removed, added } = await runIncrementalSyncWorker(dbFiles, onProgress)
 
-  for (const path of removed) {
-    removeFileRecord(path)
+  // A drive that was unplugged (or whose letter was reassigned) mid-sync makes
+  // every stat fail, so the worker reports the entire index as "removed".
+  // Deleting those rows would destroy the user's index - and their cached
+  // thumbnails - for media that is still perfectly intact on the volume.
+  // Removals are only applied when the volume is still mounted AND the deletion
+  // isn't implausibly large for an incremental pass.
+  const driveMounted = fs.existsSync(`${driveNorm}\\`)
+  if (!driveMounted || isMassRemoval(removed.length, dbFiles.length)) {
+    console.warn(
+      `[incrementalSync] Skipping ${removed.length} removals for ${driveNorm} ` +
+        `(mounted=${driveMounted}, known=${dbFiles.length}). Treating as a disconnected or swapped volume, not a deletion.`
+    )
+  } else {
+    for (const path of removed) {
+      removeFileRecord(path)
+    }
   }
 
   // Concurrent, yielding queue (mirrors backfillAllMissingThumbnails' pattern)
@@ -1213,7 +1327,9 @@ async function incrementalSyncDriveInner(
   // dev drive with heavy file churn) would otherwise serialize thousands of
   // thumbnail regenerations on the main thread with no yielding in between.
   const toUpdate = [...changed, ...added]
-  const CONCURRENCY = 4
+  // Measured: 4 concurrent sharp/ffmpeg spawns is enough to starve the
+  // renderer of CPU during active browsing - 2 leaves more headroom.
+  const CONCURRENCY = 2
   let cursor = 0
   async function updateWorker(): Promise<void> {
     while (cursor < toUpdate.length) {
@@ -1247,11 +1363,15 @@ function runIncrementalSyncWorker(
       if (msg.type === 'progress') {
         if (onProgress) onProgress(msg.count)
       } else if (msg.type === 'complete') {
+        // Without this the worker thread (and its copy of the file list) stays
+        // resident for the life of the app; one per sync, per drive, forever.
+        worker.terminate()
         resolve({ changed: msg.changed, removed: msg.removed, added: msg.added })
       }
     })
     worker.on('error', (err) => {
       console.error('[incrementalSyncWorker error]:', err)
+      worker.terminate()
       reject(err)
     })
     worker.on('exit', (code) => {
@@ -1260,49 +1380,6 @@ function runIncrementalSyncWorker(
   })
 }
 
-export function scanDriveInWorker(
-  drivePath: string,
-  scanPath: string,
-  onProgress: (count: number) => void
-): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const workerScript = join(__dirname, 'scanWorker.js')
-    console.log(`[scanDriveInWorker] Spawning worker_thread for: ${scanPath} (script: ${workerScript})`)
-    const worker = new Worker(workerScript, {
-      workerData: {
-        drivePath,
-        scanPath,
-        dbPath
-      }
-    })
-
-    let finalCount = 0
-
-    worker.on('message', (msg) => {
-      if (msg.type === 'progress') {
-        onProgress(msg.count)
-      } else if (msg.type === 'complete') {
-        finalCount = msg.count
-        onProgress(finalCount)
-        resolve(finalCount)
-      } else if (msg.type === 'error') {
-        console.error('[scanWorker error]:', msg.error)
-        reject(new Error(msg.error))
-      }
-    })
-
-    worker.on('error', (err) => {
-      console.error('[scanWorker process error]:', err)
-      reject(err)
-    })
-
-    worker.on('exit', (code) => {
-      if (code !== 0) {
-        console.warn(`[scanWorker] Worker stopped with exit code ${code}`)
-      }
-    })
-  })
-}
 
 export function spawnScanUtilityProcess(
   drivePath: string,
@@ -1316,6 +1393,22 @@ export function spawnScanUtilityProcess(
 
     const child = utilityProcess.fork(utilityScript, [drivePath, scanPath, dbPath])
     let finalCount = 0
+    let settled = false
+
+    // The child was previously left running after it reported 'complete', and
+    // was never killed on error either - so a scan that failed or was
+    // superseded stayed resident holding its own SQLite connection. Each
+    // subsequent scan added another.
+    const finish = (fn: () => void): void => {
+      if (settled) return
+      settled = true
+      try {
+        child.kill()
+      } catch {
+        /* already gone */
+      }
+      fn()
+    }
 
     child.on('message', (msg: any) => {
       if (msg.type === 'elevation-status' && onElevationStatus) {
@@ -1325,17 +1418,17 @@ export function spawnScanUtilityProcess(
       } else if (msg.type === 'complete') {
         finalCount = msg.count
         onProgress(finalCount)
-        resolve(finalCount)
+        finish(() => resolve(finalCount))
       } else if (msg.type === 'error') {
         console.error('[scanUtility error]:', msg.error)
-        reject(new Error(msg.error))
+        finish(() => reject(new Error(msg.error)))
       }
     })
 
     child.on('exit', (code) => {
-      if (code !== 0) {
-        console.warn(`[scanUtility] Process exited with code ${code}`)
-      }
+      if (code !== 0) console.warn(`[scanUtility] Process exited with code ${code}`)
+      // An exit without 'complete' must not leave the caller awaiting forever.
+      finish(() => resolve(finalCount))
     })
   })
 }

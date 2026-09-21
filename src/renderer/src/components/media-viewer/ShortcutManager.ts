@@ -5,7 +5,6 @@ export interface ShortcutProps {
   onPrev: () => void
   onFirst: () => void
   onLast: () => void
-  onClose: () => void
   onZoomIn: () => void
   onZoomOut: () => void
   onZoomReset: () => void
@@ -18,7 +17,6 @@ export function useShortcuts({
   onPrev,
   onFirst,
   onLast,
-  onClose,
   onZoomIn,
   onZoomOut,
   onZoomReset,
@@ -53,10 +51,6 @@ export function useShortcuts({
           e.preventDefault()
           onLast()
           break
-        case 'Escape':
-          e.preventDefault()
-          onClose()
-          break
         case '+':
         case '=':
           e.preventDefault()
@@ -85,6 +79,6 @@ export function useShortcuts({
     return () => {
       window.removeEventListener('keydown', handleKeyDown)
     }
-  }, [isOpen, onNext, onPrev, onFirst, onLast, onClose, onZoomIn, onZoomOut, onZoomReset, onToggleFullscreen])
+  }, [isOpen, onNext, onPrev, onFirst, onLast, onZoomIn, onZoomOut, onZoomReset, onToggleFullscreen])
 }
 export default useShortcuts

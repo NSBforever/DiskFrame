@@ -51,7 +51,15 @@ export class IndexingService {
         try {
           const result = await incrementalSyncDrive(drive)
           if (!result.fullScanNeeded && this.mainWindow && !this.mainWindow.isDestroyed()) {
-            this.mainWindow.webContents.send('files-updated', getGroupedFiles(drive))
+            // Tagged with the drive it belongs to. Without that the renderer
+            // filed whichever payload arrived last under the drive currently
+            // on screen, so a background sync of another volume replaced the
+            // open gallery with a different drive's contents.
+            this.mainWindow.webContents.send('files-updated', {
+              drive,
+              groups: getGroupedFiles(drive),
+              reason: 'background'
+            })
           }
         } catch (err) {
           console.error(`[IndexingService] Background sync failed for drive ${drive}:`, err)

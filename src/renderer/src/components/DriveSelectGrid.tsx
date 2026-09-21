@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react'
+import { HardDrive, Usb } from 'lucide-react'
 import './DriveSelectGrid.css'
 
 export interface Drive {
   id: string
   label: string
   letter: string
-  type: 'internal' | 'external'
+  type: 'internal' | 'external' | 'unknown'
   totalBytes: number
   freeBytes: number
-  fileCount?: number
 }
 
 interface DriveSelectGridProps {
@@ -17,23 +17,45 @@ interface DriveSelectGridProps {
   driveFiles?: Record<string, Record<string, any[]>>
 }
 
-function mapRawDrive(d: any, driveFiles?: Record<string, Record<string, any[]>>): Drive {
+// Usage-bar color anchors: flat green through 40%, interpolating to yellow at
+// 60%, orange at 80%, flat red from 95%. Piecewise-linear in RGB space.
+const USAGE_COLOR_STOPS: [number, [number, number, number]][] = [
+  [0, [34, 197, 94]],
+  [40, [34, 197, 94]],
+  [60, [250, 204, 21]],
+  [80, [249, 115, 22]],
+  [95, [225, 29, 46]],
+  [100, [225, 29, 46]]
+]
+
+function usageColor(pct: number): string {
+  const p = Math.max(0, Math.min(100, pct))
+  for (let i = 0; i < USAGE_COLOR_STOPS.length - 1; i++) {
+    const [p0, c0] = USAGE_COLOR_STOPS[i]
+    const [p1, c1] = USAGE_COLOR_STOPS[i + 1]
+    if (p >= p0 && p <= p1) {
+      const t = p1 === p0 ? 0 : (p - p0) / (p1 - p0)
+      const r = Math.round(c0[0] + (c1[0] - c0[0]) * t)
+      const g = Math.round(c0[1] + (c1[1] - c0[1]) * t)
+      const b = Math.round(c0[2] + (c1[2] - c0[2]) * t)
+      return `rgb(${r}, ${g}, ${b})`
+    }
+  }
+  const last = USAGE_COLOR_STOPS[USAGE_COLOR_STOPS.length - 1][1]
+  return `rgb(${last[0]}, ${last[1]}, ${last[2]})`
+}
+
+function mapRawDrive(d: any): Drive {
   const totalBytes = (d.total || 0) * 1024 * 1024 * 1024
   const freeBytes = (d.free || 0) * 1024 * 1024 * 1024
   const nameUpper = (d.name || '').toUpperCase().trim()
-  const fsLower = (d.filesystem || '').toLowerCase()
   const rawLabel = (d.label || d.volumeName || d.name || '').trim()
 
-  const isInternal =
-    nameUpper.startsWith('C:') ||
-    fsLower.includes('fixed') ||
-    fsLower.includes('internal') ||
-    (nameUpper.startsWith('D:') && !fsLower.includes('removable') && !fsLower.includes('usb'))
-
-  const filesCount =
-    driveFiles && driveFiles[d.name]
-      ? Object.values(driveFiles[d.name]).flat().length
-      : undefined
+  // connectionType comes from the main process, which maps this volume to its
+  // physical disk and checks the real bus (Get-PhysicalDisk .BusType) rather
+  // than guessing from the drive letter or filesystem name.
+  const driveType: Drive['type'] =
+    d.connectionType === 'internal' || d.connectionType === 'external' ? d.connectionType : 'unknown'
 
   const cleanLetter = nameUpper.endsWith('\\') ? nameUpper.slice(0, -1) : nameUpper
 
@@ -52,14 +74,13 @@ function mapRawDrive(d: any, driveFiles?: Record<string, Record<string, any[]>>)
     id: d.name,
     label: displayLabel,
     letter: cleanLetter,
-    type: isInternal ? 'internal' : 'external',
+    type: driveType,
     totalBytes,
-    freeBytes,
-    fileCount: filesCount
+    freeBytes
   }
 }
 
-async function fetchDrives(driveFiles?: Record<string, Record<string, any[]>>): Promise<Drive[]> {
+async function fetchDrives(): Promise<Drive[]> {
   return new Promise((resolve) => {
     if (typeof window !== 'undefined' && window.api) {
       let resolved = false
@@ -67,7 +88,7 @@ async function fetchDrives(driveFiles?: Record<string, Record<string, any[]>>): 
         if (resolved) return
         resolved = true
         unbind()
-        const mapped = (rawDrives || []).map((d) => mapRawDrive(d, driveFiles))
+        const mapped = (rawDrives || []).map((d) => mapRawDrive(d))
         resolve(mapped)
       })
       window.api.getDrives()
@@ -92,16 +113,26 @@ function formatBytes(bytes: number): string {
   return gb.toFixed(1) + ' GB'
 }
 
-export default function DriveSelectGrid({ onSelectDrive, drives: propDrives, driveFiles }: DriveSelectGridProps) {
+export default function DriveSelectGrid({ onSelectDrive, drives: propDrives }: DriveSelectGridProps) {
   const [drives, setDrives] = useState<Drive[]>([])
   const [loading, setLoading] = useState(true)
+  // The real, DB-backed count for every drive ever indexed - not just the
+  // renderer's session cache, which is empty until you've opened a drive
+  // this session (that's what made an actually-indexed drive show "not
+  // indexed" and, combined with the conditional status row below, made cards
+  // different heights). null = not fetched yet.
+  const [driveCounts, setDriveCounts] = useState<Record<string, number> | null>(null)
+
+  useEffect(() => {
+    window.api.getDriveFileCounts().then(setDriveCounts).catch(() => setDriveCounts({}))
+  }, [])
 
   useEffect(() => {
     if (propDrives && propDrives.length > 0) {
-      setDrives(propDrives.map((d) => mapRawDrive(d, driveFiles)))
+      setDrives(propDrives.map((d) => mapRawDrive(d)))
       setLoading(false)
     } else {
-      fetchDrives(driveFiles)
+      fetchDrives()
         .then((fetched) => {
           if (fetched.length > 0) {
             setDrives(fetched)
@@ -109,13 +140,13 @@ export default function DriveSelectGrid({ onSelectDrive, drives: propDrives, dri
         })
         .finally(() => setLoading(false))
     }
-  }, [propDrives, driveFiles])
+  }, [propDrives])
 
   useEffect(() => {
     if (typeof window !== 'undefined' && window.api) {
       const unbind = window.api.onDrivesUpdated((rawDrives) => {
         if (rawDrives && rawDrives.length > 0) {
-          setDrives(rawDrives.map((d) => mapRawDrive(d, driveFiles)))
+          setDrives(rawDrives.map((d) => mapRawDrive(d)))
           setLoading(false)
         }
       })
@@ -124,7 +155,7 @@ export default function DriveSelectGrid({ onSelectDrive, drives: propDrives, dri
       }
     }
     return undefined
-  }, [driveFiles])
+  }, [])
 
   if (!loading && drives.length === 0) {
     return (
@@ -147,37 +178,46 @@ export default function DriveSelectGrid({ onSelectDrive, drives: propDrives, dri
         </div>
       </div>
       <div className="drive-grid">
-        {drives.map((drive) => (
-          <button
-            key={drive.id}
-            className="drive-card"
-            onClick={() => onSelectDrive(drive)}
-          >
-            <div className="drive-card-top">
-              <span className="drive-icon">{drive.type === 'internal' ? '💽' : '🔌'}</span>
-              <span className={`drive-badge drive-badge-${drive.type}`}>
-                {drive.type === 'internal' ? 'INTERNAL' : 'EXTERNAL'}
-              </span>
-            </div>
-            <div className="drive-name">
-              {drive.label}
-            </div>
-            <div className="drive-space">
-              {formatBytes(drive.totalBytes - drive.freeBytes)} used of {formatBytes(drive.totalBytes)} — {formatBytes(drive.freeBytes)} free
-            </div>
-            <div className="drive-progress">
-              <div
-                className="drive-progress-fill"
-                style={{
-                  width: `${drive.totalBytes > 0 ? ((drive.totalBytes - drive.freeBytes) / drive.totalBytes) * 100 : 0}%`
-                }}
-              />
-            </div>
-            {drive.fileCount !== undefined && (
-              <div className="drive-filecount">{drive.fileCount.toLocaleString()} files indexed</div>
-            )}
-          </button>
-        ))}
+        {drives.map((drive) => {
+          const usedPct = drive.totalBytes > 0 ? ((drive.totalBytes - drive.freeBytes) / drive.totalBytes) * 100 : 0
+          const Icon = drive.type === 'internal' ? HardDrive : drive.type === 'external' ? Usb : HardDrive
+          const badgeText = drive.type === 'unknown' ? 'Type unavailable' : drive.type.toUpperCase()
+          const realCount = driveCounts ? driveCounts[drive.letter] ?? 0 : undefined
+          return (
+            <button
+              key={drive.id}
+              className="drive-card"
+              onClick={() => onSelectDrive(drive)}
+            >
+              <div className="drive-card-top">
+                <Icon className="drive-icon" size={26} color={drive.type === 'unknown' ? '#6a6a78' : '#e5e5e5'} />
+                <span className={`drive-badge drive-badge-${drive.type}`}>{badgeText}</span>
+              </div>
+              <div className="drive-name">
+                {drive.label}
+              </div>
+              <div className="drive-space">
+                {formatBytes(drive.totalBytes - drive.freeBytes)} used of {formatBytes(drive.totalBytes)} — {formatBytes(drive.freeBytes)} free
+              </div>
+              <div className="drive-progress">
+                <div
+                  className="drive-progress-fill"
+                  style={{
+                    width: `${usedPct}%`,
+                    background: usageColor(usedPct)
+                  }}
+                />
+              </div>
+              <div className="drive-filecount">
+                {realCount === undefined
+                  ? <span className="drive-filecount-loading" />
+                  : realCount > 0
+                    ? `${realCount.toLocaleString()} files indexed`
+                    : 'Not indexed yet'}
+              </div>
+            </button>
+          )
+        })}
       </div>
     </div>
   )

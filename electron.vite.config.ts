@@ -8,7 +8,6 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve('src/main/index.ts'),
-          scanWorker: resolve('src/main/scanWorker.ts'),
           scanUtility: resolve('src/main/scanUtility.ts'),
           incrementalSyncWorker: resolve('src/main/incrementalSyncWorker.ts')
         }

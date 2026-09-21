@@ -61,10 +61,10 @@ if (typeof window !== 'undefined' && !window.api) {
         favouritesUpdatedListeners.forEach(l => l([]))
       }, 50)
     },
-    getFiles: (_drive: string) => {
+    getFiles: (drive: string) => {
       const mockGroups = generateMockFiles()
       setTimeout(() => {
-        filesUpdatedListeners.forEach(l => l(mockGroups))
+        filesUpdatedListeners.forEach(l => l({ drive, groups: mockGroups, reason: 'initial' }))
       }, 50)
     },
     scanDrive: (drive: string) => {
@@ -116,6 +116,7 @@ import SearchAgent from './components/SearchAgent'
 import DriveSelectionView from './components/DriveSelectionView'
 import PhotoGrid from './components/PhotoGrid'
 import MagneticDock from './components/MagneticDock'
+import DateScrubber from './components/DateScrubber'
 import {
   FolderArchive,
   Image as ImageIcon,
@@ -135,7 +136,9 @@ import {
   Copy,
   X,
   Settings,
-  ArrowLeft
+  ArrowLeft,
+  PanelLeft,
+  PanelLeftClose
 } from 'lucide-react'
 
 interface DriveInfo {
@@ -709,6 +712,7 @@ const MainContentArea: React.FC<{
   }, [activeNav, activeView, favouritesItems, trashItems, timelineItems, yearsItems])
 
   const [gridScrollRequest, setGridScrollRequest] = useState<{ key: string; nonce: number } | null>(null)
+  const [visibleKey, setVisibleKey] = useState<string | null>(null)
   const jumpToGroup = useCallback((key: string | undefined) => {
     setActiveView('Grid')
     if (key) setGridScrollRequest({ key, nonce: Date.now() })
@@ -981,6 +985,13 @@ const MainContentArea: React.FC<{
           scrollRequest={gridScrollRequest}
           thumbVersion={thumbVersion}
           hoverPreviewsEnabled={hoverPreviewsEnabled}
+          onVisibleKeyChange={setVisibleKey}
+        />
+        <DateScrubber
+          keys={sortedGroupedData.keys}
+          data={sortedGroupedData.data}
+          currentKey={visibleKey}
+          onJump={jumpToGroup}
         />
       </div>
     )
@@ -1251,6 +1262,15 @@ export default function App(): React.JSX.Element {
   const [driveFiles, setDriveFiles] = useState<Record<string, Record<string, ScannedFile[]>>>({})
   const currentDriveRef = useRef<string | null>(null)
 
+  // Background changes are parked here rather than applied, so the gallery
+  // never rearranges itself under an active reader. The user applies them with
+  // the "Updates available" button.
+  // Set only when the main process launched in diagnostic mode with a sample folder.
+  const [safeModeSample, setSafeModeSample] = useState<{ folder: string; count: number } | null>(null)
+  const [updatesPending, setUpdatesPending] = useState(false)
+  const pendingFilesRef = useRef<{ drive: string; groups: Record<string, ScannedFile[]> } | null>(null)
+  const hasFilesRef = useRef(false)
+
   const [favourites, setFavourites] = useState<Set<string>>(new Set())
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [lightbox, setLightbox] = useState<{ file: ScannedFile; list: ScannedFile[]; rect?: DOMRect } | null>(null)
@@ -1265,6 +1285,7 @@ export default function App(): React.JSX.Element {
   const [groupBy, setGroupBy] = useState<'day' | 'month' | 'year' | 'location' | 'favorites'>('day')
   const [viewOrder, setViewOrder] = useState<'default' | 'reverse'>('default')
   const [hoverPreviewsEnabled, setHoverPreviewsEnabled] = useState(true)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; file: ScannedFile; currentList: ScannedFile[] } | null>(null)
   const [fileToDelete, setFileToDelete] = useState<ScannedFile | null>(null)
@@ -1288,7 +1309,7 @@ export default function App(): React.JSX.Element {
   const clipboardActionRef = useRef<'copy' | 'cut' | null>(null)
 
   // Queue to buffer thumbnail ready events, preventing multiple full re-renders
-  const thumbQueueRef = useRef<{ filePath: string; thumbPath: string }[]>([])
+  const thumbQueueRef = useRef<{ filePath: string; thumbPath: string; tries?: number }[]>([])
   const fileIndexRef = useRef<Map<string, ScannedFile>>(new Map())
   const [thumbVersion, setThumbVersion] = useState(0)
 
@@ -1333,10 +1354,23 @@ export default function App(): React.JSX.Element {
       // bump a version counter instead of rebuilding (and re-sorting) the whole library.
       const index = fileIndexRef.current
       let patched = false
-      for (const [filePath, thumbPath] of batchMap) {
-        const f = index.get(filePath)
-        if (f && f.thumb !== thumbPath) { f.thumb = thumbPath; patched = true }
+      const unmatched: { filePath: string; thumbPath: string; tries?: number }[] = []
+      for (const item of batch) {
+        const thumbPath = batchMap.get(item.filePath)!
+        const f = index.get(item.filePath)
+        if (!f) {
+          // The file index is rebuilt asynchronously after a folder loads, so a
+          // thumbnail can be reported before its row is known here. Dropping it
+          // left the tile showing a placeholder until something forced a
+          // remount. Retry a few drains, then give up so an entry whose row
+          // never arrives (drive switched, folder closed) cannot spin forever.
+          const tries = (item.tries ?? 0) + 1
+          if (tries <= 10) unmatched.push({ filePath: item.filePath, thumbPath, tries })
+          continue
+        }
+        if (f.thumb !== thumbPath) { f.thumb = thumbPath; patched = true }
       }
+      if (unmatched.length > 0) thumbQueueRef.current.unshift(...unmatched.slice(0, 2000))
       if (patched) setThumbVersion(v => v + 1)
 
       setTrashedFiles(prev => {
@@ -1364,15 +1398,30 @@ export default function App(): React.JSX.Element {
     })
     const unsubProgress = window.api.onScanProgress((d) => setScanCount(d.count))
     const unsubComplete = window.api.onScanComplete((d) => {
+      // A scan of some other drive finishing must not take over the view.
+      if (d.drive !== currentDriveRef.current) return
       setScanning(false); setScanCount(d.count)
-      currentDriveRef.current = d.drive
       window.api.getFiles(d.drive)
     })
-    const unsubFiles = window.api.onFilesUpdated((g) => {
-      if (currentDriveRef.current) {
-        // Enforce active drive caching only, replacing any previous caches completely
-        setDriveFiles({ [currentDriveRef.current!]: g as Record<string, ScannedFile[]> })
+    const unsubFiles = window.api.onFilesUpdated(({ drive, groups, reason }) => {
+      // Payloads are now tagged with the drive they describe. Previously
+      // whichever payload arrived last was filed under whatever drive was on
+      // screen, so a background sync of another volume replaced the open
+      // gallery with a different drive's files.
+      if (!drive || drive !== currentDriveRef.current) return
+
+      const next = groups as Record<string, ScannedFile[]>
+      if (reason === 'background' && hasFilesRef.current) {
+        // Something changed underneath a gallery the user is already reading.
+        // Applying it here would re-sort and re-anchor the grid mid-scroll, so
+        // it is held until they ask for it.
+        pendingFilesRef.current = { drive, groups: next }
+        setUpdatesPending(true)
+        return
       }
+      pendingFilesRef.current = null
+      setUpdatesPending(false)
+      setDriveFiles({ [drive]: next })
       refreshTrash()
     })
     const unsubThumb = window.api.onThumbReady((d) => {
@@ -1385,6 +1434,22 @@ export default function App(): React.JSX.Element {
           }
         })
       : () => {}
+    // Diagnostic mode: the main process has indexed one small sample folder
+    // and nothing else. Open it directly - no drive click, no scan request.
+    const unsubSample = window.api.onSafeModeSample
+      ? window.api.onSafeModeSample(({ drive, folder, count }) => {
+          console.log(`[safe-mode] sample folder ${folder} (${count} files)`)
+          currentDriveRef.current = drive
+          setSelectedDrive(drive)
+          setSafeModeSample({ folder, count })
+          setScanning(false)
+          setActiveNav('all')
+          setActiveView('Grid')
+          setHoverPreviewsEnabled(false)
+          window.api.getFiles(drive)
+        })
+      : () => {}
+
     const unsubToggled = window.api.onFavouriteToggled((d) => {
       setFavourites(prev => {
         const next = new Set(prev)
@@ -1422,6 +1487,7 @@ export default function App(): React.JSX.Element {
       unsubThumb()
       unsubElevation()
       unsubToggled()
+      unsubSample()
     }
   }, [refreshTrash])
 
@@ -1449,6 +1515,10 @@ export default function App(): React.JSX.Element {
     setSelectedDrive(name); currentDriveRef.current = name
     setScanning(true); setScanCount(0); setActiveNav('all'); setActiveView('Grid')
     setSelected(new Set())
+    // Switching drives discards anything parked for the previous one.
+    pendingFilesRef.current = null
+    setUpdatesPending(false)
+    hasFilesRef.current = false
 
     // Show whatever's already indexed for this drive instantly (no scan wait);
     // scanDrive's incremental sync runs in the background and will replace
@@ -1499,9 +1569,35 @@ export default function App(): React.JSX.Element {
   const allFiles = useMemo(() => Object.values(groupedFiles).flat(), [groupedFiles])
   useEffect(() => {
     fileIndexRef.current = new Map(allFiles.map(f => [f.path, f]))
+    hasFilesRef.current = allFiles.length > 0
   }, [allFiles])
+
+  const applyPendingUpdates = useCallback((): void => {
+    const pending = pendingFilesRef.current
+    pendingFilesRef.current = null
+    setUpdatesPending(false)
+    if (!pending || pending.drive !== currentDriveRef.current) return
+    setDriveFiles({ [pending.drive]: pending.groups })
+    refreshTrash()
+  }, [refreshTrash])
   const allFavFiles = useMemo(() => allFiles.filter(f => favourites.has(f.path)), [allFiles, favourites])
   const totalFiles = allFiles.length
+
+  // Stable reference so MagneticDock (not memoized against unrelated App
+  // re-renders otherwise) only actually re-renders when one of these changes,
+  // not on every drive-poll/thumbnail-batch tick.
+  const favCount = allFavFiles.length
+  const dockItems = useMemo(
+    () => [
+      { id: 'all', label: 'All files', icon: <FolderArchive size={18} />, isActive: activeNav === 'all', onClick: () => setActiveNav('all') },
+      { id: 'photos', label: 'Photos', icon: <ImageIcon size={18} />, isActive: activeNav === 'photos', onClick: () => setActiveNav('photos') },
+      { id: 'videos', label: 'Videos', icon: <Film size={18} />, isActive: activeNav === 'videos', onClick: () => setActiveNav('videos') },
+      { id: 'favourites', label: 'Favourites', icon: <Star size={18} />, isActive: activeNav === 'favourites', badge: favCount, onClick: () => setActiveNav('favourites') },
+      { id: 'trash', label: 'Trash', icon: <Trash2 size={18} />, isActive: activeNav === 'trash', badge: trashCount, onClick: () => setActiveNav('trash') },
+      { id: 'settings', label: 'Settings', icon: <Settings size={18} />, isActive: activeNav === 'settings', onClick: () => setActiveNav('settings') }
+    ],
+    [activeNav, favCount, trashCount]
+  )
 
   const handleGridTileSizeCommit = useCallback((size: number): void => {
     setTileSize(size)
@@ -1535,7 +1631,22 @@ export default function App(): React.JSX.Element {
     else zoomTicksRef.current = 0
   }, [activeView, transitioning, switchView])
 
+  // Grouping the library is O(n log n) over every file on the drive, and it used
+  // to re-run whenever `favourites` changed - so hearting a single photo
+  // re-filtered, re-grouped and re-sorted all 40k of them before the heart even
+  // filled in. Favourites only actually affect the result in the few modes
+  // below, so the set is read through a ref and only those modes take it as a
+  // dependency.
+  const favouritesRef = useRef(favourites)
+  favouritesRef.current = favourites
+  const favouritesAffectGrouping =
+    activeNav === 'favourites' ||
+    groupBy === 'favorites' ||
+    ['is:fav', 'fav:true'].includes(searchQuery.trim().toLowerCase())
+  const favouritesDep = favouritesAffectGrouping ? favourites : null
+
   const getFiltered = useCallback((files: ScannedFile[]): ScannedFile[] => {
+    const favourites = favouritesRef.current
     let filtered = files
 
     // Category routing
@@ -1584,7 +1695,8 @@ export default function App(): React.JSX.Element {
     }
 
     return filtered
-  }, [activeNav, favourites, searchQuery])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeNav, favouritesDep, searchQuery])
 
   const orderedGroupsRef = useRef<{ keys: string[]; data: Record<string, ScannedFile[]> }>({ keys: [], data: {} })
   const handleSelect = useCallback((file: ScannedFile, e: React.MouseEvent): void => {
@@ -1719,7 +1831,7 @@ export default function App(): React.JSX.Element {
           ? `📍 Coords (${Math.round(file.lat * 2) / 2}, ${Math.round(file.lng * 2) / 2})`
           : 'No Location Info'
       } else {
-        key = favourites.has(file.path) ? '❤️ Favourites' : 'Other Files'
+        key = favouritesRef.current.has(file.path) ? '❤️ Favourites' : 'Other Files'
       }
       const g = groups[key]
       if (g) g.push(file); else groups[key] = [file]
@@ -1744,7 +1856,8 @@ export default function App(): React.JSX.Element {
     }
 
     return { keys, data: groups }
-  }, [allFiles, groupBy, favourites, getFiltered, viewOrder])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allFiles, groupBy, favouritesDep, getFiltered, viewOrder])
   orderedGroupsRef.current = sortedGroupedData
 
   // Day bulk select & contiguous shift click
@@ -1987,8 +2100,8 @@ export default function App(): React.JSX.Element {
         ::-webkit-scrollbar-thumb:hover { background: #e11d2e; }
       `}</style>
 
-      {/* Sidebar - only rendered after a drive is selected */}
-      {selectedDrive && (
+      {/* Sidebar - only rendered after a drive is selected, and when not collapsed */}
+      {selectedDrive && !sidebarCollapsed && (
         <div style={{ width: '230px', minWidth: '230px', background: '#0c0c0f', borderRight: '1px solid rgba(255,255,255,0.04)', display: 'flex', flexDirection: 'column', height: '100vh', overflowY: 'auto' }}>
           <div style={{ padding: '20px 22px 14px', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
             <div style={{ fontSize: '12px', fontWeight: 700, color: '#ffffff', letterSpacing: '1px', textTransform: 'uppercase' }}>DiskFrame</div>
@@ -2032,6 +2145,13 @@ export default function App(): React.JSX.Element {
           <div style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '14px 22px', borderBottom: '1px solid rgba(255,255,255,0.04)', background: '#0c0c0f', flexShrink: 0 }}>
             
             <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <button
+                onClick={() => setSidebarCollapsed(v => !v)}
+                title={sidebarCollapsed ? 'Show side panel' : 'Hide side panel'}
+                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '26px', height: '26px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '4px', cursor: 'pointer', color: '#8a8a8f' }}
+              >
+                {sidebarCollapsed ? <PanelLeft size={13} /> : <PanelLeftClose size={13} />}
+              </button>
               {selectedDrive ? (
                 <div
                   onClick={() => {
@@ -2194,6 +2314,47 @@ export default function App(): React.JSX.Element {
             <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#e11d2e', fontWeight: 700 }}><Heart size={8} fill="#e11d2e" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} /> {allFavFiles.length}</span> favourites</div>
             {selected.size > 0 && <div style={{ fontSize: '9px', color: '#e11d2e', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}><Check size={8} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} /> {selected.size} selected</div>}
             {activeView === 'Grid' && <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}>tile: <span style={{ color: '#f2f2f0', fontWeight: 700 }}>{tileSize}px</span></div>}
+            {safeModeSample && (
+              <div
+                title={safeModeSample.folder}
+                style={{
+                  fontSize: '9px',
+                  fontWeight: 700,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.5px',
+                  color: '#0a0a0c',
+                  background: '#f5c542',
+                  borderRadius: '2px',
+                  padding: '3px 10px',
+                  whiteSpace: 'nowrap'
+                }}
+              >
+                Diagnostic mode — sample folder, {safeModeSample.count} files
+              </div>
+            )}
+            {updatesPending && (
+              <button
+                onClick={applyPendingUpdates}
+                title="New or changed files were found. Click to apply them."
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontSize: '9px',
+                  fontWeight: 700,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.5px',
+                  color: '#f2f2f0',
+                  background: 'rgba(225,29,46,0.12)',
+                  border: '1px solid rgba(225,29,46,0.45)',
+                  borderRadius: '2px',
+                  padding: '3px 10px',
+                  cursor: 'pointer'
+                }}
+              >
+                <RotateCcw size={10} color="#e11d2e" /> Updates available — Refresh
+              </button>
+            )}
             <div style={{ marginLeft: 'auto' }}>
               {scanning ? (
                 <ScanProgressDisplay scanning={scanning} scanCount={scanCount} />
@@ -2208,16 +2369,7 @@ export default function App(): React.JSX.Element {
       {/* Magnetic glass navigation dock, floating above the status bar */}
       {selectedDrive && (
         <div style={{ position: 'fixed', bottom: '55px', left: '50%', transform: 'translateX(-50%)', zIndex: 1999 }}>
-          <MagneticDock
-            items={[
-              { id: 'all', label: 'All files', icon: <FolderArchive size={18} />, isActive: activeNav === 'all', onClick: () => setActiveNav('all') },
-              { id: 'photos', label: 'Photos', icon: <ImageIcon size={18} />, isActive: activeNav === 'photos', onClick: () => setActiveNav('photos') },
-              { id: 'videos', label: 'Videos', icon: <Film size={18} />, isActive: activeNav === 'videos', onClick: () => setActiveNav('videos') },
-              { id: 'favourites', label: 'Favourites', icon: <Star size={18} />, isActive: activeNav === 'favourites', badge: allFavFiles.length, onClick: () => setActiveNav('favourites') },
-              { id: 'trash', label: 'Trash', icon: <Trash2 size={18} />, isActive: activeNav === 'trash', badge: trashCount, onClick: () => setActiveNav('trash') },
-              { id: 'settings', label: 'Settings', icon: <Settings size={18} />, isActive: activeNav === 'settings', onClick: () => setActiveNav('settings') }
-            ]}
-          />
+          <MagneticDock items={dockItems} />
         </div>
       )}
 

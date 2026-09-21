@@ -2,12 +2,16 @@ import chokidar, { FSWatcher } from 'chokidar'
 import * as fs from 'fs'
 import { BrowserWindow } from 'electron'
 import { updateFileInPlace, removeFileRecord, getGroupedFiles, getFileIno, relinkMovedFile } from './scanner'
+import { isIndexableMedia } from './validation'
 
 // How long a removed file's inode is remembered as a "possible move" before
 // being treated as a genuine delete. Windows reports a move/rename as a plain
 // unlink+add pair (chokidar has no native rename event), so this is the
 // correlation window used to recognize them as the same file.
 const MOVE_CORRELATION_WINDOW_MS = 2000
+
+// Quiet period before a batch of file events turns into one renderer broadcast.
+const NOTIFY_COALESCE_MS = 1500
 
 interface PendingRemoval {
   path: string
@@ -29,9 +33,26 @@ export class WatcherManager {
     this.mainWindow = window
   }
 
+  // Only the drive currently being browsed is watched. Watchers used to
+  // accumulate for every drive opened during a session, and a recursive
+  // chokidar watch over a whole volume holds an OS handle per directory - three
+  // of them left hundreds of thousands of handles live in the main process for
+  // drives nobody was looking at.
   public watchDrive(drivePath: string): void {
     const driveKey = drivePath.slice(0, 2).toUpperCase()
     if (this.watchers.has(driveKey)) return
+
+    for (const [key, watcher] of this.watchers.entries()) {
+      if (key === driveKey) continue
+      console.log(`[WatcherManager] Releasing watcher for inactive drive: ${key}`)
+      watcher.close()
+      this.watchers.delete(key)
+      const timer = this.notifyTimers.get(key)
+      if (timer) {
+        clearTimeout(timer)
+        this.notifyTimers.delete(key)
+      }
+    }
 
     console.log(`[WatcherManager] Starting chokidar watcher for drive: ${drivePath}`)
 
@@ -42,7 +63,13 @@ export class WatcherManager {
         '**/$Recycle.Bin/**',
         '**/System Volume Information/**',
         '**/Windows/**',
-        '**/Program Files/**'
+        '**/Program Files/**',
+        // AppData is where browsers, mail and the app's own database churn
+        // constantly. Watching it produced a stream of events for files that
+        // are never media, and is what filled the index with things like
+        // "Local State", settings.dat and diskframe.db itself.
+        '**/AppData/**',
+        '**/ProgramData/**'
       ],
       persistent: true,
       ignoreInitial: true,
@@ -61,7 +88,7 @@ export class WatcherManager {
   }
 
   private handleUnlink(filePath: string, driveKey: string): void {
-    console.log(`[WatcherManager] Unlink event captured for: "${filePath}". Holding in 250ms debounce window...`)
+    if (!isIndexableMedia(filePath)) return
 
     if (this.pendingUnlinks.has(filePath)) {
       clearTimeout(this.pendingUnlinks.get(filePath)!)
@@ -94,6 +121,10 @@ export class WatcherManager {
   }
 
   private async handleAddOrChange(filePath: string, driveKey: string): Promise<void> {
+    // Cheap reject before any stat or database work - most watcher traffic on a
+    // real machine is not media.
+    if (!isIndexableMedia(filePath)) return
+
     // If pending unlink existed for this path, cancel it (coalesced replacement)
     if (this.pendingUnlinks.has(filePath)) {
       console.log(`[WatcherManager] Coalescing unlink + add/change event for replaced file: "${filePath}"`)
@@ -140,11 +171,31 @@ export class WatcherManager {
     }
   }
 
+  // Every add/change/unlink used to re-query and re-broadcast the drive's
+  // entire index (measured: ~17MB of JSON for a 40k-file drive) - structured
+  // cloned across IPC and then re-grouped and re-sorted by the renderer, per
+  // file event. Copying a folder in made that fire hundreds of times back to
+  // back. Events are now coalesced into one broadcast per quiet period, and
+  // tagged as 'background' so the renderer can offer a refresh instead of
+  // rearranging the gallery under the user.
+  private notifyTimers: Map<string, NodeJS.Timeout> = new Map()
+
   private notifyFilesUpdated(driveKey: string): void {
-    if (this.mainWindow && !this.mainWindow.isDestroyed()) {
-      const grouped = getGroupedFiles(driveKey)
-      this.mainWindow.webContents.send('files-updated', grouped)
-    }
+    const existing = this.notifyTimers.get(driveKey)
+    if (existing) clearTimeout(existing)
+    this.notifyTimers.set(
+      driveKey,
+      setTimeout(() => {
+        this.notifyTimers.delete(driveKey)
+        if (this.mainWindow && !this.mainWindow.isDestroyed()) {
+          this.mainWindow.webContents.send('files-updated', {
+            drive: driveKey,
+            groups: getGroupedFiles(driveKey),
+            reason: 'background'
+          })
+        }
+      }, NOTIFY_COALESCE_MS)
+    )
   }
 
   public unwatchDrive(drivePath: string): void {
@@ -167,6 +218,10 @@ export class WatcherManager {
       clearTimeout(timer)
     }
     this.pendingUnlinks.clear()
+    for (const timer of this.notifyTimers.values()) {
+      clearTimeout(timer)
+    }
+    this.notifyTimers.clear()
     this.recentRemovalsByIno.clear()
   }
 }

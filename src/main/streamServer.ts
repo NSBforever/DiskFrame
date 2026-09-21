@@ -54,6 +54,20 @@ let server: http.Server | null = null
 let serverPort = 0
 let activeProcess: ChildProcess | null = null
 
+// The stream endpoint listens on loopback and takes a file path as a query
+// parameter, so anything running as the user could previously ask it to
+// transcode and hand back any file on disk. Only paths the main process has
+// deliberately handed to the player are served.
+const authorizedPaths = new Set<string>()
+
+export function authorizeStreamPath(filePath: string): void {
+  authorizedPaths.add(filePath.toLowerCase())
+  // One open video at a time; this only needs to cover recent seeks.
+  if (authorizedPaths.size > 32) {
+    authorizedPaths.delete(authorizedPaths.values().next().value as string)
+  }
+}
+
 export function killActiveStream(): void {
   if (activeProcess) {
     try {
@@ -228,7 +242,13 @@ export function initStreamServer(): Promise<number> {
         const filePath = reqUrl.searchParams.get('path')
         const startSecs = parseFloat(reqUrl.searchParams.get('start') || '0')
 
-        if (!filePath || !fs.existsSync(filePath)) {
+        if (!filePath || !authorizedPaths.has(filePath.toLowerCase())) {
+          res.writeHead(403, { 'Content-Type': 'text/plain' })
+          res.end('Forbidden')
+          return
+        }
+
+        if (!fs.existsSync(filePath)) {
           res.writeHead(404, { 'Content-Type': 'text/plain' })
           res.end('File not found')
           return

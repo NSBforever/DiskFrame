@@ -172,18 +172,51 @@ const GridTile = memo(function GridTile({
   actions: GridActions
   hoverPreviewsEnabled: boolean
 }): React.JSX.Element {
-  const [failed, setFailed] = useState(false)
+  // Tracked per source. A single error used to latch one `failed` flag for the
+  // whole tile, so one transient failure - a thumbnail read racing the write
+  // that produced it - left the tile as a placeholder permanently, even though
+  // both the thumbnail and the original were perfectly readable.
+  const [thumbFailed, setThumbFailed] = useState(false)
+  const [originalFailed, setOriginalFailed] = useState(false)
+  // The media:// protocol is served by the MAIN process, so while it is busy
+  // (thumbnail generation, scanning) image requests can fail for reasons that
+  // have nothing to do with the file - it is readable again moments later.
+  // Treating the first error as permanent left tiles blank for the rest of the
+  // session. A couple of delayed retries cover the contention window.
+  const [attempt, setAttempt] = useState(0)
+  const retriesRef = useRef(0)
+  const retryTimerRef = useRef<number | undefined>(undefined)
+  useEffect(() => () => window.clearTimeout(retryTimerRef.current), [])
   const press = useRef<{ x: number; y: number; dragged: boolean } | null>(null)
   const ext = file.ext.toLowerCase()
   const isPhoto = PHOTO_EXTS.has(ext)
   const isVideo = VIDEO_EXTS.has(ext)
   // Full-size originals are only used as a fallback for formats Chromium can decode.
-  const src = thumb ? thumb : isPhoto && ext !== '.heic' ? file.path : null
-  const showImg = !!src && !failed
+  const canUseOriginal = isPhoto && ext !== '.heic'
+  const src = thumb && !thumbFailed ? thumb : canUseOriginal && !originalFailed ? file.path : null
+  const showImg = !!src
   const compact = size < 72
   const reducedMotion = useReducedMotionPref()
+  const imgRef = useRef<HTMLImageElement>(null)
 
-  useEffect(() => setFailed(false), [thumb])
+  useEffect(() => {
+    setThumbFailed(false)
+    retriesRef.current = 0
+  }, [thumb])
+  useEffect(() => {
+    setOriginalFailed(false)
+    retriesRef.current = 0
+  }, [file.path])
+
+  // Blanking src on unmount hints Blink to release the decoded bitmap now
+  // rather than keeping it in its resource cache for possible scroll-back -
+  // measured: unmounting the DOM node alone did not bound renderer memory,
+  // since that cache is keyed by "recently touched", not "currently mounted".
+  useEffect(() => {
+    return () => {
+      if (imgRef.current) imgRef.current.src = ''
+    }
+  }, [src])
 
   // Video hover preview - thumbnail stays visible underneath until the video
   // actually has a decoded frame ready, then fades in on top of it.
@@ -256,13 +289,27 @@ const GridTile = memo(function GridTile({
       <div className="pg-tile-inner">
         {showImg ? (
           <img
-            key={src}
+            ref={imgRef}
+            key={src + ':' + attempt}
             src={mediaUrl(src)}
             loading="lazy"
             decoding="async"
             draggable={false}
             onLoad={e => e.currentTarget.classList.add('pg-loaded')}
-            onError={() => setFailed(true)}
+            // Retry a couple of times (the main process may simply have been
+            // busy), then fall back thumbnail -> original -> placeholder rather
+            // than dropping straight to a placeholder on the first failure.
+            onError={() => {
+              if (retriesRef.current < 2) {
+                retriesRef.current++
+                const delay = 400 * retriesRef.current
+                window.clearTimeout(retryTimerRef.current)
+                retryTimerRef.current = window.setTimeout(() => setAttempt(a => a + 1), delay)
+                return
+              }
+              if (src === thumb) setThumbFailed(true)
+              else setOriginalFailed(true)
+            }}
           />
         ) : (
           <div className={'pg-placeholder' + (isVideo ? ' is-video' : DOC_EXTS.has(ext) ? ' is-doc' : '')}>
@@ -342,6 +389,8 @@ export interface PhotoGridProps {
   /** Bumped when thumbnails are patched into file objects in place. */
   thumbVersion: number
   hoverPreviewsEnabled: boolean
+  /** Fired when the topmost visible section changes, for the date scrubber's highlight. */
+  onVisibleKeyChange?: (key: string | null) => void
 }
 
 interface Pending {
@@ -746,11 +795,21 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
     if (!req || gridWidth <= 0 || handledRequest.current === req.nonce) return
     handledRequest.current = req.nonce
     const s = layoutRef.current.sections.find(sec => sec.key === req.key)
-    if (s) scrollerRef.current?.scrollTo({ top: Math.max(0, s.top - PAD_TOP), behavior: 'smooth' })
+    // Deliberately instant. A smooth scroll across the content walks every row
+    // between here and the target, mounting (and decoding a thumbnail for)
+    // each one on the way past - the opposite of what a date jump is for.
+    // Section offsets come from the layout arithmetic, so the destination is
+    // exact without touching any intervening file.
+    if (s) scrollerRef.current?.scrollTo({ top: Math.max(0, s.top - PAD_TOP), behavior: 'auto' })
   }, [props.scrollRequest, gridWidth])
 
   // ── Visible range ──
-  const overscan = viewport.height * 0.6 + layout.pitch
+  // Buffer of ~2 rows each direction, not a fraction of viewport height - the
+  // previous 0.6*viewport formula kept 5+ rows mounted each way, and every
+  // extra mounted tile is a decoded thumbnail Chromium's renderer process
+  // holds in its image/compositor cache (measured: this was the dominant
+  // driver of multi-GB renderer growth during scrolling, not a JS heap leak).
+  const overscan = 2 * layout.pitch
   const y0 = scrollTop - overscan
   const y1 = scrollTop + viewport.height + overscan
   const headers: React.ReactNode[] = []
@@ -818,6 +877,14 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
   // Floating date pill: names the section under the top edge once its own header has scrolled away.
   const probe = layout.sections[firstSectionAfter(layout.sections, scrollTop + PAD_TOP)]
   const topSection = probe && probe.top < scrollTop - 4 ? probe : undefined
+
+  const lastReportedKeyRef = useRef<string | null | undefined>(undefined)
+  useEffect(() => {
+    const key = probe?.key ?? null
+    if (lastReportedKeyRef.current === key) return
+    lastReportedKeyRef.current = key
+    props.onVisibleKeyChange?.(key)
+  })
 
   return (
     <div ref={outerRef} className="pg-outer">

@@ -15,7 +15,7 @@ const ICON_SIZE = 44
 const MAX_SCALE = 1.4
 const MAGNETIC_DISTANCE = 110
 
-export default function MagneticDock({ items }: { items: DockItemData[] }): React.JSX.Element {
+function MagneticDock({ items }: { items: DockItemData[] }): React.JSX.Element {
   const reducedMotion = useReducedMotionPref()
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([])
   // Cached horizontal centers, in page coordinates - measured once on mount/
@@ -85,3 +85,5 @@ export default function MagneticDock({ items }: { items: DockItemData[] }): Reac
     </div>
   )
 }
+
+export default React.memo(MagneticDock)

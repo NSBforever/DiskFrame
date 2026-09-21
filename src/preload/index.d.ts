@@ -28,12 +28,20 @@ declare global {
     electron: ElectronAPI
     api: {
       getDrives: () => void
+      getDriveFileCounts: () => Promise<Record<string, number>>
       onDrivesUpdated: (callback: (drives: DriveInfo[]) => void) => () => void
       scanDrive: (drivePath: string) => void
       getFiles: (drivePath: string) => void
       onScanProgress: (callback: (data: { count: number; drive: string }) => void) => () => void
       onScanComplete: (callback: (data: { count: number; drive: string }) => void) => () => void
-      onFilesUpdated: (callback: (grouped: Record<string, ScannedFile[]>) => void) => () => void
+      onFilesUpdated: (
+        callback: (payload: {
+          drive: string
+          groups: Record<string, ScannedFile[]>
+          /** 'initial' = the user asked for this drive. 'background' = a scan or watcher found changes. */
+          reason: 'initial' | 'background'
+        }) => void
+      ) => () => void
       toggleFavourite: (filePath: string) => void
       getFavourites: () => void
       onFavouritesUpdated: (callback: (files: ScannedFile[]) => void) => () => void
@@ -72,9 +80,11 @@ declare global {
       onMpvError: (callback: (data: { error: string }) => void) => () => void
       startNativeDrag: (filePaths: string[]) => void
       onNativeDragError: (callback: (data: { error: string }) => void) => () => void
-      getBenchmarkMetrics: () => Promise<{ memoryMB: number; cpuPercent: number }>
       incrementalSyncDrive: (drivePath: string) => Promise<{ fullScanNeeded: boolean; count: number }>
       getVolumeId: (drivePath: string) => Promise<string | null>
+      onSafeModeSample: (
+        callback: (data: { drive: string; folder: string; count: number }) => void
+      ) => () => void
       onElevationStatus: (callback: (status: { isElevated: boolean; message: string }) => void) => () => void
     }
   }
