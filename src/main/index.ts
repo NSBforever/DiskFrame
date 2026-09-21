@@ -602,6 +602,34 @@ app.whenReady().then(() => {
     }
   }
 
+  // ── OPENING A DRIVE IS NOT SCANNING IT ────────────────────────────────────
+  // Opening used to fire scan-drive as well, so every click reconciled the
+  // whole drive: stat() on every indexed file plus a readdir of every known
+  // folder. That is minutes of I/O on a large library and it ran before the
+  // user had even decided to stay. Opening now reads the cached index and
+  // nothing else; reconciliation is a separate, explicitly requested job.
+  ipcMain.on('open-drive', (_event, drivePath: string) => {
+    const drive = normalizeDrive(drivePath)
+    if (!drive) return
+    const indexed = getFileCount(drive)
+    const t0 = Date.now()
+    sendFilesUpdated(drive, 'initial')
+    diag('open-drive', `${drive}: served ${indexed} cached records in ${Date.now() - t0}ms (no scan, no stat)`)
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('drive-opened', {
+        drive,
+        indexed,
+        // A drive with no records needs a first scan, but the user asks for it.
+        needsInitialScan: indexed === 0
+      })
+    }
+  })
+
+  // Explicit reconciliation. Never triggered by opening a drive.
+  ipcMain.on('reconcile-drive', (_event, drivePath: string) => {
+    runScan(drivePath, { forceFull: false }).catch((err) => diag('reconcile', String(err)))
+  })
+
   ipcMain.on('scan-drive', (_event, drivePath: string) => {
     runScan(drivePath, { forceFull: false }).catch((err) => console.error('[scan-drive]', err))
   })

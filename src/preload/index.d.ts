@@ -38,6 +38,11 @@ declare global {
       }>
       onDrivesUpdated: (callback: (drives: DriveInfo[]) => void) => () => void
       scanDrive: (drivePath: string) => void
+      openDrive: (drivePath: string) => void
+      reconcileDrive: (drivePath: string) => void
+      onDriveOpened: (
+        callback: (data: { drive: string; indexed: number; needsInitialScan: boolean }) => void
+      ) => () => void
       getFiles: (drivePath: string) => void
       onScanProgress: (callback: (data: { count: number; drive: string }) => void) => () => void
       onScanComplete: (callback: (data: { count: number; drive: string }) => void) => () => void

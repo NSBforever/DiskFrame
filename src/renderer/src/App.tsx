@@ -547,6 +547,8 @@ const MainContentArea: React.FC<{
   onHoverPreviewsChange: (enabled: boolean) => void
   libraryState: 'idle' | 'loading' | 'ready'
   runtimeMode: { safeMode: boolean; userDataPath: string; isDefaultUserData: boolean } | null
+  driveOpened: { drive: string; indexed: number; needsInitialScan: boolean } | null
+  onReconcile: () => void
 }> = React.memo(({
   activeNav,
   activeView,
@@ -585,7 +587,9 @@ const MainContentArea: React.FC<{
   hoverPreviewsEnabled,
   onHoverPreviewsChange,
   libraryState,
-  runtimeMode
+  runtimeMode,
+  driveOpened,
+  onReconcile
 }) => {
   const [placesSubView, setPlacesSubView] = useState<'map' | 'globe'>('map')
   const [windowWidth, setWindowWidth] = useState(window.innerWidth)
@@ -1002,15 +1006,28 @@ const MainContentArea: React.FC<{
             </div>
             <div style={{ fontSize: '9px', color: '#52525b', wordBreak: 'break-all', maxWidth: '520px' }}>{runtimeMode?.userDataPath}</div>
           </>
+        ) : driveOpened?.needsInitialScan ? (
+          <>
+            <FolderOpen size={40} style={{ color: '#52525b' }} />
+            <div style={{ fontSize: '13px', color: '#f2f2f0', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px' }}>
+              {selectedDrive} has not been indexed yet
+            </div>
+            <div style={{ fontSize: '11px', color: '#8a8a8f', maxWidth: '460px', lineHeight: 1.6 }}>
+              Opening a drive only reads the existing index — it never scans on its own. Scanning a large
+              drive reads every folder and can take a long time.
+            </div>
+            <button onClick={onReconcile} className="cred-button" style={{ marginTop: '4px', padding: '8px 18px', background: '#e11d2e', borderColor: '#e11d2e', color: '#fff', fontWeight: 700 }}>
+              Scan {selectedDrive} now
+            </button>
+          </>
         ) : (
           <>
             <FolderOpen size={40} style={{ color: '#52525b' }} />
             <div style={{ fontSize: '13px', color: '#f2f2f0', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px' }}>
-              No media indexed on {selectedDrive}
+              Nothing matches in {selectedDrive}
             </div>
             <div style={{ fontSize: '11px', color: '#8a8a8f', maxWidth: '460px', lineHeight: 1.6 }}>
-              Nothing matching the current filter is in the index for this drive. If the drive was just
-              connected, its scan may not have run yet.
+              {driveOpened ? `${driveOpened.indexed.toLocaleString()} records are indexed for this drive, but none match the current filter or search.` : 'No records match the current filter or search.'}
             </div>
           </>
         )}
@@ -1331,6 +1348,9 @@ export default function App(): React.JSX.Element {
   // Distinguishes "still loading" from "genuinely empty" so the status bar
   // never reports a confident 0 for data that simply has not arrived.
   const [libraryState, setLibraryState] = useState<'idle' | 'loading' | 'ready'>('idle')
+  // What the cached open reported: how many records exist for this drive, and
+  // whether it has never been indexed (which needs a first scan the user asks for).
+  const [driveOpened, setDriveOpened] = useState<{ drive: string; indexed: number; needsInitialScan: boolean } | null>(null)
   const [updatesPending, setUpdatesPending] = useState(false)
   const pendingFilesRef = useRef<{ drive: string; groups: Record<string, ScannedFile[]> } | null>(null)
   const hasFilesRef = useRef(false)
@@ -1515,6 +1535,17 @@ export default function App(): React.JSX.Element {
         })
       : () => {}
 
+    const unsubOpened = window.api.onDriveOpened
+      ? window.api.onDriveOpened((d) => {
+          if (d.drive !== currentDriveRef.current) return
+          setDriveOpened(d)
+          setScanning(false)
+          // A cached open is complete the moment the records land. If there are
+          // none, that is a real answer, not a loading state.
+          if (d.indexed === 0) setLibraryState('ready')
+        })
+      : () => {}
+
     const unsubToggled = window.api.onFavouriteToggled((d) => {
       setFavourites(prev => {
         const next = new Set(prev)
@@ -1557,6 +1588,7 @@ export default function App(): React.JSX.Element {
       unsubElevation()
       unsubToggled()
       unsubSample()
+      unsubOpened()
     }
   }, [refreshTrash])
 
@@ -1590,12 +1622,19 @@ export default function App(): React.JSX.Element {
     hasFilesRef.current = false
     setLibraryState('loading')
 
-    // Show whatever's already indexed for this drive instantly (no scan wait);
-    // scanDrive's incremental sync runs in the background and will replace
-    // this with fresher data via the same files-updated event once it lands.
-    window.api.getFiles(name)
-    window.api.scanDrive(name)
+    setDriveOpened(null)
+    // Cached-only. Opening a drive no longer reconciles it: that used to stat
+    // every indexed file before the user had even decided to stay. Use the
+    // "Check for changes" action to reconcile.
+    window.api.openDrive(name)
   }
+
+  const handleReconcile = useCallback((): void => {
+    if (!selectedDrive) return
+    setScanning(true)
+    setScanCount(0)
+    window.api.reconcileDrive(selectedDrive)
+  }, [selectedDrive])
 
   const handleSettingsTileSizeChange = (percent: number) => {
     const newSize = Math.max(55, Math.round((percent / 100) * 120))
@@ -2375,6 +2414,8 @@ export default function App(): React.JSX.Element {
           onHoverPreviewsChange={handleHoverPreviewsChange}
           libraryState={libraryState}
           runtimeMode={runtimeMode}
+          driveOpened={driveOpened}
+          onReconcile={handleReconcile}
         />
 
         {/* Status bar - only rendered after a drive is selected */}
@@ -2420,6 +2461,23 @@ export default function App(): React.JSX.Element {
               >
                 Alternate data directory
               </div>
+            )}
+            {/* Reconciliation is a deliberate action now. Opening a drive only
+                reads the cached index. */}
+            {selectedDrive && !scanning && (
+              <button
+                onClick={handleReconcile}
+                title={`Re-check ${selectedDrive} for new, changed or removed files. This reads the drive and may take a while on a large library.`}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '6px',
+                  fontSize: '9px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px',
+                  color: '#8a8a8f', background: 'rgba(255,255,255,0.03)',
+                  border: '1px solid rgba(255,255,255,0.08)', borderRadius: '2px',
+                  padding: '3px 10px', cursor: 'pointer', whiteSpace: 'nowrap'
+                }}
+              >
+                <RotateCcw size={10} /> Check for changes
+              </button>
             )}
             {safeModeSample && (
               <div

@@ -13,6 +13,17 @@ const api = {
     }
   },
   scanDrive: (p: string) => ipcRenderer.send('scan-drive', p),
+  /** Cached-only open: reads the index, never scans or stats the drive. */
+  openDrive: (p: string) => ipcRenderer.send('open-drive', p),
+  /** Explicit reconciliation, separate from opening. */
+  reconcileDrive: (p: string) => ipcRenderer.send('reconcile-drive', p),
+  onDriveOpened: (cb: (d: { drive: string; indexed: number; needsInitialScan: boolean }) => void) => {
+    const listener = (_e: unknown, d: any) => cb(d)
+    ipcRenderer.on('drive-opened', listener)
+    return () => {
+      ipcRenderer.removeListener('drive-opened', listener)
+    }
+  },
   getFiles: (p: string) => ipcRenderer.send('get-files', p),
   onScanProgress: (cb: (d: { count: number; drive: string }) => void) => {
     const listener = (_e: unknown, d: any) => cb(d)
