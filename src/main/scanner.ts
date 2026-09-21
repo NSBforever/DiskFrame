@@ -652,16 +652,35 @@ export function getFileCountsByDrive(): Record<string, number> {
 // Restricted to extensions a thumbnail can actually be produced from. The
 // unrestricted version handed the backfill thousands of .db/.json/.ts/no-ext
 // rows, each costing a failed sharp or ffmpeg spawn at startup.
+/** A thumbnail column that does not name a real file on disk. */
+const NO_THUMB_SQL = "(thumb IS NULL OR thumb = '' OR thumb = 'NO_FILE')"
+
 export function getAllFilesWithoutThumbs(): ScannedFile[] {
   const thumbable = thumbnailExts
   const placeholders = thumbable.map(() => '?').join(',')
   return db
     .prepare(
       `SELECT * FROM files
-       WHERE (thumb IS NULL OR thumb = '') AND trashed_at IS NULL AND ext IN (${placeholders})
+       WHERE ${NO_THUMB_SQL} AND trashed_at IS NULL AND ext IN (${placeholders})
        ORDER BY date DESC`
     )
     .all(...thumbable) as ScannedFile[]
+}
+
+/**
+ * Clears the historical 'NO_FILE' sentinel out of the thumbnail path column.
+ *
+ * It was written when a file could not be read, but it lives in a column that
+ * is supposed to hold a path. The renderer treated it as one, and the
+ * "needs a thumbnail" query treated the row as already done - so those rows
+ * could never recover, even once the file was readable again. Idempotent.
+ */
+export function clearThumbSentinels(): number {
+  const info = db.prepare("UPDATE files SET thumb = NULL WHERE thumb = 'NO_FILE'").run()
+  if (info.changes > 0) {
+    console.log(`[thumb] cleared ${info.changes} 'NO_FILE' sentinels back to NULL`)
+  }
+  return info.changes
 }
 
 function makeHash(fullPath: string): string {

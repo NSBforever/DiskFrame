@@ -198,7 +198,10 @@ const GridTile = memo(function GridTile({
   const isVideo = VIDEO_EXTS.has(ext)
   // Full-size originals are only used as a fallback for formats Chromium can decode.
   const canUseOriginal = isPhoto && ext !== '.heic'
-  const src = thumb && !thumbFailed ? thumb : canUseOriginal && !originalFailed ? file.path : null
+  // 'NO_FILE' is a historical sentinel that older builds wrote into the
+  // thumbnail *path* column. It is not a path, so it must never be requested.
+  const usableThumb = thumb && thumb !== 'NO_FILE' ? thumb : null
+  const src = usableThumb && !thumbFailed ? usableThumb : canUseOriginal && !originalFailed ? file.path : null
   const showImg = !!src
   const compact = size < 72
   const reducedMotion = useReducedMotionPref()
@@ -312,7 +315,7 @@ const GridTile = memo(function GridTile({
                 retryTimerRef.current = window.setTimeout(() => setAttempt(a => a + 1), delay)
                 return
               }
-              if (src === thumb) setThumbFailed(true)
+              if (src === usableThumb) setThumbFailed(true)
               else setOriginalFailed(true)
             }}
           />

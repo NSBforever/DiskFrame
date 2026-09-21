@@ -180,18 +180,25 @@ export function useLibrary(query: LibraryQuery | null): Library {
     [fetchPage, queryEpoch]
   )
 
-  const patchThumb = useCallback((path: string, thumb: string): boolean => {
-    for (const page of pagesRef.current.values()) {
-      for (const row of page) {
-        if (row.path === path) {
-          if (row.thumb === thumb) return false
-          row.thumb = thumb
-          return true
+  // Patches a resident row in place and repaints. Thumbnails do not change
+  // grouping or ordering, so nothing is re-queried and the gallery does not
+  // move - the tile simply gains its image.
+  const patchThumb = useCallback(
+    (path: string, thumb: string): boolean => {
+      for (const page of pagesRef.current.values()) {
+        for (const row of page) {
+          if (row.path === path) {
+            if (row.thumb === thumb) return false
+            row.thumb = thumb
+            scheduleRender()
+            return true
+          }
         }
       }
-    }
-    return false
-  }, [])
+      return false
+    },
+    [scheduleRender]
+  )
 
   const reload = useCallback(() => {
     const q = queryRef.current

@@ -48,7 +48,8 @@ import {
   getLibrarySummary,
   getLibraryPage,
   MAX_PAGE_SIZE,
-  purgeGeneratedAssetRows
+  purgeGeneratedAssetRows,
+  clearThumbSentinels
 } from './scanner'
 import type { LibraryQuery } from './libraryQuery'
 
@@ -364,7 +365,13 @@ async function backfillAllMissingThumbnails(): Promise<void> {
       if (!file) break
 
       if (!fs.existsSync(file.path)) {
-        updateThumb(file.path, 'NO_FILE')
+        // Deliberately leaves `thumb` NULL. This used to write the string
+        // 'NO_FILE' into the thumbnail *path* column, which did two kinds of
+        // damage: the renderer treated the non-empty value as a usable path and
+        // requested media:///NO_FILE, and the backfill's "needs a thumbnail"
+        // query (thumb IS NULL OR thumb = '') then skipped the row forever - so
+        // a file on a temporarily disconnected drive could never get a
+        // thumbnail again even after the drive came back.
         skipCount++
         continue
       }
@@ -421,6 +428,7 @@ app.whenReady().then(() => {
   // One-time (idempotent) cleanup of index rows for the app's own generated
   // thumbnails and cache files. Rows only - nothing on disk is removed.
   try {
+    clearThumbSentinels()
     const purged = purgeGeneratedAssetRows()
     if (purged.removed > 0) diag('purge', `removed ${purged.removed} generated-asset rows of ${purged.scanned} scanned`)
   } catch (err) {
@@ -788,30 +796,68 @@ app.whenReady().then(() => {
   // Bounded concurrency (measured: unbounded Promise.all here could fire 50+
   // simultaneous sharp/ffmpeg spawns for one screen of thumbless tiles,
   // starving the renderer of CPU worse than the startup backfill did).
+  // On-demand thumbnails for what is on screen.
+  //
+  // Scrolling re-asks for overlapping sets constantly, so without these guards
+  // the same file is re-generated repeatedly and work for a viewport the user
+  // has already left keeps running:
+  //   - inFlight dedupes concurrent requests for the same path
+  //   - failed remembers paths that could not produce a thumbnail, so a missing
+  //     or unreadable file is not retried on every scroll (bounded, and cleared
+  //     when the set gets large so a reconnected drive gets a fresh chance)
+  //   - each call takes a token; when a newer call arrives the older one stops
+  //     between files rather than finishing work nobody is looking at
+  const thumbInFlight = new Set<string>()
+  const thumbFailed = new Set<string>()
+  let thumbRequestToken = 0
+
   ipcMain.handle('prioritize-thumbnails', async (_event, rawPaths: string[]) => {
-    // One screen's worth. A caller asking for thousands is not describing
-    // anything that is actually visible.
+    // One screen plus a small buffer. A caller asking for thousands is not
+    // describing anything that is actually visible.
     const paths = safePathList(rawPaths, 200)
-    const results: (string | null)[] = new Array(paths.length).fill(null)
+    const myToken = ++thumbRequestToken
+
+    if (thumbFailed.size > 5000) thumbFailed.clear()
+
+    const todo = paths.filter((p) => !thumbInFlight.has(p) && !thumbFailed.has(p))
+    for (const p of todo) thumbInFlight.add(p)
+
     const CONCURRENCY = 2
     let cursor = 0
     async function worker(): Promise<void> {
-      while (cursor < paths.length) {
-        const i = cursor++
-        const p = paths[i]
-        if (!fs.existsSync(p)) continue
-        const thumbPath = await generateThumbForFile(p, extname(p).toLowerCase())
-        if (thumbPath) {
-          updateThumb(p, thumbPath)
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath })
+      while (cursor < todo.length) {
+        // A newer viewport request supersedes this one.
+        if (myToken !== thumbRequestToken || isQuitting) return
+        const p = todo[cursor++]
+        try {
+          if (!fs.existsSync(p)) {
+            thumbFailed.add(p)
+            continue
           }
+          const thumbPath = await generateThumbForFile(p, extname(p).toLowerCase())
+          if (thumbPath) {
+            updateThumb(p, thumbPath)
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath })
+            }
+          } else {
+            thumbFailed.add(p)
+          }
+        } catch (err) {
+          thumbFailed.add(p)
+          console.error('[thumb:onDemand]', p, err)
+        } finally {
+          thumbInFlight.delete(p)
         }
-        results[i] = thumbPath
+        await new Promise((r) => setImmediate(r))
       }
     }
-    await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()))
-    return results
+    try {
+      await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()))
+    } finally {
+      for (const p of todo) thumbInFlight.delete(p)
+    }
+    return []
   })
 
   // ── VAULT / HIDE ──

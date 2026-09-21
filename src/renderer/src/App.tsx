@@ -1477,6 +1477,9 @@ export default function App(): React.JSX.Element {
   // Queue to buffer thumbnail ready events, preventing multiple full re-renders
   const thumbQueueRef = useRef<{ filePath: string; thumbPath: string; tries?: number }[]>([])
   const fileIndexRef = useRef<Map<string, ScannedFile>>(new Map())
+  // Held in a ref so the drain interval (created once) always reaches the
+  // current library instance without being torn down and rebuilt.
+  const patchLibraryThumbRef = useRef<(path: string, thumb: string) => boolean>(() => false)
   const [thumbVersion, setThumbVersion] = useState(0)
 
   const refreshTrash = useCallback(async () => {
@@ -1518,18 +1521,20 @@ export default function App(): React.JSX.Element {
 
       // Thumbnails don't change grouping or order, so patch the file objects in place and
       // bump a version counter instead of rebuilding (and re-sorting) the whole library.
+      // Rows live in the library's bounded page cache now, not in a
+      // renderer-wide array. Patching only fileIndexRef meant any thumbnail
+      // that arrived AFTER its page had been fetched never reached the tile -
+      // which is why slower video thumbnails stayed as placeholders while
+      // photos (already thumbed when the page was queried) looked fine.
       const index = fileIndexRef.current
       let patched = false
       const unmatched: { filePath: string; thumbPath: string; tries?: number }[] = []
       for (const item of batch) {
         const thumbPath = batchMap.get(item.filePath)!
+        const inLibrary = patchLibraryThumbRef.current(item.filePath, thumbPath)
+        if (inLibrary) { patched = true; continue }
         const f = index.get(item.filePath)
         if (!f) {
-          // The file index is rebuilt asynchronously after a folder loads, so a
-          // thumbnail can be reported before its row is known here. Dropping it
-          // left the tile showing a placeholder until something forced a
-          // remount. Retry a few drains, then give up so an entry whose row
-          // never arrives (drive switched, folder closed) cannot spin forever.
           const tries = (item.tries ?? 0) + 1
           if (tries <= 10) unmatched.push({ filePath: item.filePath, thumbPath, tries })
           continue
@@ -1764,6 +1769,7 @@ export default function App(): React.JSX.Element {
   )
   const library = useLibrary(libraryQuery)
   const formatGroupKey = useMemo(() => makeGroupFormatter(groupBy), [groupBy])
+  patchLibraryThumbRef.current = library.patchThumb
 
 
   const groupedFiles = useMemo<Record<string, ScannedFile[]>>(
