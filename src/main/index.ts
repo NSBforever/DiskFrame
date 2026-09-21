@@ -44,8 +44,12 @@ import {
   recordCopiedFile,
   recordMovedFile,
   indexSampleFolder,
-  SAMPLE_DRIVE_KEY
+  SAMPLE_DRIVE_KEY,
+  getLibrarySummary,
+  getLibraryPage,
+  MAX_PAGE_SIZE
 } from './scanner'
+import type { LibraryQuery } from './libraryQuery'
 
 import { initStreamServer, probeMedia, killActiveStream, closeStreamServer, authorizeStreamPath } from './streamServer'
 import { initMpv, sendMpvCommand, updateMpvBounds, closeMpv, refreshMpvBounds } from './mpvManager'
@@ -623,6 +627,44 @@ app.whenReady().then(() => {
         needsInitialScan: indexed === 0
       })
     }
+  })
+
+  // ── PAGINATED LIBRARY READS ───────────────────────────────────────────────
+  // The summary is small (one row per group) and lets the renderer lay out the
+  // whole grid without holding any file rows. Pages are fetched only for what
+  // is actually on screen.
+  function normalizeQuery(raw: unknown): LibraryQuery | null {
+    const q = (raw ?? {}) as Partial<LibraryQuery>
+    const drive = q.drive === SAMPLE_DRIVE_KEY ? SAMPLE_DRIVE_KEY : normalizeDrive(q.drive)
+    if (!drive) return null
+    const navs = ['all', 'photos', 'videos', 'docs', 'screenshots', 'places', 'favourites']
+    const groups = ['day', 'month', 'year', 'location', 'favorites']
+    return {
+      drive,
+      nav: (navs.includes(String(q.nav)) ? q.nav : 'all') as LibraryQuery['nav'],
+      search: typeof q.search === 'string' ? q.search.slice(0, 200) : '',
+      groupBy: (groups.includes(String(q.groupBy)) ? q.groupBy : 'day') as LibraryQuery['groupBy'],
+      order: q.order === 'reverse' ? 'reverse' : 'default'
+    }
+  }
+
+  ipcMain.handle('library-summary', (_event, raw) => {
+    const q = normalizeQuery(raw)
+    if (!q) return { total: 0, groups: [] }
+    const t0 = Date.now()
+    const res = getLibrarySummary(q)
+    diag('library', `summary ${q.drive}/${q.nav}/${q.groupBy}: ${res.total} files in ${res.groups.length} groups (${Date.now() - t0}ms)`)
+    return res
+  })
+
+  ipcMain.handle('library-page', (_event, raw) => {
+    const { query, offset, limit } = (raw ?? {}) as { query?: unknown; offset?: number; limit?: number }
+    const q = normalizeQuery(query)
+    if (!q) return { offset: 0, rows: [] }
+    const from = Math.max(0, Math.floor(Number(offset) || 0))
+    const size = Math.max(1, Math.min(Math.floor(Number(limit) || 100), MAX_PAGE_SIZE))
+    const rows = getLibraryPage(q, from, size)
+    return { offset: from, rows }
   })
 
   // Explicit reconciliation. Never triggered by opening a drive.

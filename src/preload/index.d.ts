@@ -44,6 +44,17 @@ declare global {
         callback: (data: { drive: string; indexed: number; needsInitialScan: boolean }) => void
       ) => () => void
       getFiles: (drivePath: string) => void
+      librarySummary: (query: {
+        drive: string; nav: string; search: string; groupBy: string; order: string
+      }) => Promise<{
+        total: number
+        groups: { key: string; count: number; minDate: string; maxDate: string; offset: number }[]
+      }>
+      libraryPage: (
+        query: { drive: string; nav: string; search: string; groupBy: string; order: string },
+        offset: number,
+        limit: number
+      ) => Promise<{ offset: number; rows: ScannedFile[] }>
       onScanProgress: (callback: (data: { count: number; drive: string }) => void) => () => void
       onScanComplete: (callback: (data: { count: number; drive: string }) => void) => () => void
       onFilesUpdated: (

@@ -8,6 +8,13 @@ import sharp from 'sharp'
 import { createHash } from 'crypto'
 import { Worker } from 'worker_threads'
 import {
+  summarySql,
+  pageSql,
+  countSql,
+  groupOffsets,
+  type LibraryQuery
+} from './libraryQuery'
+import {
   isUsableCaptureDate,
   isMassRemoval,
   isIndexableMedia,
@@ -230,6 +237,10 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_files_drive_hidden_trashed_date ON files (drive, hidden, trashed_at, date DESC);
   CREATE INDEX IF NOT EXISTS idx_files_trashed ON files (trashed_at) WHERE trashed_at IS NOT NULL;
   CREATE INDEX IF NOT EXISTS idx_files_favourited ON files (favourited) WHERE favourited = 1;
+  -- Covers the exact ORDER BY pagination uses (date, then the unique path
+  -- tie-break). Without the path column SQLite has to re-sort each page, which
+  -- is what makes deep OFFSET queries degrade on a large library.
+  CREATE INDEX IF NOT EXISTS idx_files_page ON files (drive, hidden, trashed_at, date DESC, path ASC);
 `)
 
 // Migrate existing DB — add columns if missing
@@ -1118,6 +1129,50 @@ export function recordMovedFile(srcPath: string, destPath: string, destDrive: st
     return
   }
   recordCopiedFile(srcPath, destPath, destDrive)
+}
+
+// ─── PAGINATED LIBRARY READS ─────────────────────────────────────────────────
+/** Hard ceiling on a single page, so a bad or hostile request cannot ask for
+ *  the whole library in one call and undo the point of paginating. */
+export const MAX_PAGE_SIZE = 500
+
+export function getLibrarySummary(q: LibraryQuery): {
+  total: number
+  groups: { key: string; count: number; minDate: string; maxDate: string; offset: number }[]
+} {
+  const s = summarySql(q)
+  const rows = db.prepare(s.sql).all(...(s.params as never[])) as {
+    gkey: string
+    n: number
+    min_date: string
+    max_date: string
+  }[]
+  const offsets = groupOffsets(rows)
+  let total = 0
+  for (const r of rows) total += r.n
+  return {
+    total,
+    groups: rows.map((r) => ({
+      key: r.gkey,
+      count: r.n,
+      minDate: r.min_date,
+      maxDate: r.max_date,
+      offset: offsets.get(r.gkey) ?? 0
+    }))
+  }
+}
+
+export function getLibraryPage(q: LibraryQuery, offset: number, limit: number): ScannedFile[] {
+  const bounded = Math.max(1, Math.min(Math.floor(limit) || 1, MAX_PAGE_SIZE))
+  const from = Math.max(0, Math.floor(offset) || 0)
+  const p = pageSql(q)
+  return db.prepare(p.sql).all(...(p.params as never[]), bounded, from) as ScannedFile[]
+}
+
+export function getLibraryCount(q: LibraryQuery): number {
+  const c = countSql(q)
+  const row = db.prepare(c.sql).get(...(c.params as never[])) as { n: number }
+  return row?.n ?? 0
 }
 
 /** Drive key used for the diagnostic sample folder, kept apart from real drives. */
