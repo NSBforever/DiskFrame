@@ -17,7 +17,6 @@ import {
 import {
   isUsableCaptureDate,
   isMassRemoval,
-  isGeneratedAsset,
   isIndexableUserMedia,
   videoExts,
   allExts,
@@ -1149,7 +1148,10 @@ export function purgeGeneratedAssetRows(): { removed: number; scanned: number } 
   const candidates = db
     .prepare('SELECT id, path FROM files')
     .all() as { id: number; path: string }[]
-  const doomed = candidates.filter((r) => isGeneratedAsset(r.path))
+  // Two classes of wrongly-indexed row: the app's own generated output, and
+  // anything that was never media to begin with (.log/.db/.tmp and
+  // extensionless files the old unfiltered watcher swept in).
+  const doomed = candidates.filter((r) => !isIndexableUserMedia(r.path))
   if (doomed.length === 0) return { removed: 0, scanned: candidates.length }
 
   const del = db.prepare('DELETE FROM files WHERE id = ?')
@@ -1158,7 +1160,7 @@ export function purgeGeneratedAssetRows(): { removed: number; scanned: number } 
   })
   tx(doomed)
   console.log(
-    `[purge] removed ${doomed.length} generated-asset index rows (files on disk untouched)`
+    `[purge] removed ${doomed.length} wrongly-indexed rows (generated assets + non-media); files on disk untouched`
   )
   return { removed: doomed.length, scanned: candidates.length }
 }

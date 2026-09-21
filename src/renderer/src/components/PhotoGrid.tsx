@@ -379,6 +379,8 @@ export interface PhotoGridProps {
   groups: LibraryGroup[]
   /** Resident row for a global index, or undefined while its page loads. */
   getRow: (index: number) => ScannedFile | undefined
+  /** Bumped when resident pages change; getRow is stable so this is the signal. */
+  pageVersion: number
   /** Asks the library to keep this global index range resident. */
   ensureRange: (start: number, end: number) => void
   /** Label for a group key, formatted by the caller (locale stays out of SQL). */
@@ -389,8 +391,10 @@ export interface PhotoGridProps {
   /** Preferred tile size in px (persisted). */
   tileSize: number
   onTileSizeCommit: (size: number) => void
-  /** Pinched out past the densest level. */
+  /** Pinched out past the densest level - caller coarsens the grouping. */
   onZoomOutBeyond: () => void
+  /** Pinched in past the largest level - caller makes the grouping finer. */
+  onZoomInBeyond?: () => void
   onOpen: (file: ScannedFile, list: ScannedFile[], e?: React.MouseEvent) => void
   onSelect: (file: ScannedFile, e: React.MouseEvent) => void
   onFav: (file: ScannedFile) => void
@@ -607,7 +611,7 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
   }, [])
 
   // ── Pinch / ctrl+wheel zoom ──
-  const gesture = useRef({ active: false, raw: 1, endTimer: 0 as number | undefined, lastStep: 0, startedAtDensest: false, edgeNotches: 0 })
+  const gesture = useRef({ active: false, raw: 1, endTimer: 0 as number | undefined, lastStep: 0, startedAtDensest: false, startedAtLargest: false, edgeNotches: 0, edgeNotchesIn: 0 })
 
   const neighbours = useCallback((): { bigger?: number; denser?: number } => {
     const levels = levelsFor(gridWidth)
@@ -632,7 +636,9 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
       window.clearTimeout(g.endTimer)
       if (g.active) return
       g.active = true
-      g.startedAtDensest = neighbours().denser === undefined
+      const nb = neighbours()
+      g.startedAtDensest = nb.denser === undefined
+      g.startedAtLargest = nb.bigger === undefined
       const el = scrollerRef.current
       // If a settle animation is running, continue from the scale currently on screen.
       if (el && scaleRef.current !== 1) {
@@ -683,13 +689,15 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
     const g = gesture.current
     if (!g.active) return
     g.active = false
-    const { denser } = neighbours()
-    // Only leave the grid if the pinch *started* at the densest level, so one long
-    // pinch doesn't fly through every zoom level and out of the view.
-    const pinchedPast = g.startedAtDensest && denser === undefined && g.raw < 0.8
+    const { denser, bigger } = neighbours()
+    // Only change grouping if the pinch *started* at that end, so one long
+    // pinch doesn't fly through every zoom level and several grouping levels.
+    const pinchedPastDense = g.startedAtDensest && denser === undefined && g.raw < 0.8
+    const pinchedPastLarge = g.startedAtLargest && bigger === undefined && g.raw > 1.25
     g.raw = 1
     setScale(1, true)
-    if (pinchedPast) propsRef.current.onZoomOutBeyond()
+    if (pinchedPastDense) propsRef.current.onZoomOutBeyond()
+    else if (pinchedPastLarge) propsRef.current.onZoomInBeyond?.()
   }, [neighbours, setScale])
 
   const stepZoom = useCallback(
@@ -702,18 +710,28 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
       originRef.current = pointerToLocal(clientX, clientY)
       const target = dir === 'in' ? bigger : denser
       if (target === undefined) {
+        // Two notches at the end of the range before the grouping changes.
+        // One notch would flip grouping on an ordinary overscroll.
         if (dir === 'out') {
+          g.edgeNotchesIn = 0
           if (++g.edgeNotches >= 2) {
             g.edgeNotches = 0
             propsRef.current.onZoomOutBeyond()
           }
         } else {
-          setScale(1.04, false)
-          requestAnimationFrame(() => setScale(1, true))
+          g.edgeNotches = 0
+          if (++g.edgeNotchesIn >= 2) {
+            g.edgeNotchesIn = 0
+            propsRef.current.onZoomInBeyond?.()
+          } else {
+            setScale(1.04, false)
+            requestAnimationFrame(() => setScale(1, true))
+          }
         }
         return
       }
       g.edgeNotches = 0
+      g.edgeNotchesIn = 0
       commitCols(target, 1, true)
     },
     [commitCols, neighbours, setScale]

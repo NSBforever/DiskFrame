@@ -217,3 +217,44 @@
   font-size: 13px;
   color: #8a8a8f;
 }
+
+/* Glass drive cards: a slight lift on hover, returning fully to rest. The
+   transform is on the card only and the grid slot is fixed, so cards cannot
+   shift each other. */
+.drive-card {
+  background: rgba(18, 18, 24, 0.62);
+  backdrop-filter: blur(18px) saturate(1.35);
+  -webkit-backdrop-filter: blur(18px) saturate(1.35);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 14px;
+  position: relative;
+  transition: transform 170ms cubic-bezier(0.22, 1, 0.36, 1),
+              border-color 170ms ease, background-color 170ms ease;
+}
+.drive-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  border-radius: 14px 14px 0 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.16) 18%, rgba(255,255,255,0.16) 82%, transparent);
+  pointer-events: none;
+}
+.drive-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(225, 29, 46, 0.45);
+  background: rgba(24, 24, 31, 0.68);
+}
+.drive-card:active { transform: translateY(0) scale(0.99); }
+.drive-card:focus-visible {
+  outline: 2px solid #e11d2e;
+  outline-offset: 3px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .drive-card { transition: none; }
+  .drive-card:hover, .drive-card:active { transform: none; }
+}
+.df-reduced-effects .drive-card {
+  backdrop-filter: none; -webkit-backdrop-filter: none;
+  background: rgba(14, 14, 19, 0.96);
+}

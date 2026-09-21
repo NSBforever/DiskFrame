@@ -557,6 +557,7 @@ const MainContentArea: React.FC<{
   setTransitioning: (transitioning: boolean) => void
   libraryGroups: LibraryGroup[]
   getRow: (index: number) => ScannedFile | undefined
+  pageVersion: number
   ensureRange: (start: number, end: number) => void
   formatGroupKey: (key: string) => string
   handleWheel: (e: React.WheelEvent) => void
@@ -565,6 +566,9 @@ const MainContentArea: React.FC<{
   onDragStart: (file: ScannedFile, e: React.DragEvent) => void
   setActiveView: (view: string) => void
   onGridZoomOutBeyond: () => void
+  onGridZoomInBeyond: () => void
+  visibleKeyRefProp: React.MutableRefObject<string | null>
+  pendingGroupAnchorRef: React.MutableRefObject<string | null>
   thumbVersion: number
   hoverPreviewsEnabled: boolean
   onHoverPreviewsChange: (enabled: boolean) => void
@@ -601,6 +605,7 @@ const MainContentArea: React.FC<{
   transitioning,
   libraryGroups,
   getRow,
+  pageVersion,
   ensureRange,
   formatGroupKey,
   handleWheel,
@@ -609,6 +614,9 @@ const MainContentArea: React.FC<{
   onDragStart,
   setActiveView,
   onGridZoomOutBeyond,
+  onGridZoomInBeyond,
+  visibleKeyRefProp,
+  pendingGroupAnchorRef,
   thumbVersion,
   hoverPreviewsEnabled,
   onHoverPreviewsChange,
@@ -753,7 +761,25 @@ const MainContentArea: React.FC<{
   }, [activeNav, activeView, favouritesItems, trashItems, timelineItems, yearsItems])
 
   const [gridScrollRequest, setGridScrollRequest] = useState<{ key: string; nonce: number } | null>(null)
+
+  // Re-anchor after a grouping change. Group keys are date slices, so the group
+  // covering the same moment is whichever key is a prefix of the old one, or
+  // has the old one as its prefix. Resolved against the new summary, so keeping
+  // the user's place needs no file rows at all.
+  useEffect(() => {
+    const anchor = pendingGroupAnchorRef.current
+    if (!anchor || libraryGroups.length === 0) return
+    pendingGroupAnchorRef.current = null
+    const match =
+      libraryGroups.find((g) => anchor.startsWith(g.key)) ??
+      libraryGroups.find((g) => g.key.startsWith(anchor))
+    if (match) setGridScrollRequest({ key: match.key, nonce: Date.now() })
+  }, [libraryGroups, pendingGroupAnchorRef])
   const [visibleKey, setVisibleKey] = useState<string | null>(null)
+  const onVisibleKeyChange = useCallback((key: string | null) => {
+    setVisibleKey(key)
+    visibleKeyRefProp.current = key
+  }, [])
   const jumpToGroup = useCallback((key: string | undefined) => {
     setActiveView('Grid')
     if (key) setGridScrollRequest({ key, nonce: Date.now() })
@@ -1074,6 +1100,7 @@ const MainContentArea: React.FC<{
         <PhotoGrid
           groups={libraryGroups}
           getRow={getRow}
+          pageVersion={pageVersion}
           ensureRange={ensureRange}
           formatGroupKey={formatGroupKey}
           selected={selected}
@@ -1082,6 +1109,7 @@ const MainContentArea: React.FC<{
           tileSize={tileSize}
           onTileSizeCommit={onTileSizeCommit}
           onZoomOutBeyond={onGridZoomOutBeyond}
+          onZoomInBeyond={onGridZoomInBeyond}
           onOpen={handleTileOpen}
           onSelect={handleSelect}
           onFav={handleFav}
@@ -1090,7 +1118,7 @@ const MainContentArea: React.FC<{
           scrollRequest={gridScrollRequest}
           thumbVersion={thumbVersion}
           hoverPreviewsEnabled={hoverPreviewsEnabled}
-          onVisibleKeyChange={setVisibleKey}
+          onVisibleKeyChange={onVisibleKeyChange}
         />
         <DateScrubber
           groups={libraryGroups}
@@ -1383,6 +1411,10 @@ export default function App(): React.JSX.Element {
   // Distinguishes "still loading" from "genuinely empty" so the status bar
   // never reports a confident 0 for data that simply has not arrived.
   const [libraryState, setLibraryState] = useState<'idle' | 'loading' | 'ready'>('idle')
+  // The group key currently under the top edge, and the one to re-anchor to
+  // after a grouping change.
+  const visibleKeyRef = useRef<string | null>(null)
+  const pendingGroupAnchorRef = useRef<string | null>(null)
   // What the cached open reported: how many records exist for this drive, and
   // whether it has never been indexed (which needs a first scan the user asks for).
   const [driveOpened, setDriveOpened] = useState<{ drive: string; indexed: number; needsInitialScan: boolean } | null>(null)
@@ -1404,7 +1436,22 @@ export default function App(): React.JSX.Element {
   const [groupBy, setGroupBy] = useState<'day' | 'month' | 'year' | 'location' | 'favorites'>('day')
   const [viewOrder, setViewOrder] = useState<'default' | 'reverse'>('default')
   const [hoverPreviewsEnabled, setHoverPreviewsEnabled] = useState(true)
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  // Collapsed on every fresh launch. sessionStorage remembers the choice for
+  // this window only, so reopening the app starts collapsed again.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return sessionStorage.getItem('df.sidebarCollapsed') !== 'false'
+    } catch {
+      return true
+    }
+  })
+  useEffect(() => {
+    try {
+      sessionStorage.setItem('df.sidebarCollapsed', String(sidebarCollapsed))
+    } catch {
+      /* private mode - the default (collapsed) still applies */
+    }
+  }, [sidebarCollapsed])
   const [searchQuery, setSearchQuery] = useState('')
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; file: ScannedFile; currentList: ScannedFile[] } | null>(null)
   const [fileToDelete, setFileToDelete] = useState<ScannedFile | null>(null)
@@ -1718,6 +1765,7 @@ export default function App(): React.JSX.Element {
   const library = useLibrary(libraryQuery)
   const formatGroupKey = useMemo(() => makeGroupFormatter(groupBy), [groupBy])
 
+
   const groupedFiles = useMemo<Record<string, ScannedFile[]>>(
     () => (selectedDrive && driveFiles[selectedDrive]) || {},
     [selectedDrive, driveFiles]
@@ -1766,9 +1814,38 @@ export default function App(): React.JSX.Element {
     setTimeout(() => { setActiveView(view); setTransitioning(false) }, 280)
   }, [])
 
-  const handleGridZoomOutBeyond = useCallback((): void => {
-    if (!transitioning) switchView('Timeline')
-  }, [transitioning, switchView])
+  // Zooming past either end of the tile-size range steps the grouping instead
+  // of switching view: day -> month -> year on the way out, and back on the way
+  // in. The zoom animation itself is untouched; this only reacts to the
+  // boundary callbacks the grid already emitted.
+  const GROUP_LADDER = ['day', 'month', 'year'] as const
+  const groupZoomLockRef = useRef(0)
+
+  const stepGrouping = useCallback(
+    (direction: 'coarser' | 'finer'): void => {
+      // Near a threshold a gesture can fire twice; a short lock stops the
+      // grouping flickering between two levels.
+      const now = performance.now()
+      if (now - groupZoomLockRef.current < 450) return
+
+      const idx = GROUP_LADDER.indexOf(groupBy as (typeof GROUP_LADDER)[number])
+      if (idx === -1) return // a non-date grouping (location/favorites) is left alone
+      const nextIdx = direction === 'coarser' ? idx + 1 : idx - 1
+      if (nextIdx < 0 || nextIdx >= GROUP_LADDER.length) return
+      groupZoomLockRef.current = now
+
+      // Keep the date the user is looking at anchored across the change. Group
+      // keys are date slices, so the containing group in the next level is a
+      // prefix of the current key (or vice versa).
+      const anchor = visibleKeyRef.current
+      setGroupBy(GROUP_LADDER[nextIdx])
+      if (anchor) pendingGroupAnchorRef.current = anchor
+    },
+    [groupBy]
+  )
+
+  const handleGridZoomOutBeyond = useCallback((): void => stepGrouping('coarser'), [stepGrouping])
+  const handleGridZoomInBeyond = useCallback((): void => stepGrouping('finer'), [stepGrouping])
 
   // Ctrl+wheel / pinch on the Timeline and Years views (the Grid handles its own zoom).
   // Grid ⇄ Timeline ⇄ Years, like All Photos ⇄ Months ⇄ Years.
@@ -2298,7 +2375,7 @@ export default function App(): React.JSX.Element {
         
         {/* Top bar header - only rendered after a drive is selected */}
         {selectedDrive && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '14px 22px', borderBottom: '1px solid rgba(255,255,255,0.04)', background: '#0c0c0f', flexShrink: 0 }}>
+          <div className="df-glass df-glass-strong" style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '12px 18px', flexShrink: 0, borderRadius: 0, borderLeft: 'none', borderRight: 'none', borderTop: 'none', flexWrap: 'wrap', rowGap: '8px' }}>
             
             <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '12px' }}>
               <button
@@ -2450,6 +2527,7 @@ export default function App(): React.JSX.Element {
           setTransitioning={setTransitioning}
           libraryGroups={library.groups}
           getRow={library.getRow}
+          pageVersion={library.pageVersion}
           ensureRange={library.ensureRange}
           formatGroupKey={formatGroupKey}
           handleWheel={handleWheel}
@@ -2459,6 +2537,9 @@ export default function App(): React.JSX.Element {
           setActiveView={setActiveView}
           onTileSizeCommit={handleGridTileSizeCommit}
           onGridZoomOutBeyond={handleGridZoomOutBeyond}
+          onGridZoomInBeyond={handleGridZoomInBeyond}
+          visibleKeyRefProp={visibleKeyRef}
+          pendingGroupAnchorRef={pendingGroupAnchorRef}
           thumbVersion={thumbVersion}
           hoverPreviewsEnabled={hoverPreviewsEnabled}
           onHoverPreviewsChange={handleHoverPreviewsChange}
@@ -2470,7 +2551,7 @@ export default function App(): React.JSX.Element {
 
         {/* Status bar - only rendered after a drive is selected */}
         {selectedDrive && (
-          <div style={{ borderTop: '1px solid rgba(255,255,255,0.04)', padding: '8px 22px', display: 'flex', alignItems: 'center', gap: '16px', background: '#08080a', flexShrink: 0 }}>
+          <div className="df-glass" style={{ padding: '7px 18px', display: 'flex', alignItems: 'center', gap: '14px', flexShrink: 0, flexWrap: 'wrap', rowGap: '6px', borderRadius: 0, borderLeft: 'none', borderRight: 'none', borderBottom: 'none' }}>
             <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#f2f2f0', fontWeight: 700 }}>{drives.length}</span> drives</div>
             {/* While the library is still arriving these counts are unknown, not
                 zero. Printing 0 made a loading gallery indistinguishable from an

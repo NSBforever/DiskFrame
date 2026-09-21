@@ -37,6 +37,10 @@ export interface Library {
   total: number
   /** 'loading' until the first summary lands, so callers never report a confident 0. */
   state: 'loading' | 'ready' | 'error'
+  /** Changes whenever resident pages change. getRow is intentionally a stable
+   *  callback and `groups` does not change when a page lands, so memoized
+   *  consumers need this to know there is new data to read. */
+  pageVersion: number
   getRow: (index: number) => ScannedFile | undefined
   ensureRange: (start: number, end: number) => void
   /** Row for a path, if it happens to be resident. Used for in-place patches. */
@@ -65,7 +69,13 @@ export function useLibrary(query: LibraryQuery | null): Library {
   const pagesRef = useRef(new Map<number, ScannedFile[]>())
   const inFlightRef = useRef(new Set<number>())
   const queryRef = useRef<LibraryQuery | null>(null)
-  const [, forceRender] = useState(0)
+  const [pageVersion, setPageVersion] = useState(0)
+  // Changes on every query change. ensureRange depends on it so its identity
+  // changes too: the consumer's effect is keyed on the visible range, and after
+  // a grouping change that range is often numerically identical (still the top
+  // of the list) even though the page cache was just cleared. Without this the
+  // grid would sit on skeletons forever, having never re-requested.
+  const [queryEpoch, setQueryEpoch] = useState(0)
   const renderTimerRef = useRef<number | undefined>(undefined)
 
   // Coalesced repaint: several pages often land in the same tick.
@@ -73,7 +83,7 @@ export function useLibrary(query: LibraryQuery | null): Library {
     if (renderTimerRef.current !== undefined) return
     renderTimerRef.current = window.setTimeout(() => {
       renderTimerRef.current = undefined
-      forceRender((n) => n + 1)
+      setPageVersion((n) => n + 1)
     }, 16)
   }, [])
 
@@ -114,6 +124,7 @@ export function useLibrary(query: LibraryQuery | null): Library {
     const generation = ++generationRef.current
     resetCaches()
     setState('loading')
+    setQueryEpoch((n) => n + 1)
     loadSummary(query, generation)
   }, [query, loadSummary, resetCaches])
 
@@ -165,7 +176,8 @@ export function useLibrary(query: LibraryQuery | null): Library {
       // without turning a scroll into a full-library read.
       for (let p = Math.max(0, first - 1); p <= last + 1; p++) fetchPage(p)
     },
-    [fetchPage]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [fetchPage, queryEpoch]
   )
 
   const patchThumb = useCallback((path: string, thumb: string): boolean => {
@@ -189,5 +201,5 @@ export function useLibrary(query: LibraryQuery | null): Library {
     loadSummary(q, generation)
   }, [loadSummary, resetCaches])
 
-  return { groups, total, state, getRow, ensureRange, patchThumb, reload }
+  return { groups, total, state, pageVersion, getRow, ensureRange, patchThumb, reload }
 }
