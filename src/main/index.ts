@@ -231,8 +231,17 @@ function getDrivesPowerShell(): Promise<Array<{ name: string; filesystem: string
 // per-poll one - it only changes when a drive is actually plugged/unplugged.
 // Cached by drive letter so the (multi-CIM-call) classification query only
 // re-runs when the set of mounted letters changes, not on every 3s poll.
-let driveConnectionCache: Record<string, 'internal' | 'external' | 'unknown'> = {}
+let driveHardwareCache: Record<string, DriveHardware> = {}
 let knownDriveLetters: Set<string> = new Set()
+
+/** Physical medium. Deliberately separate from how the drive is attached:
+ *  a USB-attached SSD is external AND an SSD. */
+function classifyMediaType(mediaType: string): 'ssd' | 'hdd' | 'unknown' {
+  const m = (mediaType || '').trim().toLowerCase()
+  if (m === 'ssd' || m === '4') return 'ssd'
+  if (m === 'hdd' || m === '3') return 'hdd'
+  return 'unknown'
+}
 
 function classifyBusType(busType: string): 'internal' | 'external' | 'unknown' {
   const bt = (busType || '').trim().toLowerCase()
@@ -245,47 +254,106 @@ function classifyBusType(busType: string): 'internal' | 'external' | 'unknown' {
   return 'unknown'
 }
 
-function classifyDriveConnections(letters: string[]): Promise<Record<string, 'internal' | 'external' | 'unknown'>> {
+export interface DriveHardware {
+  connection: 'internal' | 'external' | 'unknown'
+  /** Physical medium, kept separate from how it is attached. */
+  media: 'ssd' | 'hdd' | 'unknown'
+  model: string | null
+  volumeId: string | null
+}
+
+/**
+ * Asks Windows what each drive actually is.
+ *
+ * The previous query piped Get-Partition | Get-Disk | Get-PhysicalDisk. That
+ * pipeline yields nothing for some disks (the USB-attached one here), so
+ * `$phys.BusType.ToString()` threw "You cannot call a method on a null-valued
+ * expression", the catch reported Unknown, and every drive rendered as
+ * "Type unavailable". Get-Disk already carries BusType, so the extra hop was
+ * never needed; MediaType is looked up separately and is allowed to be absent.
+ *
+ * Nothing here keys off a drive letter, and "fixed disk" is not treated as a
+ * synonym for internal - a USB-attached drive reports as fixed too.
+ */
+function queryDriveHardware(letters: string[]): Promise<Record<string, DriveHardware>> {
   return new Promise((resolve) => {
     if (letters.length === 0) return resolve({})
-    const { exec } = require('child_process')
+    const { execFile } = require('child_process')
     const list = letters.map((l) => l.replace(/:$/, '')).join(',')
-    const psCommand = `
-      $letters = '${list}'.Split(',')
-      $letters | ForEach-Object {
-        $dl = $_
-        try {
-          $phys = Get-Partition -DriveLetter $dl -ErrorAction Stop | Get-Disk -ErrorAction Stop | Get-PhysicalDisk -ErrorAction Stop
-          [PSCustomObject]@{ DriveLetter = $dl; BusType = $phys.BusType.ToString() }
-        } catch {
-          [PSCustomObject]@{ DriveLetter = $dl; BusType = 'Unknown'; Err = $_.Exception.Message }
-        }
-      } | ConvertTo-Json
-    `
-    exec(
-      // PowerShell uses newlines as statement separators - flattening to a
-      // single line for exec() needs ';', not ' ', or every statement here
-      // runs together into a syntax error. This was silently failing on every
-      // call (caught by the outer !err check below), so the classification
-      // cache never populated and every drive fell back to 'unknown'.
-      `powershell -NoProfile -Command "${psCommand.replace(/\n/g, '; ')}"`,
-      { timeout: 8000 },
+
+    // Written to a real .ps1 and run with -File. Passing a multi-statement
+    // script through -Command means every newline has to become a separator and
+    // every quote has to survive two levels of escaping; getting that subtly
+    // wrong is what produced "Unexpected token 'foreach'" and left every drive
+    // classified as unknown. A script file has none of those failure modes.
+    const script = [
+      `$ErrorActionPreference = 'SilentlyContinue'`,
+      `$out = @()`,
+      `foreach ($dl in '${list}'.Split(',')) {`,
+      `  $bus = 'Unknown'`,
+      `  $media = 'Unknown'`,
+      `  $model = ''`,
+      `  $vol = ''`,
+      `  $err = ''`,
+      `  try {`,
+      `    $p = Get-Partition -DriveLetter $dl -ErrorAction Stop`,
+      `    $d = Get-Disk -Number $p.DiskNumber -ErrorAction Stop`,
+      `    if ($d.BusType) { $bus = [string]$d.BusType }`,
+      `    if ($d.FriendlyName) { $model = [string]$d.FriendlyName }`,
+      `    $pd = Get-PhysicalDisk | Where-Object { $_.DeviceId -eq [string]$p.DiskNumber }`,
+      `    if ($pd -and $pd.MediaType) { $media = [string]$pd.MediaType }`,
+      `  } catch {`,
+      `    $err = $_.Exception.Message`,
+      `  }`,
+      `  $v = Get-CimInstance Win32_Volume | Where-Object { $_.DriveLetter -eq ($dl + ':') }`,
+      `  if ($v) {`,
+      `    if ($v.SerialNumber) { $vol = [string]$v.SerialNumber }`,
+      `    elseif ($v.DeviceID) { $vol = [string]$v.DeviceID }`,
+      `  }`,
+      `  $out += [PSCustomObject]@{ DriveLetter = $dl; BusType = $bus; MediaType = $media; Model = $model; VolumeId = $vol; Err = $err }`,
+      `}`,
+      `$out | ConvertTo-Json -Compress`
+    ].join(String.fromCharCode(13, 10))
+
+    let scriptPath = ''
+    try {
+      scriptPath = join(app.getPath('temp'), `df-drives-${process.pid}.ps1`)
+      fs.writeFileSync(scriptPath, script, 'utf8')
+    } catch (e) {
+      console.error('[driveHardware] could not write helper script', e)
+      return resolve({})
+    }
+
+    execFile(
+      'powershell',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath],
+      { timeout: 15000, windowsHide: true },
       (err: any, stdout: string, stderr: string) => {
-        const result: Record<string, 'internal' | 'external' | 'unknown'> = {}
+        try {
+          fs.unlinkSync(scriptPath)
+        } catch {
+          /* temp file */
+        }
+        const result: Record<string, DriveHardware> = {}
         if (err) {
-          console.error('[classifyDriveConnections] PowerShell call failed:', err.message, stderr)
-        } else if (stdout) {
-          try {
-            const parsed = JSON.parse(stdout)
-            const items = Array.isArray(parsed) ? parsed : [parsed]
-            for (const item of items) {
-              const letter = `${String(item.DriveLetter).toUpperCase()}:`
-              if (item.Err) console.warn(`[classifyDriveConnections] ${letter} lookup failed: ${item.Err}`)
-              result[letter] = classifyBusType(item.BusType)
+          console.error('[driveHardware] failed:', err.message, String(stderr).slice(0, 200))
+          return resolve(result)
+        }
+        try {
+          const parsed = JSON.parse(stdout)
+          for (const item of Array.isArray(parsed) ? parsed : [parsed]) {
+            const letter = `${String(item.DriveLetter).toUpperCase()}:`
+            if (item.Err) console.warn(`[driveHardware] ${letter}: ${item.Err}`)
+            result[letter] = {
+              connection: classifyBusType(String(item.BusType || '')),
+              media: classifyMediaType(String(item.MediaType || '')),
+              model: item.Model ? String(item.Model) : null,
+              volumeId: item.VolumeId ? String(item.VolumeId) : null
             }
-          } catch (parseErr) {
-            console.error('[classifyDriveConnections] Failed to parse PowerShell output:', parseErr, stdout)
+            console.log(`[driveHardware] ${letter} bus=${item.BusType} media=${item.MediaType} model=${item.Model}`)
           }
+        } catch (parseErr) {
+          console.error('[driveHardware] parse failed:', parseErr, String(stdout).slice(0, 200))
         }
         resolve(result)
       }
@@ -315,12 +383,20 @@ async function sendDrives(): Promise<void> {
       currentSet.size === knownDriveLetters.size && [...currentSet].every((l) => knownDriveLetters.has(l))
     if (!sameSet) {
       knownDriveLetters = currentSet
-      driveConnectionCache = await classifyDriveConnections(letters)
+      driveHardwareCache = await queryDriveHardware(letters)
     }
 
     const drivesWithType = drives.map((d) => ({
       ...d,
-      connectionType: driveConnectionCache[d.name.slice(0, 2).toUpperCase()] || 'unknown'
+      ...(() => {
+        const hw = driveHardwareCache[d.name.slice(0, 2).toUpperCase()]
+        return {
+          connectionType: hw?.connection ?? 'unknown',
+          mediaType: hw?.media ?? 'unknown',
+          model: hw?.model ?? null,
+          volumeId: hw?.volumeId ?? null
+        }
+      })()
     }))
 
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('drives-updated', drivesWithType)

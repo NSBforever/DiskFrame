@@ -258,3 +258,58 @@
   backdrop-filter: none; -webkit-backdrop-filter: none;
   background: rgba(14, 14, 19, 0.96);
 }
+
+/* Cursor-following highlight. Driven by two custom properties the pointer
+   handler writes, so nothing re-renders while the mouse moves; only this
+   element's background is repainted. */
+.drive-card {
+  --mx: 50%;
+  --my: 50%;
+  --glow: 0;
+  overflow: hidden;
+  isolation: isolate;
+}
+.drive-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: var(--glow);
+  transition: opacity 180ms ease;
+  background: radial-gradient(
+    240px circle at var(--mx) var(--my),
+    rgba(255, 255, 255, 0.10),
+    rgba(225, 29, 46, 0.06) 42%,
+    transparent 68%
+  );
+}
+
+/* Badges: connection and medium sit side by side, with reserved height so a
+   card with unknown medium is exactly as tall as one without. */
+.drive-badge-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-height: 22px;
+}
+.drive-badge-media {
+  background: rgba(255, 255, 255, 0.06);
+  color: #b8b8c0;
+  border-color: rgba(255, 255, 255, 0.10);
+}
+/* The filled portion animates to its new colour rather than jumping. */
+.drive-progress-fill {
+  transition: width 320ms cubic-bezier(0.22, 1, 0.36, 1),
+              background-color 320ms ease;
+}
+/* Reserved space so the status line never changes the card's height. */
+.drive-filecount {
+  min-height: 18px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drive-card::after { transition: none; }
+  .drive-progress-fill { transition: none; }
+}
+.df-reduced-effects .drive-card::after { display: none; }

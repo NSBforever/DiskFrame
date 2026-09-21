@@ -7,6 +7,9 @@ export interface Drive {
   label: string
   letter: string
   type: 'internal' | 'external' | 'unknown'
+  /** Physical medium, independent of how the drive is attached. */
+  media: 'ssd' | 'hdd' | 'unknown'
+  model: string | null
   totalBytes: number
   freeBytes: number
 }
@@ -19,31 +22,7 @@ interface DriveSelectGridProps {
 
 // Usage-bar color anchors: flat green through 40%, interpolating to yellow at
 // 60%, orange at 80%, flat red from 95%. Piecewise-linear in RGB space.
-const USAGE_COLOR_STOPS: [number, [number, number, number]][] = [
-  [0, [34, 197, 94]],
-  [40, [34, 197, 94]],
-  [60, [250, 204, 21]],
-  [80, [249, 115, 22]],
-  [95, [225, 29, 46]],
-  [100, [225, 29, 46]]
-]
-
-function usageColor(pct: number): string {
-  const p = Math.max(0, Math.min(100, pct))
-  for (let i = 0; i < USAGE_COLOR_STOPS.length - 1; i++) {
-    const [p0, c0] = USAGE_COLOR_STOPS[i]
-    const [p1, c1] = USAGE_COLOR_STOPS[i + 1]
-    if (p >= p0 && p <= p1) {
-      const t = p1 === p0 ? 0 : (p - p0) / (p1 - p0)
-      const r = Math.round(c0[0] + (c1[0] - c0[0]) * t)
-      const g = Math.round(c0[1] + (c1[1] - c0[1]) * t)
-      const b = Math.round(c0[2] + (c1[2] - c0[2]) * t)
-      return `rgb(${r}, ${g}, ${b})`
-    }
-  }
-  const last = USAGE_COLOR_STOPS[USAGE_COLOR_STOPS.length - 1][1]
-  return `rgb(${last[0]}, ${last[1]}, ${last[2]})`
-}
+import { usageColor } from '../../../main/usageColor'
 
 function mapRawDrive(d: any): Drive {
   const totalBytes = (d.total || 0) * 1024 * 1024 * 1024
@@ -70,11 +49,16 @@ function mapRawDrive(d: any): Drive {
     displayLabel = `${baseName} (${cleanLetter})`
   }
 
+  const media: Drive['media'] =
+    d.mediaType === 'ssd' || d.mediaType === 'hdd' ? d.mediaType : 'unknown'
+
   return {
     id: d.name,
     label: displayLabel,
     letter: cleanLetter,
     type: driveType,
+    media,
+    model: typeof d.model === 'string' && d.model ? d.model : null,
     totalBytes,
     freeBytes
   }
@@ -180,18 +164,40 @@ export default function DriveSelectGrid({ onSelectDrive, drives: propDrives }: D
       <div className="drive-grid">
         {drives.map((drive) => {
           const usedPct = drive.totalBytes > 0 ? ((drive.totalBytes - drive.freeBytes) / drive.totalBytes) * 100 : 0
-          const Icon = drive.type === 'internal' ? HardDrive : drive.type === 'external' ? Usb : HardDrive
-          const badgeText = drive.type === 'unknown' ? 'Type unavailable' : drive.type.toUpperCase()
+          // The icon always renders: an unknown connection still gets the
+          // neutral drive glyph rather than a gap.
+          const Icon = drive.type === 'external' ? Usb : HardDrive
+          const badgeText = drive.type === 'unknown' ? 'Drive' : drive.type.toUpperCase()
+          const mediaText = drive.media === 'unknown' ? null : drive.media.toUpperCase()
           const realCount = driveCounts ? driveCounts[drive.letter] ?? 0 : undefined
           return (
             <button
               key={drive.id}
               className="drive-card"
               onClick={() => onSelectDrive(drive)}
+              // A restrained highlight that follows the cursor inside the card.
+              // Written to CSS custom properties so only the card's own
+              // background paints - no React state, so moving the mouse never
+              // re-renders the grid.
+              onPointerMove={(e) => {
+                const el = e.currentTarget
+                const r = el.getBoundingClientRect()
+                el.style.setProperty('--mx', `${((e.clientX - r.left) / r.width) * 100}%`)
+                el.style.setProperty('--my', `${((e.clientY - r.top) / r.height) * 100}%`)
+                el.style.setProperty('--glow', '1')
+              }}
+              onPointerLeave={(e) => {
+                // Fully reset on leave, and on navigation, so no card is left lit.
+                e.currentTarget.style.setProperty('--glow', '0')
+              }}
+              onBlur={(e) => e.currentTarget.style.setProperty('--glow', '0')}
             >
               <div className="drive-card-top">
                 <Icon className="drive-icon" size={26} color={drive.type === 'unknown' ? '#6a6a78' : '#e5e5e5'} />
-                <span className={`drive-badge drive-badge-${drive.type}`}>{badgeText}</span>
+                <span className="drive-badge-row">
+                  <span className={`drive-badge drive-badge-${drive.type}`}>{badgeText}</span>
+                  {mediaText && <span className="drive-badge drive-badge-media">{mediaText}</span>}
+                </span>
               </div>
               <div className="drive-name">
                 {drive.label}
