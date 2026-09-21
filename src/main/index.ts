@@ -507,6 +507,18 @@ app.whenReady().then(() => {
   // ── DRIVE / SCAN ──
   ipcMain.on('get-drives', () => sendDrives())
   ipcMain.handle('get-drive-file-counts', () => getFileCountsByDrive())
+
+  // Queried by the renderer on mount rather than pushed once at load time.
+  // The push could be missed if the renderer subscribed after it fired, which
+  // is how a diagnostic session ended up looking like a normal one showing an
+  // empty library.
+  ipcMain.handle('get-runtime-mode', () => ({
+    safeMode: safeMode.enabled,
+    allowed: [...safeMode.allow],
+    sampleFolder: safeMode.sampleFolder,
+    userDataPath: app.getPath('userData'),
+    isDefaultUserData: app.getPath('userData').toLowerCase() === join(app.getPath('appData'), 'diskframe').toLowerCase()
+  }))
   ipcMain.on('reveal-file', (_event, filePath: string) => {
     if (isSafeLocalPath(filePath)) shell.showItemInFolder(filePath)
   })

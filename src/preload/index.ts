@@ -4,6 +4,7 @@ import { electronAPI } from '@electron-toolkit/preload'
 const api = {
   getDrives: () => ipcRenderer.send('get-drives'),
   getDriveFileCounts: () => ipcRenderer.invoke('get-drive-file-counts'),
+  getRuntimeMode: () => ipcRenderer.invoke('get-runtime-mode'),
   onDrivesUpdated: (cb: (drives: unknown[]) => void) => {
     const listener = (_e: unknown, d: any) => cb(d)
     ipcRenderer.on('drives-updated', listener)

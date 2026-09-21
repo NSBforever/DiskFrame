@@ -545,6 +545,8 @@ const MainContentArea: React.FC<{
   thumbVersion: number
   hoverPreviewsEnabled: boolean
   onHoverPreviewsChange: (enabled: boolean) => void
+  libraryState: 'idle' | 'loading' | 'ready'
+  runtimeMode: { safeMode: boolean; userDataPath: string; isDefaultUserData: boolean } | null
 }> = React.memo(({
   activeNav,
   activeView,
@@ -581,7 +583,9 @@ const MainContentArea: React.FC<{
   onGridZoomOutBeyond,
   thumbVersion,
   hoverPreviewsEnabled,
-  onHoverPreviewsChange
+  onHoverPreviewsChange,
+  libraryState,
+  runtimeMode
 }) => {
   const [placesSubView, setPlacesSubView] = useState<'map' | 'globe'>('map')
   const [windowWidth, setWindowWidth] = useState(window.innerWidth)
@@ -965,6 +969,55 @@ const MainContentArea: React.FC<{
     !(activeNav === 'trash' && trashedFiles.length === 0) &&
     !(activeNav === 'favourites' && allFavFiles.length === 0)
 
+  // A gallery with nothing in it has several very different causes, and showing
+  // the same blank grid for all of them is what made a diagnostic session look
+  // like a lost library. Each one now says which it is.
+  if (selectedDrive && !hasFiles && activeNav !== 'archive' && activeNav !== 'trash' && activeNav !== 'settings' && activeNav !== 'places') {
+    const loading = libraryState !== 'ready' || scanning
+    const diagnostic = !!runtimeMode?.safeMode
+    return (
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '14px', padding: '40px', textAlign: 'center' }}>
+        {loading ? (
+          <>
+            <div style={{ width: '220px', height: '2px', background: '#1c1c22', overflow: 'hidden' }}>
+              <div style={{ height: '100%', width: '40%', background: 'linear-gradient(90deg, transparent, #e11d2e, transparent)', animation: 'shimmer 1.4s ease-in-out infinite' }} />
+            </div>
+            <div style={{ fontSize: '12px', color: '#f2f2f0', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px' }}>
+              Loading {selectedDrive}…
+            </div>
+            <div style={{ fontSize: '10px', color: '#8a8a8f' }}>
+              {scanning ? `${scanCount.toLocaleString()} files mapped so far` : 'Reading the cached index'}
+            </div>
+          </>
+        ) : diagnostic ? (
+          <>
+            <AlertTriangle size={40} color="#f5c542" />
+            <div style={{ fontSize: '13px', color: '#f5c542', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px' }}>
+              Diagnostic mode — your library is not loaded
+            </div>
+            <div style={{ fontSize: '11px', color: '#8a8a8f', maxWidth: '520px', lineHeight: 1.6 }}>
+              This window is using an isolated diagnostic database, so {selectedDrive} has no records here.
+              Your real library is untouched. Close this window and open <strong style={{ color: '#f2f2f0' }}>DiskFrame</strong> (not
+              “DiskFrame — Diagnostics”) to browse it.
+            </div>
+            <div style={{ fontSize: '9px', color: '#52525b', wordBreak: 'break-all', maxWidth: '520px' }}>{runtimeMode?.userDataPath}</div>
+          </>
+        ) : (
+          <>
+            <FolderOpen size={40} style={{ color: '#52525b' }} />
+            <div style={{ fontSize: '13px', color: '#f2f2f0', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px' }}>
+              No media indexed on {selectedDrive}
+            </div>
+            <div style={{ fontSize: '11px', color: '#8a8a8f', maxWidth: '460px', lineHeight: 1.6 }}>
+              Nothing matching the current filter is in the index for this drive. If the drive was just
+              connected, its scan may not have run yet.
+            </div>
+          </>
+        )}
+      </div>
+    )
+  }
+
   if (isVirtualized && activeView === 'Grid' && activeNav !== 'favourites' && activeNav !== 'trash') {
     return (
       <div className="view-transition-enter" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, ...animationStyle }}>
@@ -1267,6 +1320,17 @@ export default function App(): React.JSX.Element {
   // the "Updates available" button.
   // Set only when the main process launched in diagnostic mode with a sample folder.
   const [safeModeSample, setSafeModeSample] = useState<{ folder: string; count: number } | null>(null)
+  // Queried once on mount. A pushed event could be missed if the renderer
+  // subscribed after it fired, which is how a diagnostic session (isolated,
+  // empty database) was mistaken for the real app having lost its library.
+  const [runtimeMode, setRuntimeMode] = useState<{
+    safeMode: boolean
+    userDataPath: string
+    isDefaultUserData: boolean
+  } | null>(null)
+  // Distinguishes "still loading" from "genuinely empty" so the status bar
+  // never reports a confident 0 for data that simply has not arrived.
+  const [libraryState, setLibraryState] = useState<'idle' | 'loading' | 'ready'>('idle')
   const [updatesPending, setUpdatesPending] = useState(false)
   const pendingFilesRef = useRef<{ drive: string; groups: Record<string, ScannedFile[]> } | null>(null)
   const hasFilesRef = useRef(false)
@@ -1422,6 +1486,7 @@ export default function App(): React.JSX.Element {
       pendingFilesRef.current = null
       setUpdatesPending(false)
       setDriveFiles({ [drive]: next })
+      setLibraryState('ready')
       refreshTrash()
     })
     const unsubThumb = window.api.onThumbReady((d) => {
@@ -1474,6 +1539,10 @@ export default function App(): React.JSX.Element {
       .then((enabled) => setHoverPreviewsEnabled(enabled !== false))
       .catch((err) => console.error('Error loading hover previews preference:', err))
 
+    window.api.getRuntimeMode?.()
+      .then(setRuntimeMode)
+      .catch(() => setRuntimeMode(null))
+
     window.api.getDrives()
     window.api.getFavourites()
     refreshTrash()
@@ -1519,6 +1588,7 @@ export default function App(): React.JSX.Element {
     pendingFilesRef.current = null
     setUpdatesPending(false)
     hasFilesRef.current = false
+    setLibraryState('loading')
 
     // Show whatever's already indexed for this drive instantly (no scan wait);
     // scanDrive's incremental sync runs in the background and will replace
@@ -2303,17 +2373,54 @@ export default function App(): React.JSX.Element {
           thumbVersion={thumbVersion}
           hoverPreviewsEnabled={hoverPreviewsEnabled}
           onHoverPreviewsChange={handleHoverPreviewsChange}
+          libraryState={libraryState}
+          runtimeMode={runtimeMode}
         />
 
         {/* Status bar - only rendered after a drive is selected */}
         {selectedDrive && (
           <div style={{ borderTop: '1px solid rgba(255,255,255,0.04)', padding: '8px 22px', display: 'flex', alignItems: 'center', gap: '16px', background: '#08080a', flexShrink: 0 }}>
             <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#f2f2f0', fontWeight: 700 }}>{drives.length}</span> drives</div>
-            <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#f2f2f0', fontWeight: 700 }}>{totalFiles}</span> files</div>
-            <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#f2f2f0', fontWeight: 700 }}>{sortedGroupedData.keys.length}</span> groupings</div>
-            <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#e11d2e', fontWeight: 700 }}><Heart size={8} fill="#e11d2e" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} /> {allFavFiles.length}</span> favourites</div>
+            {/* While the library is still arriving these counts are unknown, not
+                zero. Printing 0 made a loading gallery indistinguishable from an
+                empty one - and from a diagnostic database with nothing in it. */}
+            <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#f2f2f0', fontWeight: 700 }}>{libraryState === 'ready' ? totalFiles.toLocaleString() : '—'}</span> files</div>
+            <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#f2f2f0', fontWeight: 700 }}>{libraryState === 'ready' ? sortedGroupedData.keys.length : '—'}</span> groupings</div>
+            <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#e11d2e', fontWeight: 700 }}><Heart size={8} fill="#e11d2e" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} /> {libraryState === 'ready' ? allFavFiles.length : '—'}</span> favourites</div>
             {selected.size > 0 && <div style={{ fontSize: '9px', color: '#e11d2e', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}><Check size={8} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} /> {selected.size} selected</div>}
             {activeView === 'Grid' && <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}>tile: <span style={{ color: '#f2f2f0', fontWeight: 700 }}>{tileSize}px</span></div>}
+            {/* Driven by a queried flag, not a one-shot event, so a diagnostic
+                session is always labelled even if the sample never loaded or
+                the user navigated to a real drive. */}
+            {runtimeMode?.safeMode && (
+              <div
+                title={`Diagnostic mode. Isolated data at ${runtimeMode.userDataPath}. Your real library is not loaded here.`}
+                style={{
+                  fontSize: '9px',
+                  fontWeight: 700,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.5px',
+                  color: '#0a0a0c',
+                  background: '#f5c542',
+                  borderRadius: '2px',
+                  padding: '3px 10px',
+                  whiteSpace: 'nowrap'
+                }}
+              >
+                Diagnostic mode — isolated data
+              </div>
+            )}
+            {!runtimeMode?.safeMode && runtimeMode && !runtimeMode.isDefaultUserData && (
+              <div
+                title={`Using a non-default data directory: ${runtimeMode.userDataPath}`}
+                style={{
+                  fontSize: '9px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px',
+                  color: '#0a0a0c', background: '#f5c542', borderRadius: '2px', padding: '3px 10px', whiteSpace: 'nowrap'
+                }}
+              >
+                Alternate data directory
+              </div>
+            )}
             {safeModeSample && (
               <div
                 title={safeModeSample.folder}

@@ -29,6 +29,13 @@ declare global {
     api: {
       getDrives: () => void
       getDriveFileCounts: () => Promise<Record<string, number>>
+      getRuntimeMode: () => Promise<{
+        safeMode: boolean
+        allowed: string[]
+        sampleFolder: string | null
+        userDataPath: string
+        isDefaultUserData: boolean
+      }>
       onDrivesUpdated: (callback: (drives: DriveInfo[]) => void) => () => void
       scanDrive: (drivePath: string) => void
       getFiles: (drivePath: string) => void
