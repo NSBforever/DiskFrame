@@ -1,9 +1,12 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react'
 import './DateScrubber.css'
 
-interface ScannedFile {
-  year: string
-  month: string
+interface LibraryGroup {
+  key: string
+  count: number
+  minDate: string
+  maxDate: string
+  offset: number
 }
 
 interface Entry {
@@ -15,15 +18,16 @@ interface Entry {
 }
 
 export interface DateScrubberProps {
-  keys: string[]
-  data: Record<string, ScannedFile[]>
+  /** Group summary. Positions come from counts, so no file rows are needed. */
+  groups: LibraryGroup[]
+  formatGroupKey: (key: string) => string
   currentKey: string | null
   onJump: (key: string) => void
 }
 
 const UNKNOWN = 'Unknown date'
 
-export default function DateScrubber({ keys, data, currentKey, onJump }: DateScrubberProps): React.JSX.Element | null {
+export default function DateScrubber({ groups, formatGroupKey, currentKey, onJump }: DateScrubberProps): React.JSX.Element | null {
   const railRef = useRef<HTMLDivElement>(null)
   const [hoverFrac, setHoverFrac] = useState<number | null>(null)
   const [hoverLabel, setHoverLabel] = useState<string | null>(null)
@@ -33,25 +37,31 @@ export default function DateScrubber({ keys, data, currentKey, onJump }: DateScr
   // without threading PhotoGrid's internal per-row pixel layout out here) -
   // each group's representative date comes from its own first file, so this
   // works regardless of the current groupBy (day/month/year/location/favorites).
+  // Positioned by cumulative file count, taken straight from the group summary,
+  // so a jump never has to read the files in between.
   const entries = useMemo<Entry[]>(() => {
-    let cum = 0
     let total = 0
-    for (const k of keys) total += data[k]?.length ?? 0
+    for (const g of groups) total += g.count
     if (total === 0) return []
 
     const list: Entry[] = []
+    let cum = 0
     let lastYear: string | null = null
-    for (const k of keys) {
-      const files = data[k] ?? []
-      const f = files[0]
-      const year = f?.year && String(f.year).trim() ? String(f.year) : UNKNOWN
-      const month = f?.month && String(f.month).trim() ? String(f.month) : ''
-      list.push({ key: k, year, month, frac: cum / total, isYearStart: year !== lastYear })
+    for (const g of groups) {
+      const iso = g.maxDate || g.key
+      const year = /^\d{4}/.test(iso) ? iso.slice(0, 4) : UNKNOWN
+      list.push({
+        key: g.key,
+        year,
+        month: formatGroupKey(g.key),
+        frac: cum / total,
+        isYearStart: year !== lastYear
+      })
       lastYear = year
-      cum += files.length
+      cum += g.count
     }
     return list
-  }, [keys, data])
+  }, [groups, formatGroupKey])
 
   const yearMarkers = useMemo(() => entries.filter((e) => e.isYearStart), [entries])
 
@@ -84,7 +94,7 @@ export default function DateScrubber({ keys, data, currentKey, onJump }: DateScr
       const frac = fracFromPointer(clientY)
       setHoverFrac(frac)
       const e = closestEntry(frac)
-      if (e) setHoverLabel(e.month ? `${e.month} ${e.year}` : e.year)
+      if (e) setHoverLabel(e.month || e.year)
       if (dragging && e) onJump(e.key)
     },
     [fracFromPointer, closestEntry, dragging, onJump]
@@ -139,7 +149,7 @@ export default function DateScrubber({ keys, data, currentKey, onJump }: DateScr
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={Math.round((currentEntry?.frac ?? 0) * 100)}
-      aria-valuetext={currentEntry ? (currentEntry.month ? `${currentEntry.month} ${currentEntry.year}` : currentEntry.year) : undefined}
+      aria-valuetext={currentEntry ? currentEntry.month || currentEntry.year : undefined}
       tabIndex={0}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}

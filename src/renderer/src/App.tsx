@@ -117,6 +117,26 @@ import DriveSelectionView from './components/DriveSelectionView'
 import PhotoGrid from './components/PhotoGrid'
 import MagneticDock from './components/MagneticDock'
 import DateScrubber from './components/DateScrubber'
+import { useLibrary, type LibraryGroup, type LibraryQuery } from './hooks/useLibrary'
+
+/**
+ * Group keys come out of SQL in a sortable form (an ISO date slice, rounded
+ * coordinates, a flag). Turning them into something readable stays here so
+ * locale formatting never has to happen in a query.
+ */
+function makeGroupFormatter(groupBy: string): (key: string) => string {
+  if (groupBy === 'day') {
+    const fmt = new Intl.DateTimeFormat(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+    return (k) => { const d = new Date(k + 'T00:00:00'); return isNaN(d.getTime()) ? 'Unknown date' : fmt.format(d) }
+  }
+  if (groupBy === 'month') {
+    const fmt = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'long' })
+    return (k) => { const d = new Date(k + '-01T00:00:00'); return isNaN(d.getTime()) ? 'Unknown date' : fmt.format(d) }
+  }
+  if (groupBy === 'year') return (k) => k || 'Unknown year'
+  if (groupBy === 'location') return (k) => (k === 'none' ? 'No location info' : `Coords (${k})`)
+  return (k) => (k === 'fav' ? 'Favourites' : 'Other files')
+}
 import {
   FolderArchive,
   Image as ImageIcon,
@@ -535,7 +555,10 @@ const MainContentArea: React.FC<{
   onTileSizeCommit: (size: number) => void
   transitioning: boolean
   setTransitioning: (transitioning: boolean) => void
-  sortedGroupedData: { keys: string[]; data: Record<string, ScannedFile[]> }
+  libraryGroups: LibraryGroup[]
+  getRow: (index: number) => ScannedFile | undefined
+  ensureRange: (start: number, end: number) => void
+  formatGroupKey: (key: string) => string
   handleWheel: (e: React.WheelEvent) => void
   handleGroupCheckboxClick: (groupKey: string, e: React.MouseEvent) => void
   groupBy: string
@@ -576,7 +599,10 @@ const MainContentArea: React.FC<{
   onTileSizeChange,
   onTileSizeCommit,
   transitioning,
-  sortedGroupedData,
+  libraryGroups,
+  getRow,
+  ensureRange,
+  formatGroupKey,
   handleWheel,
   handleGroupCheckboxClick,
   groupBy,
@@ -613,62 +639,69 @@ const MainContentArea: React.FC<{
   }
 
   // 2. Timeline Items construction
+  // Built from the group summary. Preview rows resolve through the same paged
+  // getRow the grid uses, so a timeline over a million files still holds only
+  // the handful of rows actually shown.
   const timelineItems = useMemo(() => {
     if (activeView !== 'Timeline') return []
     const items: any[] = []
-    sortedGroupedData.keys.forEach(monthKey => {
-      const files = sortedGroupedData.data[monthKey]
+    for (const g of libraryGroups) {
       items.push({
         type: 'timeline-header',
-        key: `timeline-header-${monthKey}-${files.length}`,
-        monthKey,
-        filesCount: files.length,
-        allSel: files.every(f => selected.has(f.path))
+        key: `timeline-header-${g.key}`,
+        monthKey: g.key,
+        label: formatGroupKey(g.key),
+        filesCount: g.count
       })
+      const previewCount = Math.min(12, g.count)
+      const rowFiles: ScannedFile[] = []
+      for (let i = 0; i < previewCount; i++) {
+        const f = getRow(g.offset + i)
+        if (f) rowFiles.push(f)
+      }
       items.push({
         type: 'timeline-row',
-        key: `timeline-row-${monthKey}`,
-        monthKey,
-        rowFiles: files.slice(0, 12),
-        files,
-        hasMore: files.length > 12,
-        remaining: files.length - 12
+        key: `timeline-row-${g.key}`,
+        monthKey: g.key,
+        offset: g.offset,
+        previewCount,
+        rowFiles,
+        hasMore: g.count > 12,
+        remaining: g.count - 12
       })
-    })
+    }
     return items
-  }, [sortedGroupedData, selected, activeView])
+  }, [libraryGroups, formatGroupKey, getRow, activeView])
+
+  // Keep the previews for visible timeline groups resident.
+  useEffect(() => {
+    if (activeView !== 'Timeline' || libraryGroups.length === 0) return
+    const first = libraryGroups[0]
+    const last = libraryGroups[Math.min(libraryGroups.length - 1, 20)]
+    ensureRange(first.offset, last.offset + Math.min(12, last.count))
+  }, [activeView, libraryGroups, ensureRange])
 
   // 3. Years Items construction
+  // Year totals come from the summary, so no file rows are needed to build this.
   const yearsItems = useMemo(() => {
     if (activeView !== 'Years') return []
     const items: any[] = []
-    items.push({
-      type: 'years-header',
-      key: 'years-header'
-    })
-    const yearMap: Record<string, ScannedFile[]> = {}
-    for (const key of sortedGroupedData.keys) {
-      for (const f of sortedGroupedData.data[key]) {
-        const year = f.year || 'Unknown'
-        const bucket = yearMap[year]
-        if (bucket) bucket.push(f); else yearMap[year] = [f]
-      }
+    items.push({ type: 'years-header', key: 'years-header' })
+    const yearTotals: Record<string, { count: number; offset: number }> = {}
+    for (const g of libraryGroups) {
+      const year = (g.maxDate || g.key).slice(0, 4) || 'Unknown'
+      const bucket = yearTotals[year]
+      if (bucket) bucket.count += g.count
+      else yearTotals[year] = { count: g.count, offset: g.offset }
     }
     const yearNum = (y: string): number => (/^\d+$/.test(y) ? Number(y) : -Infinity)
-    const years = Object.keys(yearMap).sort((a, b) => yearNum(b) - yearNum(a))
-
+    const years = Object.keys(yearTotals).sort((a, b) => yearNum(b) - yearNum(a))
     const yearsPerRow = Math.max(1, Math.floor((windowWidth - 260) / (200 + 16)))
-    const chunked = chunkArray(years, yearsPerRow)
-    chunked.forEach((rowYears, rowIndex) => {
-      items.push({
-        type: 'years-row',
-        key: `years-row-${rowIndex}`,
-        rowYears,
-        yearMap
-      })
+    chunkArray(years, yearsPerRow).forEach((rowYears, rowIndex) => {
+      items.push({ type: 'years-row', key: `years-row-${rowIndex}`, rowYears, yearTotals, getRow })
     })
     return items
-  }, [sortedGroupedData, activeView, windowWidth])
+  }, [libraryGroups, activeView, windowWidth, getRow])
 
   // 4. Favourites Items construction
   const favouritesItems = useMemo(() => {
@@ -727,8 +760,8 @@ const MainContentArea: React.FC<{
   }, [setActiveView])
   const handleYearClick = useCallback((year: string) => {
     setYearFilter(null)
-    jumpToGroup(sortedGroupedData.keys.find(k => sortedGroupedData.data[k]?.[0]?.year === year))
-  }, [sortedGroupedData, setYearFilter, jumpToGroup])
+    jumpToGroup(libraryGroups.find(g => (g.maxDate || g.key).slice(0, 4) === year)?.key)
+  }, [libraryGroups, setYearFilter, jumpToGroup])
 
   const renderItem = (item: any) => {
     switch (item.type) {
@@ -1039,8 +1072,10 @@ const MainContentArea: React.FC<{
     return (
       <div className="view-transition-enter" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, ...animationStyle }}>
         <PhotoGrid
-          keys={sortedGroupedData.keys}
-          data={sortedGroupedData.data}
+          groups={libraryGroups}
+          getRow={getRow}
+          ensureRange={ensureRange}
+          formatGroupKey={formatGroupKey}
           selected={selected}
           favourites={favourites}
           deletingPaths={deletingPaths}
@@ -1058,8 +1093,8 @@ const MainContentArea: React.FC<{
           onVisibleKeyChange={setVisibleKey}
         />
         <DateScrubber
-          keys={sortedGroupedData.keys}
-          data={sortedGroupedData.data}
+          groups={libraryGroups}
+          formatGroupKey={formatGroupKey}
           currentKey={visibleKey}
           onJump={jumpToGroup}
         />
@@ -1671,6 +1706,18 @@ export default function App(): React.JSX.Element {
   const handleReveal = useCallback((file: ScannedFile): void => { window.electron.ipcRenderer.send('reveal-file', file.path) }, [])
   const openLightbox = useCallback((file: ScannedFile, list: ScannedFile[], rect?: DOMRect): void => { setLightbox({ file, list, rect }) }, [])
 
+  // The library is read through SQLite. The renderer keeps the group summary
+  // and a bounded window of pages - never the whole index.
+  const libraryQuery = useMemo<LibraryQuery | null>(
+    () =>
+      selectedDrive
+        ? { drive: selectedDrive, nav: activeNav, search: searchQuery, groupBy, order: viewOrder }
+        : null,
+    [selectedDrive, activeNav, searchQuery, groupBy, viewOrder]
+  )
+  const library = useLibrary(libraryQuery)
+  const formatGroupKey = useMemo(() => makeGroupFormatter(groupBy), [groupBy])
+
   const groupedFiles = useMemo<Record<string, ScannedFile[]>>(
     () => (selectedDrive && driveFiles[selectedDrive]) || {},
     [selectedDrive, driveFiles]
@@ -1690,7 +1737,7 @@ export default function App(): React.JSX.Element {
     refreshTrash()
   }, [refreshTrash])
   const allFavFiles = useMemo(() => allFiles.filter(f => favourites.has(f.path)), [allFiles, favourites])
-  const totalFiles = allFiles.length
+  const totalFiles = library.total
 
   // Stable reference so MagneticDock (not memoized against unrelated App
   // re-renders otherwise) only actually re-renders when one of these changes,
@@ -2401,7 +2448,10 @@ export default function App(): React.JSX.Element {
           onTileSizeChange={handleSettingsTileSizeChange}
           transitioning={transitioning}
           setTransitioning={setTransitioning}
-          sortedGroupedData={sortedGroupedData}
+          libraryGroups={library.groups}
+          getRow={library.getRow}
+          ensureRange={library.ensureRange}
+          formatGroupKey={formatGroupKey}
           handleWheel={handleWheel}
           handleGroupCheckboxClick={handleGroupCheckboxClick}
           groupBy={groupBy}

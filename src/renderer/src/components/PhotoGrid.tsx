@@ -13,6 +13,7 @@
 import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Check, FileText, Film, Heart, Image as ImageIcon, Play } from 'lucide-react'
 import type { ScannedFile } from '../App'
+import type { LibraryGroup } from '../hooks/useLibrary'
 import { useReducedMotionPref } from '../hooks/useReducedMotionPref'
 import './PhotoGrid.css'
 
@@ -43,9 +44,14 @@ function levelsFor(width: number): number[] {
   return [...set].sort((a, b) => a - b)
 }
 
+// A section is described by its size and where its rows start in the overall
+// ordering - never by the rows themselves. That is what lets the grid lay out a
+// million files without holding any of them.
 interface Section {
   key: string
-  files: ScannedFile[]
+  count: number
+  /** Index of this section's first row in the overall ordering. */
+  offset: number
   top: number
   rowsTop: number
   rows: number
@@ -60,18 +66,17 @@ interface Layout {
   height: number
 }
 
-function buildLayout(keys: string[], data: Record<string, ScannedFile[]>, width: number, cols: number): Layout {
+function buildLayout(groups: LibraryGroup[], width: number, cols: number): Layout {
   const tile = tileFor(width, cols)
   const pitch = tile + GAP
   const sections: Section[] = []
   let y = PAD_TOP
-  for (const key of keys) {
-    const files = data[key]
-    if (!files || files.length === 0) continue
-    const rows = Math.ceil(files.length / cols)
+  for (const g of groups) {
+    if (g.count <= 0) continue
+    const rows = Math.ceil(g.count / cols)
     const rowsTop = y + HEADER_H
     const bottom = rowsTop + rows * pitch - GAP + SECTION_GAP
-    sections.push({ key, files, top: y, rowsTop, rows, bottom })
+    sections.push({ key: g.key, count: g.count, offset: g.offset, top: y, rowsTop, rows, bottom })
     y = bottom
   }
   return { cols, tile, pitch, sections, height: y + PAD_BOTTOM }
@@ -114,7 +119,7 @@ function anchorAt(layout: Layout, cx: number, cy: number): Anchor | null {
   if (cy < s.rowsTop) return { key: s.key, index: 0, fx: 0, fy: 0 }
   const row = clamp(Math.floor((cy - s.rowsTop) / layout.pitch), 0, s.rows - 1)
   const col = clamp(Math.floor((cx - PAD_X) / layout.pitch), 0, layout.cols - 1)
-  const index = Math.min(s.files.length - 1, row * layout.cols + col)
+  const index = Math.min(s.count - 1, row * layout.cols + col)
   const p = tilePos(layout, s, index)
   return {
     key: s.key,
@@ -127,7 +132,7 @@ function anchorAt(layout: Layout, cx: number, cy: number): Anchor | null {
 function anchorContentPoint(layout: Layout, a: Anchor): { x: number; y: number } | null {
   const s = layout.sections.find(sec => sec.key === a.key)
   if (!s) return null
-  const p = tilePos(layout, s, Math.min(a.index, s.files.length - 1))
+  const p = tilePos(layout, s, Math.min(a.index, s.count - 1))
   return { x: p.x + a.fx * layout.tile, y: p.y + a.fy * layout.tile }
 }
 
@@ -370,8 +375,14 @@ const GridTile = memo(function GridTile({
 
 // ─── Grid ────────────────────────────────────────────────────────────────────
 export interface PhotoGridProps {
-  keys: string[]
-  data: Record<string, ScannedFile[]>
+  /** Group summary: sizes and offsets only, never the rows themselves. */
+  groups: LibraryGroup[]
+  /** Resident row for a global index, or undefined while its page loads. */
+  getRow: (index: number) => ScannedFile | undefined
+  /** Asks the library to keep this global index range resident. */
+  ensureRange: (start: number, end: number) => void
+  /** Label for a group key, formatted by the caller (locale stays out of SQL). */
+  formatGroupKey: (key: string) => string
   selected: Set<string>
   favourites: Set<string>
   deletingPaths: Set<string>
@@ -402,7 +413,7 @@ interface Pending {
 }
 
 export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
-  const { keys, data, selected, favourites, deletingPaths, tileSize, hoverPreviewsEnabled } = props
+  const { groups, getRow, ensureRange, formatGroupKey, selected, favourites, deletingPaths, tileSize, hoverPreviewsEnabled } = props
 
   const outerRef = useRef<HTMLDivElement>(null)
   const scrollerRef = useRef<HTMLDivElement>(null)
@@ -416,8 +427,8 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
   const effectiveCols = cols || (gridWidth > 0 ? colsFor(gridWidth, tileSize) : 1)
 
   const layout = useMemo(
-    () => buildLayout(keys, data, Math.max(gridWidth, 1), effectiveCols),
-    [keys, data, gridWidth, effectiveCols]
+    () => buildLayout(groups, Math.max(gridWidth, 1), effectiveCols),
+    [groups, gridWidth, effectiveCols]
   )
   const layoutRef = useRef(layout)
   layoutRef.current = layout
@@ -426,20 +437,12 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
   const propsRef = useRef(props)
   propsRef.current = props
 
-  const sectionOf = useMemo(() => {
-    const m = new Map<string, ScannedFile[]>()
-    for (const s of layout.sections) for (const f of s.files) m.set(f.path, s.files)
-    return m
-  }, [layout.sections])
-  const sectionOfRef = useRef(sectionOf)
-  sectionOfRef.current = sectionOf
-
   const actions = useMemo<GridActions>(
     () => ({
-      open: (f, e) => propsRef.current.onOpen(f, sectionOfRef.current.get(f.path) ?? [f], e),
+      open: (f, e) => propsRef.current.onOpen(f, [f], e),
       select: (f, e) => propsRef.current.onSelect(f, e),
       fav: f => propsRef.current.onFav(f),
-      context: (f, e) => propsRef.current.onContextMenu(f, sectionOfRef.current.get(f.path) ?? [f], e),
+      context: (f, e) => propsRef.current.onContextMenu(f, [f], e),
       dragPaths: f => {
         const sel = propsRef.current.selected
         return sel.has(f.path) ? [...sel] : [f.path]
@@ -497,7 +500,7 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
       if (!scroller || newCols === old.cols || gridWidth <= 0) return
       const o = originRef.current
       const anchor = anchorAt(old, o.x, scroller.scrollTop + o.y)
-      const next = buildLayout(keys, data, gridWidth, newCols)
+      const next = buildLayout(propsRef.current.groups, gridWidth, newCols)
       let top = scroller.scrollTop
       if (anchor) {
         const p = anchorContentPoint(next, anchor)
@@ -515,7 +518,7 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
       setCols(newCols)
       emitTileSize(newCols, gridWidth)
     },
-    [keys, data, gridWidth, emitTileSize]
+    [gridWidth, emitTileSize]
   )
 
   useLayoutEffect(() => {
@@ -551,8 +554,6 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
   // ── Viewport size (keeps the top-left photo in place on resize) ──
   const viewportRef = useRef(viewport)
   viewportRef.current = viewport
-  const dataRef = useRef({ keys, data })
-  dataRef.current = { keys, data }
   useLayoutEffect(() => {
     const outer = outerRef.current
     if (!outer) return
@@ -568,7 +569,7 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
         const anchor = anchorAt(old, PAD_X + 1, scroller.scrollTop + PAD_TOP)
         // Keep the same tile size; the column count adapts to the new width.
         const c = colsFor(newGridWidth, old.tile)
-        const next = buildLayout(dataRef.current.keys, dataRef.current.data, newGridWidth, c)
+        const next = buildLayout(propsRef.current.groups, newGridWidth, c)
         const p = anchor && anchorContentPoint(next, { ...anchor, fx: 0, fy: 0 })
         if (anchor && p) {
           const top = Math.max(0, p.y - PAD_TOP - (anchor.index === 0 ? HEADER_H : 0))
@@ -815,31 +816,51 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
   const headers: React.ReactNode[] = []
   const tiles: React.ReactNode[] = []
   const visibleThumblessPaths: string[] = []
+  // Global index range actually on screen. Only these pages are kept resident.
+  let rangeStart = Infinity
+  let rangeEnd = -Infinity
   if (gridWidth > 0) {
     for (let si = firstSectionAfter(layout.sections, y0); si < layout.sections.length; si++) {
       const s = layout.sections[si]
       if (s.top > y1) break
       if (s.top + HEADER_H > y0) {
-        const allSel = s.files.length > 0 && s.files.every(f => selected.has(f.path))
         headers.push(
           <div key={'h:' + s.key} className="pg-header" style={{ top: s.top, left: PAD_X, right: PAD_X, height: HEADER_H }}>
-            <div className="pg-header-title">{s.key}</div>
-            <div className="pg-header-count">{s.files.length.toLocaleString()} items</div>
+            <div className="pg-header-title">{formatGroupKey(s.key)}</div>
+            <div className="pg-header-count">{s.count.toLocaleString()} items</div>
             <button
-              className={'pg-header-select' + (allSel ? ' is-active' : '')}
+              className="pg-header-select"
               onClick={e => props.onGroupCheckboxClick(s.key, e)}
             >
-              {allSel ? 'Deselect' : 'Select'}
+              Select
             </button>
           </div>
         )
       }
       const r0 = clamp(Math.floor((y0 - s.rowsTop) / layout.pitch), 0, s.rows)
       const r1 = clamp(Math.floor((y1 - s.rowsTop) / layout.pitch), -1, s.rows - 1)
-      const end = Math.min(s.files.length, (r1 + 1) * layout.cols)
-      for (let i = r0 * layout.cols; i < end; i++) {
-        const f = s.files[i]
+      const end = Math.min(s.count, (r1 + 1) * layout.cols)
+      const from = r0 * layout.cols
+      if (end > from) {
+        rangeStart = Math.min(rangeStart, s.offset + from)
+        rangeEnd = Math.max(rangeEnd, s.offset + end - 1)
+      }
+      for (let i = from; i < end; i++) {
+        const globalIndex = s.offset + i
         const p = tilePos(layout, s, i)
+        const f = getRow(globalIndex)
+        if (!f) {
+          // The page covering this index has not arrived yet. A sized, inert
+          // placeholder keeps the geometry exact so nothing shifts when it does.
+          tiles.push(
+            <div
+              key={'skel:' + globalIndex}
+              className="pg-tile is-skeleton"
+              style={{ left: p.x, top: p.y, width: layout.tile, height: layout.tile }}
+            />
+          )
+          continue
+        }
         if (!f.thumb) visibleThumblessPaths.push(f.path)
         tiles.push(
           <GridTile
@@ -859,6 +880,13 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
       }
     }
   }
+
+  // Ask for exactly the pages covering what is on screen. Requests for a
+  // superseded query are dropped by the library hook, so fast scrolling and
+  // drive switches cannot paint stale rows.
+  useEffect(() => {
+    if (rangeEnd >= rangeStart) ensureRange(rangeStart, rangeEnd)
+  }, [rangeStart, rangeEnd, ensureRange])
 
   // Bump thumbnail generation for whatever's on screen right now ahead of the
   // background backfill queue, instead of waiting for it to reach these files
@@ -894,7 +922,7 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
           {tiles}
         </div>
       </div>
-      {topSection && <div className="pg-date-pill">{topSection.key}</div>}
+      {topSection && <div className="pg-date-pill">{formatGroupKey(topSection.key)}</div>}
     </div>
   )
 }

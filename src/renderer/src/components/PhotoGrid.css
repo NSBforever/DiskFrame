@@ -266,3 +266,13 @@
   from { opacity: 0; transform: translate(-50%, -4px); }
   to { opacity: 1; transform: translate(-50%, 0); }
 }
+
+/* Placeholder for a tile whose page has not arrived yet. Exact geometry so
+   nothing shifts when the real row lands; no animation, because dozens can be
+   on screen at once during a fast scroll. */
+.pg-tile.is-skeleton {
+  position: absolute;
+  background: rgba(255, 255, 255, 0.035);
+  border-radius: 4px;
+  pointer-events: none;
+}
