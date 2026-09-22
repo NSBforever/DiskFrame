@@ -1796,7 +1796,11 @@ export default function App(): React.JSX.Element {
   // Stable reference so MagneticDock (not memoized against unrelated App
   // re-renders otherwise) only actually re-renders when one of these changes,
   // not on every drive-poll/thumbnail-batch tick.
-  const favCount = allFavFiles.length
+  // favourites holds every favourited path across all drives; allFavFiles is
+  // only the ones resident for the drive in view. Counting the latter made the
+  // badge read "1" while four files were favourited, because the other three
+  // were on a drive that was not open.
+  const favCount = favourites.size
   const dockItems = useMemo(
     () => [
       { id: 'all', label: 'All files', icon: <FolderArchive size={18} />, isActive: activeNav === 'all', onClick: () => setActiveNav('all') },

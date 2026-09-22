@@ -304,3 +304,11 @@
 .df-reduced-effects .pg-tile:hover .pg-tile-inner img {
   transform: none;
 }
+
+/* A file the main process could not read, or whose thumbnail decode failed.
+   Deliberately distinct from the plain placeholder: that one means "not yet",
+   this one means "never". */
+.pg-placeholder.is-unavailable {
+  color: var(--pg-unavailable-fg, #b4654a);
+  background: var(--pg-unavailable-bg, rgba(180, 101, 74, 0.1));
+}

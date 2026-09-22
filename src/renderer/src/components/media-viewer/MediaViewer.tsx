@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { useZoomPan } from './ZoomPanEngine'
 import { useGestures } from './GestureEngine'
 import { useShortcuts } from './ShortcutManager'
-import { ImageLoader } from './ImageLoader'
+import { ImageLoader, VIEWER_ACTIVITY_EVENT } from './ImageLoader'
 import { MediaViewerToolbar } from './MediaViewerToolbar'
 import { MetadataPanel } from './MetadataPanel'
 import { MapPin, ArrowLeft } from 'lucide-react'
@@ -165,31 +165,45 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
     }
   }, [])
 
-  // Auto-hide toolbar controls in fullscreen mode after 2s inactivity
+  // Auto-hide the viewer chrome over a fullscreen video only.
+  //
+  // Two bugs lived here. It hid the chrome for *any* fullscreen file, so a
+  // photo or PDF lost its toolbar after two idle seconds. And it woke only on
+  // DOM mousemove - but mpv paints on a native child window, so moving the
+  // mouse over a playing video produces no DOM event at all. The chrome
+  // vanished two seconds in and there was no gesture that could bring it back
+  // short of leaving fullscreen. ImageLoader re-broadcasts mpv's own mouse-pos
+  // as VIEWER_ACTIVITY_EVENT; listening for it is what makes the video surface
+  // count as activity.
   useEffect(() => {
-    if (!isFullscreen) {
+    if (!isFullscreen || !isVideo) {
       setControlsVisible(true)
       return
     }
 
-    const handleMouseMove = () => {
+    const wake = (): void => {
       setControlsVisible(true)
       lastMouseMoveRef.current = Date.now()
     }
+    wake()
 
-    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mousemove', wake)
+    window.addEventListener(VIEWER_ACTIVITY_EVENT, wake)
 
     const interval = setInterval(() => {
-      if (Date.now() - lastMouseMoveRef.current > 2000) {
+      if (Date.now() - lastMouseMoveRef.current > 3000) {
         setControlsVisible(false)
       }
     }, 500)
 
     return () => {
-      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mousemove', wake)
+      window.removeEventListener(VIEWER_ACTIVITY_EVENT, wake)
       clearInterval(interval)
     }
-  }, [isFullscreen])
+    // file.path: a new file starts its own idle window rather than inheriting
+    // whatever was left of the previous one.
+  }, [isFullscreen, isVideo, file.path])
 
   // Escape key down listener - one press closes the viewer and returns to the
   // gallery at its previous scroll position, exiting fullscreen as part of

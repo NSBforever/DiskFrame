@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ScannedFile } from '../App'
+import { pickEvictionVictim } from '../../../main/pageCache'
 
 /**
  * Reads the library through SQLite instead of holding it in memory.
@@ -68,6 +69,9 @@ export function useLibrary(query: LibraryQuery | null): Library {
   const generationRef = useRef(0)
   const pagesRef = useRef(new Map<number, ScannedFile[]>())
   const inFlightRef = useRef(new Set<number>())
+  // Page window the grid last asked for. Drives eviction so a page that is
+  // on screen is never the one thrown away.
+  const wantRef = useRef({ first: 0, last: 0 })
   const queryRef = useRef<LibraryQuery | null>(null)
   const [pageVersion, setPageVersion] = useState(0)
   // Changes on every query change. ensureRange depends on it so its identity
@@ -144,12 +148,22 @@ export function useLibrary(query: LibraryQuery | null): Library {
           // A page requested before the query changed is not useful any more.
           if (generation !== generationRef.current) return
           pagesRef.current.set(pageIndex, res.rows as ScannedFile[])
-          // Evict in insertion order, which for scrolling is the page furthest
-          // from where the user now is.
+          // Evict whatever is furthest from the window the grid last asked for.
+          //
+          // This used to evict in insertion order on the assumption that the
+          // oldest page is the one furthest from the user. It is not: a burst
+          // of scrolling requests pages faster than they arrive, and once more
+          // than MAX_CACHED_PAGES are in flight the earliest arrivals are
+          // dropped - including the page the user just landed on. Nothing then
+          // re-requests it, because the grid only calls ensureRange when the
+          // visible range *changes*, so those tiles stayed skeletons for good.
           while (pagesRef.current.size > MAX_CACHED_PAGES) {
-            const oldest = pagesRef.current.keys().next().value
-            if (oldest === undefined) break
-            pagesRef.current.delete(oldest)
+            const { first, last } = wantRef.current
+            const victim = pickEvictionVictim(pagesRef.current.keys(), first, last)
+            // Everything resident is inside the wanted window - keep it all
+            // rather than evicting a page that is about to be read.
+            if (victim === undefined) break
+            pagesRef.current.delete(victim)
           }
           scheduleRender()
         })
@@ -174,7 +188,8 @@ export function useLibrary(query: LibraryQuery | null): Library {
       const last = Math.floor(Math.max(0, end) / PAGE_SIZE)
       // One page of lookahead each way keeps scrolling ahead of the fetch
       // without turning a scroll into a full-library read.
-      for (let p = Math.max(0, first - 1); p <= last + 1; p++) fetchPage(p)
+      wantRef.current = { first: Math.max(0, first - 1), last: last + 1 }
+      for (let p = wantRef.current.first; p <= wantRef.current.last; p++) fetchPage(p)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [fetchPage, queryEpoch]
@@ -205,6 +220,11 @@ export function useLibrary(query: LibraryQuery | null): Library {
     if (!q) return
     const generation = ++generationRef.current
     resetCaches()
+    // Same reason as on a query change: the page cache was just emptied, but
+    // the grid's visible range is usually identical, so without a new epoch
+    // ensureRange keeps its identity, the grid's effect never re-runs, and
+    // every tile sits on a skeleton with nothing left to fetch its page.
+    setQueryEpoch((n) => n + 1)
     loadSummary(q, generation)
   }, [loadSummary, resetCaches])
 

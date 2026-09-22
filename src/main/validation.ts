@@ -120,3 +120,16 @@ export function isUsableCaptureDate(d: Date | null | undefined): boolean {
 export function isMassRemoval(removedCount: number, knownCount: number): boolean {
   return removedCount > 100 && removedCount > knownCount * 0.5
 }
+
+/**
+ * Sent to the renderer (never written to the database) when the main process
+ * has established that a file cannot produce a thumbnail - it is missing,
+ * unreadable, or the decoder rejected it.
+ *
+ * Without this a video whose file is gone has no thumbnail and no <img> to
+ * fail, so its tile is indistinguishable from one that is still waiting, and
+ * stays "loading" for the rest of the session. Writing a marker like this into
+ * the thumb *column* is what the old NO_FILE sentinel did; that poisoned the
+ * backfill query and had to be migrated out, so this one stays in memory only.
+ */
+export const THUMB_UNAVAILABLE = '!unavailable'

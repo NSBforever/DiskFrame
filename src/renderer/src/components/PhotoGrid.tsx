@@ -11,7 +11,8 @@
  * - Two-finger touch pinch on touchscreens works the same way.
  */
 import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Check, FileText, Film, Heart, Image as ImageIcon, Play } from 'lucide-react'
+import { AlertTriangle, Check, FileText, Film, Heart, Image as ImageIcon, Play } from 'lucide-react'
+import { THUMB_UNAVAILABLE } from '../../../main/validation'
 import type { ScannedFile } from '../App'
 import type { LibraryGroup } from '../hooks/useLibrary'
 import { useReducedMotionPref } from '../hooks/useReducedMotionPref'
@@ -200,21 +201,33 @@ const GridTile = memo(function GridTile({
   const canUseOriginal = isPhoto && ext !== '.heic'
   // 'NO_FILE' is a historical sentinel that older builds wrote into the
   // thumbnail *path* column. It is not a path, so it must never be requested.
-  const usableThumb = thumb && thumb !== 'NO_FILE' ? thumb : null
+  // THUMB_UNAVAILABLE is the live signal from the main process that no
+  // thumbnail is coming for this file.
+  const reportedUnavailable = thumb === THUMB_UNAVAILABLE
+  const usableThumb = thumb && thumb !== 'NO_FILE' && !reportedUnavailable ? thumb : null
   const src = usableThumb && !thumbFailed ? usableThumb : canUseOriginal && !originalFailed ? file.path : null
   const showImg = !!src
+  // Every way of showing this file has been tried and failed. Distinguishing
+  // this from "no thumbnail yet" is the difference between a library that
+  // looks broken and one that tells you which files are gone.
+  const unavailable =
+    !src && (reportedUnavailable || thumbFailed || originalFailed)
   const compact = size < 72
   const reducedMotion = useReducedMotionPref()
   const imgRef = useRef<HTMLImageElement>(null)
 
   useEffect(() => {
     setThumbFailed(false)
-    retriesRef.current = 0
   }, [thumb])
   useEffect(() => {
     setOriginalFailed(false)
-    retriesRef.current = 0
   }, [file.path])
+  // Reset per source, not per file: the counter used to be shared, so a
+  // thumbnail that burned both retries left the original fallback with none -
+  // its first transient error was treated as final.
+  useEffect(() => {
+    retriesRef.current = 0
+  }, [src])
 
   // Blanking src on unmount hints Blink to release the decoded bitmap now
   // rather than keeping it in its resource cache for possible scroll-back -
@@ -320,9 +333,24 @@ const GridTile = memo(function GridTile({
             }}
           />
         ) : (
-          <div className={'pg-placeholder' + (isVideo ? ' is-video' : DOC_EXTS.has(ext) ? ' is-doc' : '')}>
-            {isVideo ? <Film size={compact ? 16 : 24} /> : DOC_EXTS.has(ext) ? <FileText size={compact ? 16 : 24} /> : <ImageIcon size={compact ? 16 : 24} />}
-            {!compact && <span>{ext.replace('.', '')}</span>}
+          <div
+            className={
+              'pg-placeholder' +
+              (isVideo ? ' is-video' : DOC_EXTS.has(ext) ? ' is-doc' : '') +
+              (unavailable ? ' is-unavailable' : '')
+            }
+            title={unavailable ? file.path + ' - unavailable, the file could not be read' : undefined}
+          >
+            {unavailable ? (
+              <AlertTriangle size={compact ? 16 : 24} />
+            ) : isVideo ? (
+              <Film size={compact ? 16 : 24} />
+            ) : DOC_EXTS.has(ext) ? (
+              <FileText size={compact ? 16 : 24} />
+            ) : (
+              <ImageIcon size={compact ? 16 : 24} />
+            )}
+            {!compact && <span>{unavailable ? 'missing' : ext.replace('.', '')}</span>}
           </div>
         )}
         {isVideo && showImg && !previewReady && (
@@ -836,6 +864,7 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
   const y1 = scrollTop + viewport.height + overscan
   const headers: React.ReactNode[] = []
   const tiles: React.ReactNode[] = []
+  const visiblePaths: string[] = []
   const visibleThumblessPaths: string[] = []
   // Global index range actually on screen. Only these pages are kept resident.
   let rangeStart = Infinity
@@ -882,6 +911,7 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
           )
           continue
         }
+        visiblePaths.push(f.path)
         if (!f.thumb) visibleThumblessPaths.push(f.path)
         tiles.push(
           <GridTile
@@ -912,16 +942,28 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
   // Bump thumbnail generation for whatever's on screen right now ahead of the
   // background backfill queue, instead of waiting for it to reach these files
   // in DB order. Debounced so fast scrolling doesn't spam IPC calls.
-  const visibleThumblessKey = visibleThumblessPaths.join('|')
+  //
+  // Keyed on which files are on screen, NOT on which of them still lack a
+  // thumbnail. The main process treats each call as superseding the last and
+  // abandons the batch it was working on, so keying this on the thumbless set
+  // was self-defeating: every thumbnail that arrived shrank the set, re-ran
+  // this effect, and cancelled generation of the rest. Fast formats finished
+  // and slow ones never did - a screen of videos (seconds of ffmpeg each) was
+  // cancelled by every photo that completed beside it and stayed blank.
+  const visiblePathsKey = visiblePaths.join('|')
+  const visibleThumblessRef = useRef<string[]>(visibleThumblessPaths)
+  visibleThumblessRef.current = visibleThumblessPaths
   useEffect(() => {
-    if (!visibleThumblessKey) return
-    const paths = visibleThumblessKey.split('|')
+    if (!visiblePathsKey) return
     const t = window.setTimeout(() => {
-      window.api.prioritizeThumbnails(paths).catch(() => {})
+      // Read at fire time: thumbnails that landed during the debounce are
+      // already excluded, without that exclusion re-triggering the effect.
+      const paths = visibleThumblessRef.current
+      if (paths.length) window.api.prioritizeThumbnails(paths).catch(() => {})
     }, 250)
     return () => window.clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleThumblessKey])
+  }, [visiblePathsKey])
 
   // Floating date pill: names the section under the top edge once its own header has scrolled away.
   const probe = layout.sections[firstSectionAfter(layout.sections, scrollTop + PAD_TOP)]

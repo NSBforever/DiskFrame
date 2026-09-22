@@ -57,7 +57,7 @@ import { initStreamServer, probeMedia, killActiveStream, closeStreamServer, auth
 import { initMpv, sendMpvCommand, updateMpvBounds, closeMpv, refreshMpvBounds } from './mpvManager'
 import { WatcherManager } from './watcher'
 import { IndexingService } from './indexingService'
-import { normalizeDrive, isSafeLocalPath, safePathList } from './validation'
+import { normalizeDrive, isSafeLocalPath, safePathList, THUMB_UNAVAILABLE } from './validation'
 import { parseSafeMode, subsystemEnabled } from './runtimeMode'
 
 const safeMode = parseSafeMode(process.argv, process.env)
@@ -905,9 +905,17 @@ app.whenReady().then(() => {
         // A newer viewport request supersedes this one.
         if (myToken !== thumbRequestToken || isQuitting) return
         const p = todo[cursor++]
+        // Tell the renderer a thumbnail is never coming, so the tile can say
+        // so instead of waiting forever. Nothing is written to the database.
+        const reportUnavailable = (): void => {
+          thumbFailed.add(p)
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath: THUMB_UNAVAILABLE })
+          }
+        }
         try {
           if (!fs.existsSync(p)) {
-            thumbFailed.add(p)
+            reportUnavailable()
             continue
           }
           const thumbPath = await generateThumbForFile(p, extname(p).toLowerCase())
@@ -917,10 +925,10 @@ app.whenReady().then(() => {
               mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath })
             }
           } else {
-            thumbFailed.add(p)
+            reportUnavailable()
           }
         } catch (err) {
-          thumbFailed.add(p)
+          reportUnavailable()
           console.error('[thumb:onDemand]', p, err)
         } finally {
           thumbInFlight.delete(p)

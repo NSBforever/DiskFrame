@@ -50,6 +50,9 @@ function toUrl(p: string): string {
   return 'media:///' + p.replace(/\\/g, '/')
 }
 
+/** Activity anywhere in the player - DOM or mpv's own forwarded mouse-pos. */
+export const VIEWER_ACTIVITY_EVENT = 'diskframe:viewer-activity'
+
 export const ImageLoader: React.FC<ImageLoaderProps> = ({
   file,
   list,
@@ -104,6 +107,10 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
     setControlsVisible(true)
     window.clearTimeout(hideTimerRef.current)
     hideTimerRef.current = window.setTimeout(() => setControlsVisible(false), 3000)
+    // The viewer shell keeps its own chrome (back button, nav arrows) on a
+    // separate timer and cannot see mpv's native surface either, so activity
+    // has to be re-broadcast rather than kept local to this component.
+    window.dispatchEvent(new Event(VIEWER_ACTIVITY_EVENT))
   }, [])
 
   // Show immediately when the player opens or the video changes, and cancel
