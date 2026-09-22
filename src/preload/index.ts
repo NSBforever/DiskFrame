@@ -121,6 +121,7 @@ const api = {
   prioritizeThumbnails: (filePaths: string[]) => ipcRenderer.invoke('prioritize-thumbnails', filePaths),
   pickFolder: () => ipcRenderer.invoke('pick-folder'),
   indexFolder: (folder: string, maxFiles?: number) => ipcRenderer.invoke('index-folder', folder, maxFiles),
+  cancelIndexFolder: () => ipcRenderer.invoke('cancel-index-folder'),
   driveAvailability: () => ipcRenderer.invoke('drive-availability'),
   favouritePaths: () => ipcRenderer.invoke('favourite-paths'),
   playMpv: (filePath: string, relativeBounds: { left: number; top: number; width: number; height: number }) =>

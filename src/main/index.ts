@@ -51,8 +51,11 @@ import {
   purgeGeneratedAssetRows,
   clearThumbSentinels,
   indexFolderBounded,
+  cancelFolderIndex,
   getDriveAvailability,
-  isDriveMounted,
+  checkPathAvailability,
+  refreshVolumeCache,
+
   getFavouritePaths
 } from './scanner'
 import type { LibraryQuery } from './libraryQuery'
@@ -140,7 +143,6 @@ function sendFilesUpdated(drive: string, reason: 'initial' | 'background' | 'ind
     reason
   })
 }
-
 
 function getUniqueDestPath(destPath: string): string {
   if (!fs.existsSync(destPath)) return destPath
@@ -544,6 +546,24 @@ app.whenReady().then(() => {
       return new Response('Forbidden', { status: 403 })
     }
 
+    // Everything that paints or plays a file comes through here, so this is
+    // where volume identity has to be enforced rather than merely recorded.
+    // Serving a path whose letter now points at a different volume would show
+    // one file under another's record; a distinct status lets the renderer say
+    // which of those happened instead of showing a blank tile either way.
+    //
+    // Thumbnails we generated ourselves live in userData, not on the indexed
+    // volume, so they are exempt.
+    if (!filePath.toLowerCase().startsWith(app.getPath('userData').toLowerCase())) {
+      const availability = checkPathAvailability(filePath)
+      if (availability.status === 'drive-offline') {
+        return new Response('Drive not connected', { status: 503 })
+      }
+      if (availability.status === 'volume-mismatch') {
+        return new Response('Different volume', { status: 409 })
+      }
+    }
+
     const lower = filePath.toLowerCase()
     if (lower.endsWith('.heic') || lower.endsWith('.heif')) {
       try {
@@ -887,17 +907,6 @@ app.whenReady().then(() => {
   //     when the set gets large so a reconnected drive gets a fresh chance)
   //   - each call takes a token; when a newer call arrives the older one stops
   //     between files rather than finishing work nobody is looking at
-  // Mount state changes rarely; a short cache keeps this off the per-file path.
-  const mountCache = new Map<string, { at: number; mounted: boolean }>()
-  function driveMountedCached(drive: string): boolean {
-    const hit = mountCache.get(drive)
-    const now = Date.now()
-    if (hit && now - hit.at < 2000) return hit.mounted
-    const mounted = isDriveMounted(drive)
-    mountCache.set(drive, { at: now, mounted })
-    return mounted
-  }
-
   const thumbInFlight = new Set<string>()
   const thumbFailed = new Set<string>()
   // Pending viewport work. A new request REPLACES this - work for a screen the
@@ -930,18 +939,19 @@ app.whenReady().then(() => {
           if (thumbInFlight.has(p) || thumbFailed.has(p)) continue
           thumbInFlight.add(p)
           try {
-            const drive = p.slice(0, 2).toUpperCase()
-            if (!fs.existsSync(p)) {
-              // An unresolved path and an unplugged drive are different facts.
-              // A failed stat on a mounted volume says something about the
-              // file; the same failure with no volume mounted at that letter
-              // says only that the drive is not connected.
-              const offline = /^[A-Z]:$/.test(drive) && !driveMountedCached(drive)
-              if (!offline) thumbFailed.add(p)
+            // Shared with the media protocol and file actions, so a tile, a
+            // preview and an action all agree on why a path did not resolve.
+            const availability = checkPathAvailability(p)
+            if (availability.status !== 'ok') {
+              // An offline or relettered volume may come back, so it is never
+              // remembered as failed - only a real miss on the right volume is.
+              const recoverable =
+                availability.status === 'drive-offline' || availability.status === 'volume-mismatch'
+              if (!recoverable) thumbFailed.add(p)
               if (mainWindow && !mainWindow.isDestroyed()) {
                 mainWindow.webContents.send('thumb-ready', {
                   filePath: p,
-                  thumbPath: offline ? THUMB_VOLUME_OFFLINE : THUMB_UNAVAILABLE
+                  thumbPath: recoverable ? THUMB_VOLUME_OFFLINE : THUMB_UNAVAILABLE
                 })
               }
               continue
@@ -1019,11 +1029,24 @@ app.whenReady().then(() => {
     try {
       const r = await indexFolderBounded(folder, cap)
       sendFilesUpdated(r.drive, 'index-folder')
+      // The new records carry a volume id, so refresh the letter map that
+      // availability checks read.
+      void refreshVolumeCache()
       return { ok: true, ...r }
     } catch (err) {
       console.error('[index-folder]', err)
       return { ok: false, error: String(err) }
     }
+  })
+
+  // Keep the letter -> volume map current; everything that resolves a path
+  // reads it synchronously, so it must be refreshed when drives come and go.
+  void refreshVolumeCache()
+  setInterval(() => void refreshVolumeCache(), 30000)
+
+  ipcMain.handle('cancel-index-folder', () => {
+    cancelFolderIndex()
+    return true
   })
 
   ipcMain.handle('drive-availability', async () => {
@@ -1422,5 +1445,4 @@ app.on('window-all-closed', () => {
 })
 
 export { generateThumbForFile, updateThumb, probeMedia, initStreamServer, killActiveStream, closeStreamServer }
-
 

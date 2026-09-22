@@ -104,7 +104,10 @@ declare global {
         error?: string
         added?: number
         seen?: number
+        visited?: number
         skipped?: number
+        stoppedBy?: 'files' | 'entries' | 'cancelled' | null
+        complete?: boolean
         drive?: string
         volumeId?: string | null
         truncated?: boolean
@@ -119,6 +122,7 @@ declare global {
           volumeMatches: boolean | null
         }[]
       >
+      cancelIndexFolder: () => Promise<boolean>
       favouritePaths: () => Promise<string[]>
       playMpv: (filePath: string, relativeBounds: { left: number; top: number; width: number; height: number }) => Promise<void>
       sendMpvCommand: (command: string, args: any[]) => void

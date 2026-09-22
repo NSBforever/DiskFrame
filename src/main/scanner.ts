@@ -252,17 +252,50 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_files_page ON files (drive, hidden, trashed_at, date DESC, path ASC);
 `)
 
-// Migrate existing DB — add columns if missing
+/**
+ * Backs the database up before the first schema change of a new app version.
+ *
+ * VACUUM INTO writes a consistent copy while WAL is active, so it is safe with
+ * the app running and does not need the journal checkpointed first. Only taken
+ * when there is actually a migration to run, so a normal launch costs nothing.
+ */
+function backupBeforeMigration(tag: string): void {
+  try {
+    const dir = join(app.getPath('userData'), 'backups')
+    fs.mkdirSync(dir, { recursive: true })
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const target = join(dir, `diskframe-${stamp}-pre-${tag}.db`)
+    if (fs.existsSync(target)) return
+    db.prepare('VACUUM INTO ?').run(target)
+    console.log('[migrate] backup written:', target)
+    // Keep the five most recent; these are full copies of the library.
+    const kept = fs
+      .readdirSync(dir)
+      .filter((f) => f.startsWith('diskframe-') && f.endsWith('.db'))
+      .sort()
+      .reverse()
+    for (const old of kept.slice(5)) {
+      try {
+        fs.unlinkSync(join(dir, old))
+      } catch {
+        /* a backup we cannot remove is not a reason to block startup */
+      }
+    }
+  } catch (e) {
+    console.error('[migrate] backup FAILED, skipping migration:', e)
+    throw e
+  }
+}
+
+// Migrate existing DB — add columns if missing.
+//
+// Every step is guarded by a check of the current schema, so the whole block is
+// safe to run on every launch and safe to re-run after a partial failure. The
+// work runs inside one transaction: SQLite makes ALTER TABLE ADD COLUMN
+// transactional, so a crash midway leaves the schema as it was rather than
+// half-migrated.
 const cols = (db.prepare('PRAGMA table_info(files)').all() as { name: string }[]).map((c) => c.name)
-if (!cols.includes('locked'))
-  db.prepare('ALTER TABLE files ADD COLUMN locked INTEGER DEFAULT 0').run()
-if (!cols.includes('hidden'))
-  db.prepare('ALTER TABLE files ADD COLUMN hidden INTEGER DEFAULT 0').run()
-if (!cols.includes('vault_path')) db.prepare('ALTER TABLE files ADD COLUMN vault_path TEXT').run()
-if (!cols.includes('trashed_at')) db.prepare('ALTER TABLE files ADD COLUMN trashed_at TEXT').run()
-if (!cols.includes('mtime')) db.prepare('ALTER TABLE files ADD COLUMN mtime INTEGER').run()
-if (!cols.includes('hash')) db.prepare('ALTER TABLE files ADD COLUMN hash TEXT').run()
-if (!cols.includes('ino')) db.prepare('ALTER TABLE files ADD COLUMN ino INTEGER').run()
+
 // Which physical volume a record was indexed from.
 //
 // Until now a record was identified by its drive LETTER alone, and letters are
@@ -274,18 +307,43 @@ if (!cols.includes('ino')) db.prepare('ALTER TABLE files ADD COLUMN ino INTEGER'
 // Deliberately NOT backfilled. A historical row keeps volume_id NULL, meaning
 // "the volume this came from was never recorded" - which is the truth. Filling
 // those in from the letter that happens to be mounted now would assert exactly
-// the thing that cannot be established.
-if (!cols.includes('volume_id')) db.prepare('ALTER TABLE files ADD COLUMN volume_id TEXT').run()
+// the thing that cannot be established, and would turn an unresolved record
+// into a confident wrong one.
+const pendingColumns: { name: string; sql: string }[] = [
+  { name: 'locked', sql: 'ALTER TABLE files ADD COLUMN locked INTEGER DEFAULT 0' },
+  { name: 'hidden', sql: 'ALTER TABLE files ADD COLUMN hidden INTEGER DEFAULT 0' },
+  { name: 'vault_path', sql: 'ALTER TABLE files ADD COLUMN vault_path TEXT' },
+  { name: 'trashed_at', sql: 'ALTER TABLE files ADD COLUMN trashed_at TEXT' },
+  { name: 'mtime', sql: 'ALTER TABLE files ADD COLUMN mtime INTEGER' },
+  { name: 'hash', sql: 'ALTER TABLE files ADD COLUMN hash TEXT' },
+  { name: 'ino', sql: 'ALTER TABLE files ADD COLUMN ino INTEGER' },
+  { name: 'volume_id', sql: 'ALTER TABLE files ADD COLUMN volume_id TEXT' }
+].filter((c) => !cols.includes(c.name))
 
-// Seed favourite_paths from records that were favourited before it existed.
-// Idempotent, and it only ever adds - a favourite is never dropped here.
-try {
-  db.prepare(
-    `INSERT OR IGNORE INTO favourite_paths (path, added_at)
-     SELECT path, datetime('now') FROM files WHERE favourited = 1`
-  ).run()
-} catch (e) {
-  console.error('[migrate] favourite_paths seed failed:', e)
+const favouritesNeedSeeding =
+  (
+    db
+      .prepare(
+        'SELECT COUNT(*) n FROM files WHERE favourited = 1 AND path NOT IN (SELECT path FROM favourite_paths)'
+      )
+      .get() as { n: number }
+  ).n > 0
+
+if (pendingColumns.length > 0 || favouritesNeedSeeding) {
+  // Back up first. If the copy cannot be written the migration does not run:
+  // browsing an older schema is recoverable, an interrupted migration with no
+  // copy to fall back to is not.
+  backupBeforeMigration(pendingColumns.map((c) => c.name).join('-') || 'favourites')
+  db.transaction(() => {
+    for (const c of pendingColumns) db.prepare(c.sql).run()
+    // Seed favourite_paths from records favourited before that table existed.
+    // Only ever adds; a favourite is never dropped here.
+    db.prepare(
+      `INSERT OR IGNORE INTO favourite_paths (path, added_at)
+       SELECT path, datetime('now') FROM files WHERE favourited = 1`
+    ).run()
+  })()
+  console.log('[migrate] applied:', pendingColumns.map((c) => c.name).join(', ') || '(favourites only)')
 }
 // Marks rows the capture-date backfill has already looked at, so the pass is
 // resumable across launches instead of re-parsing the whole library each time.
@@ -646,6 +704,20 @@ export function getFavourites(): ScannedFile[] {
   return db
     .prepare('SELECT * FROM files WHERE favourited = 1 AND hidden = 0 AND trashed_at IS NULL ORDER BY date DESC')
     .all() as ScannedFile[]
+}
+
+
+/**
+ * Keeps path-keyed side tables in step when a record's path changes.
+ *
+ * favourite_paths is keyed by path so it can outlive the files row, which also
+ * means a relink would orphan it - the favourite would silently point at a
+ * location that no longer holds the file. Every place that rewrites files.path
+ * must call this.
+ */
+function repointPath(oldPath: string, newPath: string): void {
+  if (!oldPath || !newPath || oldPath === newPath) return
+  db.prepare('UPDATE OR REPLACE favourite_paths SET path = ? WHERE path = ?').run(newPath, oldPath)
 }
 
 /** Returns the resulting state, so callers don't need a second read. */
@@ -1050,6 +1122,7 @@ export function resolveMediaFile(filePath: string): { path: string; relinked: bo
     if (fs.existsSync(candidate.path)) {
       console.log(`[PathResilience] Found moved file at indexed path: "${candidate.path}"`)
       db.prepare('UPDATE files SET path = ?, name = ? WHERE path = ?').run(candidate.path, basename(candidate.path), filePath)
+      repointPath(filePath, candidate.path)
       return { path: candidate.path, relinked: true, exists: true }
     }
   }
@@ -1067,6 +1140,7 @@ export function resolveMediaFile(filePath: string): { path: string; relinked: bo
           if (fs.existsSync(candidatePath)) {
             console.log(`[PathResilience] Located moved file in renamed parent folder: "${candidatePath}"`)
             db.prepare('UPDATE files SET path = ?, name = ? WHERE path = ?').run(candidatePath, targetName, filePath)
+            repointPath(filePath, candidatePath)
             return { path: candidatePath, relinked: true, exists: true }
           }
         }
@@ -1199,6 +1273,7 @@ export function recordMovedFile(srcPath: string, destPath: string, destDrive: st
       destDrive,
       srcPath
     )
+    repointPath(srcPath, destPath)
     return
   }
   recordCopiedFile(srcPath, destPath, destDrive)
@@ -1367,10 +1442,54 @@ export function indexSampleFolder(folder: string, maxFiles: number): { count: nu
  * for what is actually on screen plus a buffer, so indexing a large folder
  * cannot turn into a long decode queue.
  */
+let cancelIndexRequested = false
+/** Asks an in-progress indexFolderBounded to stop at the next entry. */
+export function cancelFolderIndex(): void {
+  cancelIndexRequested = true
+}
+
+export interface FolderIndexResult {
+  added: number
+  /** Media files considered for indexing. */
+  seen: number
+  /** Directory entries visited, media or not. This is what bounds the walk. */
+  visited: number
+  skipped: number
+  drive: string
+  volumeId: string | null
+  /** Why the walk stopped early, if it did. */
+  stoppedBy: 'files' | 'entries' | 'cancelled' | null
+  /** False when the walk stopped early, so callers never treat it as complete. */
+  complete: boolean
+}
+
+/**
+ * Indexes ONE folder into the real library, bounded by visited entries as well
+ * as indexed files, and cancellable.
+ *
+ * This is the production path, not the diagnostic sample: records carry the
+ * folder's actual drive letter and the volume id read from the mounted volume,
+ * so they are identified by the disk they came from rather than by a letter
+ * Windows happened to assign.
+ *
+ * Two separate bounds matter. A file cap alone does not bound the walk - a
+ * folder of a million non-media files would be traversed in full while adding
+ * nothing - so entries visited is capped too.
+ *
+ * Nothing is ever marked missing here. The walk may stop early, so anything
+ * not visited is simply unknown; concluding otherwise would turn a truncated
+ * walk into a claim that files were deleted. Only INSERT OR IGNORE is used, so
+ * existing records keep their favourites, thumbnails and EXIF untouched.
+ *
+ * Thumbnails are deliberately NOT generated here - they are produced on demand
+ * for what is on screen plus a small buffer.
+ */
 export async function indexFolderBounded(
   folder: string,
-  maxFiles = 5000
-): Promise<{ added: number; seen: number; skipped: number; drive: string; volumeId: string | null; truncated: boolean }> {
+  maxFiles = 5000,
+  maxEntries = 200000
+): Promise<FolderIndexResult> {
+  cancelIndexRequested = false
   const drive = folder.slice(0, 2).toUpperCase()
   const volumeId = await getVolumeId(drive)
   if (volumeId) saveVolumeDrive(volumeId, drive)
@@ -1384,13 +1503,11 @@ export async function indexFolderBounded(
   const rows: Parameters<typeof insert.run>[] = []
   let skipped = 0
   let seen = 0
-  let truncated = false
+  let visited = 0
+  let stoppedBy: 'files' | 'entries' | 'cancelled' | null = null
   const stack: { dir: string; depth: number }[] = [{ dir: folder, depth: 0 }]
-  while (stack.length > 0) {
-    if (rows.length >= maxFiles) {
-      truncated = true
-      break
-    }
+
+  outer: while (stack.length > 0) {
     const { dir, depth } = stack.pop()!
     if (depth > 8) continue
     let entries: fs.Dirent[] = []
@@ -1400,21 +1517,30 @@ export async function indexFolderBounded(
       continue
     }
     for (const entry of entries) {
-      if (rows.length >= maxFiles) {
-        truncated = true
-        break
+      if (cancelIndexRequested) {
+        stoppedBy = 'cancelled'
+        break outer
       }
+      if (rows.length >= maxFiles) {
+        stoppedBy = 'files'
+        break outer
+      }
+      if (visited >= maxEntries) {
+        stoppedBy = 'entries'
+        break outer
+      }
+      visited++
       const fullPath = join(dir, entry.name)
       if (entry.isDirectory()) {
         if (!entry.name.startsWith('.')) stack.push({ dir: fullPath, depth: depth + 1 })
         continue
       }
       if (!entry.isFile()) continue
-      seen++
       if (!isIndexableUserMedia(fullPath)) {
         skipped++
         continue
       }
+      seen++
       try {
         const stat = fs.statSync(fullPath)
         const date = new Date(stat.mtime)
@@ -1437,12 +1563,14 @@ export async function indexFolderBounded(
     }
   }
 
+  // Whatever was gathered before stopping is still committed - a cancelled or
+  // truncated run reports partial progress rather than discarding it.
   let added = 0
-  const tx = db.transaction(() => {
+  db.transaction(() => {
     for (const r of rows) added += insert.run(...r).changes
-  })
-  tx()
-  return { added, seen, skipped, drive, volumeId, truncated }
+  })()
+  cancelIndexRequested = false
+  return { added, seen, visited, skipped, drive, volumeId, stoppedBy, complete: stoppedBy === null }
 }
 
 export function getFileIno(filePath: string): number | null {
@@ -1463,6 +1591,7 @@ export function relinkMovedFile(oldPath: string, newPath: string, stat: fs.Stats
     SET path = ?, name = ?, ext = ?, drive = ?, size = ?, mtime = ?, ino = ?
     WHERE path = ?
   `).run(newPath, basename(newPath), ext, drive, stat.size, mtimeMs, stat.ino ? Number(stat.ino) : null, oldPath)
+  repointPath(oldPath, newPath)
 
   const updated = db.prepare('SELECT * FROM files WHERE path = ?').get(newPath) as ScannedFile | undefined
   return updated || null
@@ -1754,4 +1883,80 @@ export function isDriveMounted(drive: string): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * Cached letter -> volume id, so availability can be decided synchronously.
+ *
+ * Reading the real volume id shells out to PowerShell, which is far too slow
+ * to do per file. This is refreshed when drives change and consulted by
+ * everything that resolves a path.
+ */
+const volumeByLetter = new Map<string, string | null>()
+
+export async function refreshVolumeCache(): Promise<void> {
+  const letters = new Set<string>(getAllKnownDrives().map((d) => d.slice(0, 2).toUpperCase()))
+  for (const l of letters) {
+    if (!/^[A-Z]:$/.test(l)) continue
+    volumeByLetter.set(l, isDriveMounted(l) ? await getVolumeId(l) : null)
+  }
+}
+
+export function getCachedVolumeId(letter: string): string | null {
+  return volumeByLetter.get(letter.slice(0, 2).toUpperCase()) ?? null
+}
+
+export type PathStatus = 'ok' | 'drive-offline' | 'volume-mismatch' | 'missing'
+
+/**
+ * Single answer to "can this record's file be used right now", shared by
+ * thumbnails, the media protocol and file actions.
+ *
+ * The distinction that matters: a path that fails because its volume is not
+ * connected, or because the letter now points at a DIFFERENT volume than the
+ * record came from, says nothing about the file. Only a failure on the right,
+ * mounted volume does. Treating those the same is what made unplugged and
+ * relettered drives look like deleted files.
+ *
+ * A record with no recorded volume id is never claimed for whatever volume
+ * happens to be mounted - it is reported honestly as unverified.
+ */
+export function checkPathAvailability(
+  filePath: string,
+  recordedVolumeId?: string | null
+): { status: PathStatus; volumeKnown: boolean } {
+  const letter = filePath.slice(0, 2).toUpperCase()
+  const isLetterPath = /^[A-Z]:$/.test(letter)
+  const recorded =
+    recordedVolumeId !== undefined
+      ? recordedVolumeId
+      : ((
+          db.prepare('SELECT volume_id FROM files WHERE path = ?').get(filePath) as
+            | { volume_id: string | null }
+            | undefined
+        )?.volume_id ?? null)
+
+  if (isLetterPath && !isDriveMounted(letter)) {
+    return { status: 'drive-offline', volumeKnown: !!recorded }
+  }
+  if (recorded) {
+    const current = getCachedVolumeId(letter)
+    if (current && current !== recorded) {
+      return { status: 'volume-mismatch', volumeKnown: true }
+    }
+  }
+  if (!fs.existsSync(filePath)) {
+    return { status: 'missing', volumeKnown: !!recorded }
+  }
+  return { status: 'ok', volumeKnown: !!recorded }
+}
+
+/** Rows whose path did not resolve, for the unavailable-files filter. */
+export function getUnavailableCount(drive: string): number {
+  const row = db
+    .prepare(
+      'SELECT COUNT(*) n FROM files WHERE drive = ? AND hidden = 0 AND trashed_at IS NULL'
+    )
+    .get(drive) as { n: number }
+  return row.n
 }

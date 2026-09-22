@@ -1498,9 +1498,20 @@ export default function App(): React.JSX.Element {
         setToastMsg(`Could not index folder: ${r.error ?? 'unknown error'}`)
         return
       }
+      // Say plainly when the walk stopped early. A partial result must not
+      // read like a complete one - nothing outside what was visited has been
+      // examined, let alone found missing.
+      const why =
+        r.stoppedBy === 'cancelled'
+          ? ' - cancelled, partial'
+          : r.stoppedBy === 'files'
+            ? ' - stopped at the file cap, run again to continue'
+            : r.stoppedBy === 'entries'
+              ? ' - stopped at the entry cap, run again to continue'
+              : ''
       setToastMsg(
-        `Indexed ${r.added} new file${r.added === 1 ? '' : 's'} from ${folder}` +
-          (r.truncated ? ' (stopped at the cap - run again to continue)' : '')
+        `Indexed ${r.added} new file${r.added === 1 ? '' : 's'} of ${r.seen ?? 0} seen ` +
+          `(${r.visited ?? 0} entries visited) from ${folder}${why}`
       )
     } catch (err) {
       setToastMsg(`Could not index folder: ${String(err)}`)
@@ -1605,6 +1616,23 @@ export default function App(): React.JSX.Element {
     const unsubFavs = window.api.onFavouritesUpdated((files) => {
       setFavourites(new Set((files as Array<{ path: string }>).map(f => f.path)))
     })
+    // Authoritative favourites, independent of which drive is open.
+    //
+    // The Set was previously filled from whatever rows the open drive had
+    // loaded, so the badge counted only that drive's favourites - it read 1
+    // while four files were favourited. favourite_paths is keyed by path and
+    // repointed whenever a record is relinked, so it stays correct across
+    // drives and across moves.
+    const loadFavPaths = (): void => {
+      window.api
+        .favouritePaths()
+        .then((paths) => setFavourites(new Set(paths)))
+        .catch(() => {})
+    }
+    loadFavPaths()
+    const unsubFavToggle = window.api.onFavouriteToggled
+      ? window.api.onFavouriteToggled(() => loadFavPaths())
+      : () => {}
     const unsubProgress = window.api.onScanProgress((d) => setScanCount(d.count))
     const unsubComplete = window.api.onScanComplete((d) => {
       // A scan of some other drive finishing must not take over the view.
@@ -1706,6 +1734,7 @@ export default function App(): React.JSX.Element {
     return () => {
       unsubDrives()
       unsubFavs()
+      unsubFavToggle()
       unsubProgress()
       unsubComplete()
       unsubFiles()
@@ -2500,6 +2529,16 @@ export default function App(): React.JSX.Element {
                   {indexingFolder ? 'Indexing...' : '+ Index folder'}
                 </button>
               )}
+              {indexingFolder && (
+                <button
+                  onClick={() => void window.api.cancelIndexFolder()}
+                  className="cred-input"
+                  style={{ padding: '4px 10px', fontSize: '10px', height: '24px', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 700, background: '#111113', border: '1px solid rgba(255,255,255,0.15)', color: '#8a8a8f' }}
+                  title="Stop indexing and keep whatever has been found so far"
+                >
+                  Cancel
+                </button>
+              )}
             </div>
 
             {selected.size > 0 && activeNav !== 'trash' && (
@@ -2618,7 +2657,7 @@ export default function App(): React.JSX.Element {
                 empty one - and from a diagnostic database with nothing in it. */}
             <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#f2f2f0', fontWeight: 700 }}>{libraryState === 'ready' ? totalFiles.toLocaleString() : '—'}</span> files</div>
             <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#f2f2f0', fontWeight: 700 }}>{libraryState === 'ready' ? sortedGroupedData.keys.length : '—'}</span> groupings</div>
-            <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#e11d2e', fontWeight: 700 }}><Heart size={8} fill="#e11d2e" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} /> {libraryState === 'ready' ? allFavFiles.length : '—'}</span> favourites</div>
+            <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#e11d2e', fontWeight: 700 }}><Heart size={8} fill="#e11d2e" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} /> {libraryState === 'ready' ? favCount : '—'}</span> favourites</div>
             {selected.size > 0 && <div style={{ fontSize: '9px', color: '#e11d2e', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}><Check size={8} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} /> {selected.size} selected</div>}
             {activeView === 'Grid' && <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}>tile: <span style={{ color: '#f2f2f0', fontWeight: 700 }}>{tileSize}px</span></div>}
             {/* Driven by a queried flag, not a one-shot event, so a diagnostic
