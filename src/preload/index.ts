@@ -119,6 +119,10 @@ const api = {
   getHoverPreviews: () => ipcRenderer.invoke('get-hover-previews'),
   setHoverPreviews: (enabled: boolean) => ipcRenderer.invoke('set-hover-previews', enabled),
   prioritizeThumbnails: (filePaths: string[]) => ipcRenderer.invoke('prioritize-thumbnails', filePaths),
+  pickFolder: () => ipcRenderer.invoke('pick-folder'),
+  indexFolder: (folder: string, maxFiles?: number) => ipcRenderer.invoke('index-folder', folder, maxFiles),
+  driveAvailability: () => ipcRenderer.invoke('drive-availability'),
+  favouritePaths: () => ipcRenderer.invoke('favourite-paths'),
   playMpv: (filePath: string, relativeBounds: { left: number; top: number; width: number; height: number }) =>
     ipcRenderer.invoke('start-mpv', { filePath, relativeBounds }),
   sendMpvCommand: (command: string, args: any[]) =>

@@ -312,3 +312,10 @@
   color: var(--pg-unavailable-fg, #b4654a);
   background: var(--pg-unavailable-bg, rgba(180, 101, 74, 0.1));
 }
+
+/* The drive this file lives on is not plugged in. Recoverable by reconnecting
+   it, so it reads differently from a path that failed on a mounted volume. */
+.pg-placeholder.is-offline {
+  color: var(--pg-offline-fg, #6f7d92);
+  background: var(--pg-offline-bg, rgba(111, 125, 146, 0.12));
+}

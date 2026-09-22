@@ -11,8 +11,8 @@
  * - Two-finger touch pinch on touchscreens works the same way.
  */
 import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, Check, FileText, Film, Heart, Image as ImageIcon, Play } from 'lucide-react'
-import { THUMB_UNAVAILABLE } from '../../../main/validation'
+import { AlertTriangle, Check, FileText, Film, Heart, Image as ImageIcon, Play, Unplug } from 'lucide-react'
+import { THUMB_UNAVAILABLE, THUMB_VOLUME_OFFLINE } from '../../../main/validation'
 import type { ScannedFile } from '../App'
 import type { LibraryGroup } from '../hooks/useLibrary'
 import { useReducedMotionPref } from '../hooks/useReducedMotionPref'
@@ -204,14 +204,18 @@ const GridTile = memo(function GridTile({
   // THUMB_UNAVAILABLE is the live signal from the main process that no
   // thumbnail is coming for this file.
   const reportedUnavailable = thumb === THUMB_UNAVAILABLE
-  const usableThumb = thumb && thumb !== 'NO_FILE' && !reportedUnavailable ? thumb : null
+  // The volume is not plugged in. Nothing is known about the file itself, so
+  // this must read as "reconnect the drive", never as "missing".
+  const volumeOffline = thumb === THUMB_VOLUME_OFFLINE
+  const usableThumb =
+    thumb && thumb !== 'NO_FILE' && !reportedUnavailable && !volumeOffline ? thumb : null
   const src = usableThumb && !thumbFailed ? usableThumb : canUseOriginal && !originalFailed ? file.path : null
   const showImg = !!src
   // Every way of showing this file has been tried and failed. Distinguishing
   // this from "no thumbnail yet" is the difference between a library that
   // looks broken and one that tells you which files are gone.
   const unavailable =
-    !src && (reportedUnavailable || thumbFailed || originalFailed)
+    !src && !volumeOffline && (reportedUnavailable || thumbFailed || originalFailed)
   const compact = size < 72
   const reducedMotion = useReducedMotionPref()
   const imgRef = useRef<HTMLImageElement>(null)
@@ -337,11 +341,20 @@ const GridTile = memo(function GridTile({
             className={
               'pg-placeholder' +
               (isVideo ? ' is-video' : DOC_EXTS.has(ext) ? ' is-doc' : '') +
-              (unavailable ? ' is-unavailable' : '')
+              (unavailable ? ' is-unavailable' : '') +
+              (volumeOffline ? ' is-offline' : '')
             }
-            title={unavailable ? file.path + ' - unavailable, the file could not be read' : undefined}
+            title={
+              volumeOffline
+                ? file.path + ' - drive not connected'
+                : unavailable
+                  ? file.path + ' - unavailable, the file could not be read'
+                  : undefined
+            }
           >
-            {unavailable ? (
+            {volumeOffline ? (
+              <Unplug size={compact ? 16 : 24} />
+            ) : unavailable ? (
               <AlertTriangle size={compact ? 16 : 24} />
             ) : isVideo ? (
               <Film size={compact ? 16 : 24} />
@@ -350,7 +363,9 @@ const GridTile = memo(function GridTile({
             ) : (
               <ImageIcon size={compact ? 16 : 24} />
             )}
-            {!compact && <span>{unavailable ? 'missing' : ext.replace('.', '')}</span>}
+            {!compact && (
+              <span>{volumeOffline ? 'offline' : unavailable ? 'not found' : ext.replace('.', '')}</span>
+            )}
           </div>
         )}
         {isVideo && showImg && !previewReady && (

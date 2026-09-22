@@ -98,6 +98,10 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   const [controlsFocused, setControlsFocused] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const hideTimerRef = useRef<number | undefined>(undefined)
+  // Last position mpv reported, so a repeated identical reading is not activity.
+  const lastMpvMouseRef = useRef<{ x: number; y: number } | null>(null)
+  // Last playback position seen, to tell playing from paused (see 'time-pos').
+  const lastTimePosRef = useRef<number | null>(null)
   const reducedMotion = useReducedMotionPref()
 
   // Single source of truth for "something happened, controls should be
@@ -117,6 +121,8 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   // any timer left over from the previous file.
   useEffect(() => {
     if (!isVideo) return
+    lastTimePosRef.current = null
+    lastMpvMouseRef.current = null
     registerActivity()
     return () => window.clearTimeout(hideTimerRef.current)
   }, [isVideo, file.path, registerActivity])
@@ -315,6 +321,21 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
       switch (name) {
         case 'time-pos':
           if (typeof value === 'number') {
+            // A position that moved forward means it is playing.
+            //
+            // `pause` is an edge-triggered property: mpv emits its current
+            // value when the property is observed, which happens as the socket
+            // connects - before this listener exists. That first value was the
+            // only one that would ever arrive for a file played straight
+            // through, so isPlaying stayed false for the whole video. Nothing
+            // visibly broke except that `forceVisible` kept the controls
+            // pinned on, so they never faded during playback. time-pos is
+            // continuous, so deriving from it recovers the state we missed; an
+            // explicit pause event still wins, because a paused player stops
+            // advancing.
+            const prev = lastTimePosRef.current
+            lastTimePosRef.current = value
+            if (prev !== null && value > prev) setIsPlaying(true)
             setCurrentTime(value)
           }
           break
@@ -343,11 +364,30 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
             setPlaybackSpeed(value)
           }
           break
-        case 'mouse-pos':
+        case 'mouse-pos': {
           // mpv's own embedded window forwards its mouse activity here since
           // it never reaches the DOM directly (see mpvManager.ts).
-          registerActivity()
+          //
+          // The property updates whether or not the pointer actually moved, so
+          // treating every update as activity restarted the hide timer forever
+          // and the controls never faded during playback - measured: 10s idle
+          // with the cursor parked off the window, bar still visible. Only a
+          // changed position counts.
+          const pos = value as { x?: number; y?: number } | null
+          const x = pos && typeof pos.x === 'number' ? pos.x : null
+          const y = pos && typeof pos.y === 'number' ? pos.y : null
+          if (x !== null && y !== null) {
+            const last = lastMpvMouseRef.current
+            if (!last || last.x !== x || last.y !== y) {
+              lastMpvMouseRef.current = { x, y }
+              // The first reading establishes a baseline rather than counting
+              // as movement, otherwise opening a file over the player would
+              // immediately look like activity.
+              if (last) registerActivity()
+            }
+          }
           break
+        }
         case 'width':
           if (typeof value === 'number') {
             mpvWidthRef.current = value

@@ -95,6 +95,31 @@ declare global {
       getHoverPreviews: () => Promise<boolean>
       setHoverPreviews: (enabled: boolean) => Promise<void>
       prioritizeThumbnails: (filePaths: string[]) => Promise<(string | null)[]>
+      pickFolder: () => Promise<string | null>
+      indexFolder: (
+        folder: string,
+        maxFiles?: number
+      ) => Promise<{
+        ok: boolean
+        error?: string
+        added?: number
+        seen?: number
+        skipped?: number
+        drive?: string
+        volumeId?: string | null
+        truncated?: boolean
+      }>
+      driveAvailability: () => Promise<
+        {
+          drive: string
+          rows: number
+          mounted: boolean
+          currentVolumeId: string | null
+          recordedVolumeIds: string[]
+          volumeMatches: boolean | null
+        }[]
+      >
+      favouritePaths: () => Promise<string[]>
       playMpv: (filePath: string, relativeBounds: { left: number; top: number; width: number; height: number }) => Promise<void>
       sendMpvCommand: (command: string, args: any[]) => void
       resizeMpv: (bounds: { left: number; top: number; width: number; height: number }) => void

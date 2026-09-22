@@ -133,3 +133,10 @@ export function isMassRemoval(removedCount: number, knownCount: number): boolean
  * backfill query and had to be migrated out, so this one stays in memory only.
  */
 export const THUMB_UNAVAILABLE = '!unavailable'
+
+/**
+ * Sent instead of THUMB_UNAVAILABLE when the failure is that no volume is
+ * mounted at that drive letter. Nothing can be concluded about the file
+ * itself, so the UI must offer "reconnect the drive", not "missing".
+ */
+export const THUMB_VOLUME_OFFLINE = '!offline'

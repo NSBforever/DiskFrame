@@ -227,6 +227,15 @@ db.exec(`
     skip_confirm INTEGER DEFAULT 0
   );
 
+  -- Favourites keyed by path, independent of the files row.
+  -- A favourite must survive an unresolved path, an offline volume, and any
+  -- future record repair; keeping it only as a column on files ties it to a
+  -- row that reconciliation might legitimately replace.
+  CREATE TABLE IF NOT EXISTS favourite_paths (
+    path TEXT PRIMARY KEY,
+    added_at TEXT
+  );
+
   CREATE TABLE IF NOT EXISTS volume_drives (
     volume_id TEXT PRIMARY KEY,
     drive_letter TEXT,
@@ -254,6 +263,30 @@ if (!cols.includes('trashed_at')) db.prepare('ALTER TABLE files ADD COLUMN trash
 if (!cols.includes('mtime')) db.prepare('ALTER TABLE files ADD COLUMN mtime INTEGER').run()
 if (!cols.includes('hash')) db.prepare('ALTER TABLE files ADD COLUMN hash TEXT').run()
 if (!cols.includes('ino')) db.prepare('ALTER TABLE files ADD COLUMN ino INTEGER').run()
+// Which physical volume a record was indexed from.
+//
+// Until now a record was identified by its drive LETTER alone, and letters are
+// assigned by Windows in connection order. Two volumes that were each mounted
+// as E: at different times produce two record sets that look like one drive,
+// and a path that no longer resolves is indistinguishable from a path that
+// belongs to a volume which is not plugged in.
+//
+// Deliberately NOT backfilled. A historical row keeps volume_id NULL, meaning
+// "the volume this came from was never recorded" - which is the truth. Filling
+// those in from the letter that happens to be mounted now would assert exactly
+// the thing that cannot be established.
+if (!cols.includes('volume_id')) db.prepare('ALTER TABLE files ADD COLUMN volume_id TEXT').run()
+
+// Seed favourite_paths from records that were favourited before it existed.
+// Idempotent, and it only ever adds - a favourite is never dropped here.
+try {
+  db.prepare(
+    `INSERT OR IGNORE INTO favourite_paths (path, added_at)
+     SELECT path, datetime('now') FROM files WHERE favourited = 1`
+  ).run()
+} catch (e) {
+  console.error('[migrate] favourite_paths seed failed:', e)
+}
 // Marks rows the capture-date backfill has already looked at, so the pass is
 // resumable across launches instead of re-parsing the whole library each time.
 if (!cols.includes('exif_checked'))
@@ -623,7 +656,25 @@ export function toggleFavourite(filePath: string): boolean {
   const row = db.prepare('SELECT favourited FROM files WHERE path = ?').get(filePath) as
     | { favourited: number }
     | undefined
-  return (row?.favourited ?? 0) === 1
+  const on = (row?.favourited ?? 0) === 1
+  // Mirror into the standalone table. The files row stays authoritative for
+  // the UI; this copy is what survives if the record is ever replaced.
+  if (on) {
+    db.prepare('INSERT OR IGNORE INTO favourite_paths (path, added_at) VALUES (?, ?)').run(
+      filePath,
+      new Date().toISOString()
+    )
+  } else {
+    db.prepare('DELETE FROM favourite_paths WHERE path = ?').run(filePath)
+  }
+  return on
+}
+
+/** Every favourited path, including ones whose file does not currently resolve. */
+export function getFavouritePaths(): string[] {
+  return (db.prepare('SELECT path FROM favourite_paths ORDER BY added_at').all() as { path: string }[]).map(
+    (r) => r.path
+  )
 }
 
 export function getFileCount(drivePath?: string): number {
@@ -1302,6 +1353,98 @@ export function indexSampleFolder(folder: string, maxFiles: number): { count: nu
   return { count: rows.length, skipped }
 }
 
+/**
+ * Indexes ONE folder into the real library, bounded by file count and depth.
+ *
+ * This is the production path, not the diagnostic sample: records carry the
+ * folder's actual drive letter and the volume id read from the mounted volume,
+ * so they are identified by the disk they came from rather than by a letter
+ * Windows happened to assign. Nothing outside `folder` is touched and no
+ * existing record is modified - INSERT OR IGNORE leaves any row already
+ * present exactly as it is, which keeps favourites, thumbs and EXIF intact.
+ *
+ * Thumbnails are deliberately NOT generated here. They are produced on demand
+ * for what is actually on screen plus a buffer, so indexing a large folder
+ * cannot turn into a long decode queue.
+ */
+export async function indexFolderBounded(
+  folder: string,
+  maxFiles = 5000
+): Promise<{ added: number; seen: number; skipped: number; drive: string; volumeId: string | null; truncated: boolean }> {
+  const drive = folder.slice(0, 2).toUpperCase()
+  const volumeId = await getVolumeId(drive)
+  if (volumeId) saveVolumeDrive(volumeId, drive)
+
+  const insert = db.prepare(
+    `INSERT OR IGNORE INTO files
+       (path, name, ext, size, date, year, month, lat, lng, drive, thumb, locked, hidden, mtime, ino, volume_id, exif_checked)
+     VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, 0, 0, ?, ?, ?, 0)`
+  )
+
+  const rows: Parameters<typeof insert.run>[] = []
+  let skipped = 0
+  let seen = 0
+  let truncated = false
+  const stack: { dir: string; depth: number }[] = [{ dir: folder, depth: 0 }]
+  while (stack.length > 0) {
+    if (rows.length >= maxFiles) {
+      truncated = true
+      break
+    }
+    const { dir, depth } = stack.pop()!
+    if (depth > 8) continue
+    let entries: fs.Dirent[] = []
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      if (rows.length >= maxFiles) {
+        truncated = true
+        break
+      }
+      const fullPath = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        if (!entry.name.startsWith('.')) stack.push({ dir: fullPath, depth: depth + 1 })
+        continue
+      }
+      if (!entry.isFile()) continue
+      seen++
+      if (!isIndexableUserMedia(fullPath)) {
+        skipped++
+        continue
+      }
+      try {
+        const stat = fs.statSync(fullPath)
+        const date = new Date(stat.mtime)
+        rows.push([
+          fullPath,
+          entry.name,
+          extname(fullPath).toLowerCase(),
+          stat.size,
+          date.toISOString(),
+          date.getFullYear().toString(),
+          date.toLocaleString('default', { month: 'long' }),
+          drive,
+          Math.round(stat.mtimeMs),
+          stat.ino ? Number(stat.ino) : null,
+          volumeId
+        ])
+      } catch {
+        skipped++
+      }
+    }
+  }
+
+  let added = 0
+  const tx = db.transaction(() => {
+    for (const r of rows) added += insert.run(...r).changes
+  })
+  tx()
+  return { added, seen, skipped, drive, volumeId, truncated }
+}
+
 export function getFileIno(filePath: string): number | null {
   const row = db.prepare('SELECT ino FROM files WHERE path = ?').get(filePath) as { ino: number | null } | undefined
   return row?.ino ?? null
@@ -1539,4 +1682,76 @@ export function spawnScanUtilityProcess(
       finish(() => resolve(finalCount))
     })
   })
+}
+
+/**
+ * Per-drive availability, so the UI can say why a record does not resolve.
+ *
+ * A path that fails to resolve because its volume is not plugged in is not the
+ * same thing as a path that fails on a volume which IS plugged in, and the app
+ * previously showed both as the same blank tile. The first is recoverable by
+ * connecting the drive; only the second says anything about the file.
+ *
+ * `volumeMatches` is null when no record for that letter carries a volume id -
+ * historical rows are deliberately left NULL, so the honest answer is "not
+ * known", never "yes, because the letter is the same".
+ */
+export interface DriveAvailability {
+  drive: string
+  rows: number
+  mounted: boolean
+  currentVolumeId: string | null
+  recordedVolumeIds: string[]
+  volumeMatches: boolean | null
+}
+
+export async function getDriveAvailability(): Promise<DriveAvailability[]> {
+  const counts = db
+    .prepare(
+      "SELECT drive, COUNT(*) n FROM files WHERE trashed_at IS NULL AND drive IS NOT NULL AND drive != '' GROUP BY drive"
+    )
+    .all() as { drive: string; n: number }[]
+
+  const out: DriveAvailability[] = []
+  for (const c of counts) {
+    if (c.drive === SAMPLE_DRIVE_KEY) continue
+    let mounted = false
+    try {
+      fs.statSync(c.drive + '\\')
+      mounted = true
+    } catch {
+      mounted = false
+    }
+    const recorded = (
+      db
+        .prepare(
+          "SELECT DISTINCT volume_id FROM files WHERE drive = ? AND volume_id IS NOT NULL AND volume_id != ''"
+        )
+        .all(c.drive) as { volume_id: string }[]
+    ).map((r) => r.volume_id)
+
+    const currentVolumeId = mounted ? await getVolumeId(c.drive) : null
+    const volumeMatches =
+      recorded.length === 0 || !currentVolumeId ? null : recorded.includes(currentVolumeId)
+
+    out.push({
+      drive: c.drive,
+      rows: c.n,
+      mounted,
+      currentVolumeId,
+      recordedVolumeIds: recorded,
+      volumeMatches
+    })
+  }
+  return out
+}
+
+/** True when no volume is mounted at that letter at all. */
+export function isDriveMounted(drive: string): boolean {
+  try {
+    fs.statSync(drive.slice(0, 2).toUpperCase() + '\\')
+    return true
+  } catch {
+    return false
+  }
 }

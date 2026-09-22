@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, protocol, net, crashReporter, Menu } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, protocol, net, crashReporter, Menu, dialog } from 'electron'
 import { join, basename, extname, dirname } from 'path'
 import { spawn } from 'child_process'
 import * as fs from 'fs'
@@ -49,7 +49,11 @@ import {
   getLibraryPage,
   MAX_PAGE_SIZE,
   purgeGeneratedAssetRows,
-  clearThumbSentinels
+  clearThumbSentinels,
+  indexFolderBounded,
+  getDriveAvailability,
+  isDriveMounted,
+  getFavouritePaths
 } from './scanner'
 import type { LibraryQuery } from './libraryQuery'
 
@@ -57,7 +61,7 @@ import { initStreamServer, probeMedia, killActiveStream, closeStreamServer, auth
 import { initMpv, sendMpvCommand, updateMpvBounds, closeMpv, refreshMpvBounds } from './mpvManager'
 import { WatcherManager } from './watcher'
 import { IndexingService } from './indexingService'
-import { normalizeDrive, isSafeLocalPath, safePathList, THUMB_UNAVAILABLE } from './validation'
+import { normalizeDrive, isSafeLocalPath, safePathList, THUMB_UNAVAILABLE, THUMB_VOLUME_OFFLINE } from './validation'
 import { parseSafeMode, subsystemEnabled } from './runtimeMode'
 
 const safeMode = parseSafeMode(process.argv, process.env)
@@ -128,7 +132,7 @@ function logMemoryMetrics(): void {
 // user asked for it. The renderer applies 'initial' immediately and offers
 // 'background' as a refresh, so an unrelated drive's sync can neither replace
 // the open gallery nor rearrange it mid-scroll.
-function sendFilesUpdated(drive: string, reason: 'initial' | 'background'): void {
+function sendFilesUpdated(drive: string, reason: 'initial' | 'background' | 'index-folder'): void {
   if (!mainWindow || mainWindow.isDestroyed()) return
   mainWindow.webContents.send('files-updated', {
     drive,
@@ -883,65 +887,160 @@ app.whenReady().then(() => {
   //     when the set gets large so a reconnected drive gets a fresh chance)
   //   - each call takes a token; when a newer call arrives the older one stops
   //     between files rather than finishing work nobody is looking at
+  // Mount state changes rarely; a short cache keeps this off the per-file path.
+  const mountCache = new Map<string, { at: number; mounted: boolean }>()
+  function driveMountedCached(drive: string): boolean {
+    const hit = mountCache.get(drive)
+    const now = Date.now()
+    if (hit && now - hit.at < 2000) return hit.mounted
+    const mounted = isDriveMounted(drive)
+    mountCache.set(drive, { at: now, mounted })
+    return mounted
+  }
+
   const thumbInFlight = new Set<string>()
   const thumbFailed = new Set<string>()
-  let thumbRequestToken = 0
+  // Pending viewport work. A new request REPLACES this - work for a screen the
+  // user has scrolled past is dropped - but never touches what is already
+  // being generated.
+  let thumbPending: string[] = []
+  let thumbPumping = false
 
+  /**
+   * Single bounded pump.
+   *
+   * This replaced a per-request token that aborted the previous batch. That
+   * scheme deadlocked: the token was bumped before the in-flight filter ran,
+   * so a request whose paths were *all* already in flight did no work of its
+   * own yet still cancelled the batch generating exactly those thumbnails.
+   * Nothing re-requested them, because the visible set had stopped changing -
+   * measured as 107 tiles pending indefinitely while the same files generated
+   * in ~1s each when asked for directly.
+   */
+  async function pumpThumbs(): Promise<void> {
+    if (thumbPumping) return
+    thumbPumping = true
+    try {
+      const CONCURRENCY = 2
+      const workers = Array.from({ length: CONCURRENCY }, async () => {
+        for (;;) {
+          if (isQuitting) return
+          const p = thumbPending.shift()
+          if (p === undefined) return
+          if (thumbInFlight.has(p) || thumbFailed.has(p)) continue
+          thumbInFlight.add(p)
+          try {
+            const drive = p.slice(0, 2).toUpperCase()
+            if (!fs.existsSync(p)) {
+              // An unresolved path and an unplugged drive are different facts.
+              // A failed stat on a mounted volume says something about the
+              // file; the same failure with no volume mounted at that letter
+              // says only that the drive is not connected.
+              const offline = /^[A-Z]:$/.test(drive) && !driveMountedCached(drive)
+              if (!offline) thumbFailed.add(p)
+              if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('thumb-ready', {
+                  filePath: p,
+                  thumbPath: offline ? THUMB_VOLUME_OFFLINE : THUMB_UNAVAILABLE
+                })
+              }
+              continue
+            }
+            const thumbPath = await generateThumbForFile(p, extname(p).toLowerCase())
+            if (thumbPath) {
+              updateThumb(p, thumbPath)
+              if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath })
+              }
+            } else {
+              thumbFailed.add(p)
+              if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath: THUMB_UNAVAILABLE })
+              }
+            }
+          } catch (err) {
+            thumbFailed.add(p)
+            console.error('[thumb:onDemand]', p, err)
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath: THUMB_UNAVAILABLE })
+            }
+          } finally {
+            thumbInFlight.delete(p)
+          }
+          await new Promise((r) => setImmediate(r))
+        }
+      })
+      await Promise.all(workers)
+    } finally {
+      thumbPumping = false
+      // A request that arrived while the last worker was finishing would have
+      // seen thumbPumping true and returned; pick that work up now.
+      if (thumbPending.length > 0) void pumpThumbs()
+    }
+  }
+
+  /** Newest viewport first, everything still owed behind it, nothing dropped. */
+  const MAX_PENDING = 600
   ipcMain.handle('prioritize-thumbnails', async (_event, rawPaths: string[]) => {
     // One screen plus a small buffer. A caller asking for thousands is not
     // describing anything that is actually visible.
     const paths = safePathList(rawPaths, 200)
-    const myToken = ++thumbRequestToken
-
     if (thumbFailed.size > 5000) thumbFailed.clear()
-
-    const todo = paths.filter((p) => !thumbInFlight.has(p) && !thumbFailed.has(p))
-    for (const p of todo) thumbInFlight.add(p)
-
-    const CONCURRENCY = 2
-    let cursor = 0
-    async function worker(): Promise<void> {
-      while (cursor < todo.length) {
-        // A newer viewport request supersedes this one.
-        if (myToken !== thumbRequestToken || isQuitting) return
-        const p = todo[cursor++]
-        // Tell the renderer a thumbnail is never coming, so the tile can say
-        // so instead of waiting forever. Nothing is written to the database.
-        const reportUnavailable = (): void => {
-          thumbFailed.add(p)
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath: THUMB_UNAVAILABLE })
-          }
-        }
-        try {
-          if (!fs.existsSync(p)) {
-            reportUnavailable()
-            continue
-          }
-          const thumbPath = await generateThumbForFile(p, extname(p).toLowerCase())
-          if (thumbPath) {
-            updateThumb(p, thumbPath)
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath })
-            }
-          } else {
-            reportUnavailable()
-          }
-        } catch (err) {
-          reportUnavailable()
-          console.error('[thumb:onDemand]', p, err)
-        } finally {
-          thumbInFlight.delete(p)
-        }
-        await new Promise((r) => setImmediate(r))
-      }
-    }
-    try {
-      await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()))
-    } finally {
-      for (const p of todo) thumbInFlight.delete(p)
-    }
+    // Merge rather than replace. Replacing meant a later request silently
+    // discarded whatever it displaced, and since the grid only re-requests
+    // when the visible set *changes*, those tiles were never asked for again -
+    // measured as a plateau with 52 tiles still pending on a settled screen.
+    const wanted = paths.filter((p) => !thumbInFlight.has(p) && !thumbFailed.has(p))
+    const merged = [...wanted, ...thumbPending.filter((p) => !wanted.includes(p))]
+    thumbPending = merged.slice(0, MAX_PENDING)
+    void pumpThumbs()
     return []
+  })
+
+  // Pick one folder and index just that folder, through the normal library
+  // path. Bounded by file count and depth; no drive-wide traversal, and no
+  // thumbnail work - those are produced on demand for what is on screen.
+  ipcMain.handle('pick-folder', async () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return null
+    const res = await dialog.showOpenDialog(mainWindow, {
+      title: 'Choose a folder to index',
+      properties: ['openDirectory']
+    })
+    if (res.canceled || !res.filePaths.length) return null
+    return res.filePaths[0]
+  })
+
+  ipcMain.handle('index-folder', async (_event, folder: string, maxFiles?: number) => {
+    if (typeof folder !== 'string' || !isSafeLocalPath(folder)) {
+      return { ok: false, error: 'unsafe path' }
+    }
+    if (!fs.existsSync(folder)) return { ok: false, error: 'folder not found' }
+    const cap = Math.min(Math.max(Number(maxFiles) || 5000, 1), 20000)
+    try {
+      const r = await indexFolderBounded(folder, cap)
+      sendFilesUpdated(r.drive, 'index-folder')
+      return { ok: true, ...r }
+    } catch (err) {
+      console.error('[index-folder]', err)
+      return { ok: false, error: String(err) }
+    }
+  })
+
+  ipcMain.handle('drive-availability', async () => {
+    try {
+      return await getDriveAvailability()
+    } catch (err) {
+      console.error('[drive-availability]', err)
+      return []
+    }
+  })
+
+  ipcMain.handle('favourite-paths', () => {
+    try {
+      return getFavouritePaths()
+    } catch {
+      return []
+    }
   })
 
   // ── VAULT / HIDE ──

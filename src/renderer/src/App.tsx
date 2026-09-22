@@ -861,14 +861,27 @@ const MainContentArea: React.FC<{
         )
       }
       case 'years-row': {
-        const { rowYears, yearMap } = item
+        // `yearMap` never existed on this item. When the years view moved to
+        // the paged summary the item started carrying `yearTotals` (a count
+        // and a starting offset per year) instead of arrays of file rows, but
+        // this branch still destructured the old name - so `yearMap[year]`
+        // threw on the first render and took the whole app down with it,
+        // which is the blank screen on opening Years.
+        const { rowYears, yearTotals, getRow: getYearRow } = item
         return (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '16px', marginBottom: '16px' }}>
             {rowYears.map((year: string) => {
-              const files = yearMap[year]
+              const info = yearTotals?.[year] as { count: number; offset: number } | undefined
+              // Preview tiles come from whatever rows happen to be resident
+              // around that year's first row. Nothing is fetched here: this
+              // view must not pull pages for every year on screen.
               const previewFiles: ScannedFile[] = []
-              for (const f of files) { if (f.thumb) { previewFiles.push(f); if (previewFiles.length === 4) break } }
-              for (const f of files) { if (previewFiles.length === 4) break; if (!f.thumb && photoExts.includes(f.ext.toLowerCase())) previewFiles.push(f) }
+              if (info && typeof getYearRow === 'function') {
+                for (let i = 0; i < 40 && previewFiles.length < 4; i++) {
+                  const f = getYearRow(info.offset + i) as ScannedFile | undefined
+                  if (f && f.thumb) previewFiles.push(f)
+                }
+              }
               return (
                 <div key={year} onClick={() => handleYearClick(year)}
                   style={{ background: '#111114', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.04)', overflow: 'hidden', cursor: 'pointer', transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.25s' }}
@@ -890,7 +903,7 @@ const MainContentArea: React.FC<{
                   </div>
                   <div style={{ padding: '12px 14px 14px' }}>
                     <div style={{ fontSize: '18px', fontWeight: 700, color: '#f2f2f0', letterSpacing: '-0.3px' }}>{year}</div>
-                    <div style={{ fontSize: '9px', color: '#8a8a8f', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{files.length} files</div>
+                    <div style={{ fontSize: '9px', color: '#8a8a8f', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{info?.count ?? 0} files</div>
                   </div>
                 </div>
               )
@@ -1470,6 +1483,31 @@ export default function App(): React.JSX.Element {
   // File Copy/Cut/Paste States
   const [ioProgress, setIoProgress] = useState<{ completed: number; total: number; currentFile: string } | null>(null)
   const [toastMsg, setToastMsg] = useState<string | null>(null)
+  const [indexingFolder, setIndexingFolder] = useState(false)
+
+  // Index one folder the user picks, through the normal library path.
+  // Bounded by the main process (file count + depth); no thumbnails are
+  // generated here - those follow the viewport like any other view.
+  const handleIndexFolder = useCallback(async (): Promise<void> => {
+    const folder = await window.api.pickFolder()
+    if (!folder) return
+    setIndexingFolder(true)
+    try {
+      const r = await window.api.indexFolder(folder)
+      if (!r.ok) {
+        setToastMsg(`Could not index folder: ${r.error ?? 'unknown error'}`)
+        return
+      }
+      setToastMsg(
+        `Indexed ${r.added} new file${r.added === 1 ? '' : 's'} from ${folder}` +
+          (r.truncated ? ' (stopped at the cap - run again to continue)' : '')
+      )
+    } catch (err) {
+      setToastMsg(`Could not index folder: ${String(err)}`)
+    } finally {
+      setIndexingFolder(false)
+    }
+  }, [])
   const [_dragOverDrive, _setDragOverDrive] = useState<string | null>(null)
   const clipboardPathsRef = useRef<string[]>([])
   const clipboardActionRef = useRef<'copy' | 'cut' | null>(null)
@@ -2449,6 +2487,18 @@ export default function App(): React.JSX.Element {
                   className="cred-input"
                   style={{ width: '260px', padding: '4px 10px', fontSize: '11px', height: '24px', border: '1px solid rgba(225,29,46,0.1)' }}
                 />
+              )}
+              {/* Bounded: indexes exactly the chosen folder, nothing drive-wide. */}
+              {selectedDrive && (
+                <button
+                  onClick={handleIndexFolder}
+                  disabled={indexingFolder}
+                  className="cred-input"
+                  style={{ padding: '4px 10px', fontSize: '10px', height: '24px', cursor: indexingFolder ? 'default' : 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 700, background: '#111113', border: '1px solid rgba(225,29,46,0.35)', color: indexingFolder ? '#8a8a8f' : '#e11d2e' }}
+                  title="Index one folder into the library (bounded, no drive-wide scan)"
+                >
+                  {indexingFolder ? 'Indexing...' : '+ Index folder'}
+                </button>
               )}
             </div>
 
