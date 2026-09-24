@@ -6,9 +6,10 @@ body {
   justify-content: center;
   overflow: hidden;
   user-select: none;
-  background-color: #0a0a0c !important;
-  background-image: radial-gradient(ellipse at 20% 10%, #161622 0%, #0a0a0c 70%) !important;
-  color: #f2f2f0;
+  /* No !important here: it beat the themed body rule further down, so Light
+     kept a dark background and a dark gradient painted over it. */
+  background-color: var(--app-bg);
+  color: var(--app-fg);
 }
 
 /* Scrollbar Customization */
@@ -364,7 +365,7 @@ input[type="range"]::-moz-range-thumb {
    low-alpha radial washes are enough; they are static, so nothing animates and
    text contrast is unaffected. */
 body {
-  background-color: #0a0a0c;
+  background-color: var(--app-bg);
   background-image:
     radial-gradient(1100px 700px at 12% -10%, rgba(225, 29, 46, 0.055), transparent 60%),
     radial-gradient(900px 600px at 105% 8%, rgba(90, 110, 190, 0.05), transparent 62%);
