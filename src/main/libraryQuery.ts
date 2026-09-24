@@ -147,12 +147,53 @@ export function summarySql(q: LibraryQuery): { sql: string; params: unknown[] } 
 export const PAGE_COLUMNS =
   'path, name, ext, size, date, year, month, lat, lng, drive, favourited, thumb'
 
-/** One bounded window of rows, in the same order the summary implies. */
+/**
+ * Whether the group key is a prefix of `date`.
+ *
+ * For day, month and year it is, so ordering rows by date already clusters
+ * them into their groups in the same order the summary lists them, and the
+ * covering index on (drive, hidden, trashed_at, date DESC, path ASC) can
+ * serve the page directly. Location and Favourites keys have nothing to do
+ * with date, so they need explicit group ordering.
+ */
+export function groupIsDateDerived(groupBy: GroupBy): boolean {
+  return groupBy === 'day' || groupBy === 'month' || groupBy === 'year'
+}
+
+/**
+ * One bounded window of rows, in the same order the summary implies.
+ *
+ * The summary orders GROUPS by MAX(date) (or MIN when reversed); rows were
+ * ordered by date alone. For a date-derived key those agree. For Location and
+ * Favourites they do not: rows from different groups interleave by date, while
+ * groupOffsets() assumes the rows are laid out group after group. The headings
+ * were right and the files under them were whatever happened to sit at that
+ * offset. Ranking rows by the same aggregate the summary uses makes the two
+ * agree by construction.
+ */
 export function pageSql(q: LibraryQuery): { sql: string; params: unknown[] } {
   const where = buildWhere(q)
+  const rowOrder = orderExpr(q.order)
+
+  if (groupIsDateDerived(q.groupBy)) {
+    return {
+      sql: `SELECT ${PAGE_COLUMNS} FROM files WHERE ${where.sql}
+          ORDER BY ${rowOrder} LIMIT ? OFFSET ?`,
+      params: where.params
+    }
+  }
+
+  const key = groupKeyExpr(q.groupBy)
+  const dir = q.order === 'reverse' ? 'ASC' : 'DESC'
+  const agg = q.order === 'reverse' ? 'MIN' : 'MAX'
   return {
-    sql: `SELECT ${PAGE_COLUMNS} FROM files WHERE ${where.sql}
-          ORDER BY ${orderExpr(q.order)} LIMIT ? OFFSET ?`,
+    sql: `SELECT ${PAGE_COLUMNS} FROM (
+            SELECT ${PAGE_COLUMNS},
+                   ${key} AS gkey,
+                   ${agg}(date) OVER (PARTITION BY ${key}) AS gsort
+            FROM files WHERE ${where.sql}
+          )
+          ORDER BY gsort ${dir}, gkey ${dir}, ${rowOrder} LIMIT ? OFFSET ?`,
     params: where.params
   }
 }

@@ -102,3 +102,60 @@ test('group offsets are cumulative and start at zero', () => {
 test('group offsets handle an empty library', () => {
   assert.equal(groupOffsets([]).size, 0)
 })
+
+test('date-derived groupings keep the fast index-friendly page order', () => {
+  for (const g of ['day', 'month', 'year'] as const) {
+    const sql = pageSql({ ...base, groupBy: g }).sql
+    assert.match(sql, /ORDER BY date DESC, path ASC LIMIT \? OFFSET \?/)
+    assert.ok(!sql.includes('OVER (PARTITION BY'), g + ' should not need a window function')
+  }
+})
+
+test('location and favourites pages are ordered by group, not date alone', () => {
+  // The summary ranks groups by MAX(date); rows ordered by date alone
+  // interleave groups, so groupOffsets() would point at the wrong files.
+  for (const g of ['location', 'favorites'] as const) {
+    const sql = pageSql({ ...base, groupBy: g }).sql
+    assert.match(sql, /MAX\(date\) OVER \(PARTITION BY/)
+    assert.match(sql, /ORDER BY gsort DESC, gkey DESC, date DESC, path ASC/)
+  }
+})
+
+test('reversed order flips both the group ranking and the rows', () => {
+  const sql = pageSql({ ...base, groupBy: 'favorites', order: 'reverse' }).sql
+  assert.match(sql, /MIN\(date\) OVER \(PARTITION BY/)
+  assert.match(sql, /ORDER BY gsort ASC, gkey ASC, date ASC, path ASC/)
+  // and the summary it must agree with
+  const sum = summarySql({ ...base, groupBy: 'favorites', order: 'reverse' }).sql
+  assert.match(sum, /ORDER BY MIN\(date\) ASC, gkey ASC/)
+})
+
+test('page ordering matches the summary ordering for every grouping', () => {
+  for (const g of ['day', 'month', 'year', 'location', 'favorites'] as const) {
+    for (const order of ['default', 'reverse'] as const) {
+      const q = { ...base, groupBy: g, order }
+      const sum = summarySql(q).sql
+      const page = pageSql(q).sql
+      const dir = order === 'reverse' ? 'ASC' : 'DESC'
+      const agg = order === 'reverse' ? 'MIN' : 'MAX'
+      assert.ok(sum.includes('ORDER BY ' + agg + '(date) ' + dir), 'summary ' + g + '/' + order)
+      if (g === 'location' || g === 'favorites') {
+        assert.ok(page.includes(agg + '(date) OVER (PARTITION BY'), g + '/' + order)
+        assert.ok(page.includes('ORDER BY gsort ' + dir), g + '/' + order)
+      }
+    }
+  }
+})
+
+test('location grouping gives unlocated files their own key', () => {
+  const key = groupKeyExpr('location')
+  assert.match(key, /lat IS NULL OR lng IS NULL/)
+  assert.match(key, /'none'/)
+})
+
+test('favourites grouping separates favourited from the rest', () => {
+  const key = groupKeyExpr('favorites')
+  assert.match(key, /favourited = 1/)
+  assert.match(key, /'fav'/)
+  assert.match(key, /'other'/)
+})
