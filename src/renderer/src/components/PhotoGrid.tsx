@@ -150,6 +150,20 @@ function mediaUrl(p: string): string {
   return 'media:///' + p.replace(/\\/g, '/')
 }
 
+/**
+ * Hover previews load over file: rather than the app's media: scheme.
+ *
+ * Chromium's media pipeline refuses a custom scheme as a video data source
+ * even when the handler answers range requests correctly - it fails straight
+ * away with "FFmpegDemuxer: data source error", which is why previews never
+ * played. The same file over file: decodes fine. Images keep media:, which is
+ * where HEIC conversion and the volume-identity checks live; a preview that
+ * cannot load simply does not appear.
+ */
+function previewUrl(p: string): string {
+  return 'file:///' + encodeURI(p.replace(/\\/g, '/')).replace(/#/g, '%23')
+}
+
 // Only one hover preview plays at a time, across the whole grid.
 let stopActivePreview: (() => void) | null = null
 const HOVER_DELAY_MS = 350
@@ -264,6 +278,7 @@ const GridTile = memo(function GridTile({
 
   const stopPreview = useCallback(() => {
     window.clearTimeout(hoverTimerRef.current)
+    if (stopActivePreview === stopPreview) stopActivePreview = null
     setPreviewing(false)
     setPreviewReady(false)
   }, [])
@@ -272,6 +287,12 @@ const GridTile = memo(function GridTile({
   useEffect(() => stopPreview, [stopPreview])
 
   const canPreview = isVideo && hoverPreviewsEnabled && !reducedMotion
+
+  // Turning the setting off must stop whatever is already playing, not just
+  // refuse the next hover.
+  useEffect(() => {
+    if (!canPreview) stopPreview()
+  }, [canPreview, stopPreview])
 
   const onTileMouseEnter = (): void => {
     if (!canPreview) return
@@ -390,7 +411,7 @@ const GridTile = memo(function GridTile({
           <video
             className="pg-preview-video"
             style={{ opacity: previewReady ? 1 : 0 }}
-            src={mediaUrl(file.path)}
+            src={previewUrl(file.path)}
             muted
             autoPlay
             playsInline
