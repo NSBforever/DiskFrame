@@ -1433,7 +1433,13 @@ export default function App(): React.JSX.Element {
   lightboxRef.current = lightbox
   const [activeView, setActiveView] = useState('Grid')
 
-  const [tileSize, setTileSize] = useState(120)
+  // Both of these are user preferences, so they outlive the window. Same
+  // localStorage the theme uses - no round trip to the main process for a
+  // value the renderer is the only reader of.
+  const [tileSize, setTileSize] = useState(() => {
+    const v = Number(localStorage.getItem('diskframe-tile-size'))
+    return v >= 60 && v <= 240 ? v : 120
+  })
   const [transitioning, setTransitioning] = useState(false)
   const zoomTicksRef = useRef(0)
   const lastZoomDirRef = useRef<'in' | 'out' | null>(null)
@@ -1441,7 +1447,15 @@ export default function App(): React.JSX.Element {
   // Redesign / Trash / AI State
   const [groupBy, setGroupBy] = useState<'day' | 'month' | 'year' | 'location' | 'favorites'>('day')
   const [viewOrder, setViewOrder] = useState<'default' | 'reverse'>('default')
-  const [hoverPreviewsEnabled, setHoverPreviewsEnabled] = useState(true)
+  const [hoverPreviewsEnabled, setHoverPreviewsEnabled] = useState(
+    () => localStorage.getItem('diskframe-hover-previews') !== 'off'
+  )
+  useEffect(() => {
+    localStorage.setItem('diskframe-tile-size', String(tileSize))
+  }, [tileSize])
+  useEffect(() => {
+    localStorage.setItem('diskframe-hover-previews', hoverPreviewsEnabled ? 'on' : 'off')
+  }, [hoverPreviewsEnabled])
   // Collapsed on every fresh launch. sessionStorage remembers the choice for
   // this window only, so reopening the app starts collapsed again.
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
