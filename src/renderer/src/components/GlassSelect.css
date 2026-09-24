@@ -1,0 +1,95 @@
+/* ── Themed select ─────────────────────────────────────────────────────────
+   Shared by the grouping and sorting menus so they cannot drift apart, and so
+   both read as part of the app rather than as an OS popup. */
+.glass-select {
+  position: relative;
+  display: inline-block;
+}
+
+.glass-select-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--app-fg, #f2f2f0);
+  background: var(--select-bg, rgba(255, 255, 255, 0.05));
+  border: 1px solid var(--app-hairline, rgba(255, 255, 255, 0.1));
+  transition: background-color 140ms ease, border-color 140ms ease;
+}
+.glass-select-button:hover {
+  background: var(--select-bg-hover, rgba(255, 255, 255, 0.1));
+}
+.glass-select-button:focus-visible {
+  outline: 2px solid var(--app-accent, #e11d2e);
+  outline-offset: 1px;
+}
+.glass-select-value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The menu itself. `.glass-panel` supplies the blur, border, highlight and
+   shadow, so this only positions it and sets the list metrics. */
+.glass-select-menu {
+  position: absolute;
+  z-index: 2600;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 100%;
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  outline: none;
+}
+
+.glass-select-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px 7px 6px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  color: var(--app-fg, #f2f2f0);
+}
+/* Keyboard and pointer share one highlight, so arrowing through the list
+   looks the same as hovering it. */
+.glass-select-option.is-active {
+  background: var(--select-bg-hover, rgba(255, 255, 255, 0.12));
+}
+.glass-select-option.is-selected {
+  color: var(--app-accent, #e11d2e);
+  font-weight: 700;
+}
+.glass-select-check {
+  width: 14px;
+  display: inline-flex;
+  justify-content: center;
+  flex: 0 0 14px;
+}
+
+:root[data-theme='light'] .glass-select-button {
+  --select-bg: rgba(0, 0, 0, 0.04);
+  --select-bg-hover: rgba(0, 0, 0, 0.08);
+}
+:root[data-theme='light'] .glass-select-option.is-active {
+  background: rgba(0, 0, 0, 0.07);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glass-select-button {
+    transition: none;
+  }
+}

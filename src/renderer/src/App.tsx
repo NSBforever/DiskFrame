@@ -117,6 +117,7 @@ import DriveSelectionView from './components/DriveSelectionView'
 import PhotoGrid from './components/PhotoGrid'
 import MagneticDock from './components/MagneticDock'
 import AppearanceSetting from './components/AppearanceSetting'
+import GlassSelect from './components/GlassSelect'
 import DateScrubber from './components/DateScrubber'
 import { useLibrary, type LibraryGroup, type LibraryQuery } from './hooks/useLibrary'
 
@@ -2625,34 +2626,33 @@ export default function App(): React.JSX.Element {
 
             {/* Group By selector */}
             {selectedDrive && (activeView === 'Grid' || activeView === 'Timeline') && activeNav !== 'trash' && (
-              <select
+              <GlassSelect
+                label="Grouping"
                 value={groupBy}
-                onChange={e => setGroupBy(e.target.value as any)}
-                className="cred-input"
-                style={{ padding: '2px 8px', fontSize: '10px', background: 'var(--app-surface, var(--app-surface, #111113))', border: '1px solid rgba(255,255,255,0.05)', height: '24px', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}
-              >
-                <option value="day">Group by Day</option>
-                <option value="month">Group by Month</option>
-                <option value="year">Group by Year</option>
-                <option value="location">Group by Location</option>
-                <option value="favorites">Group by Favorites</option>
-              </select>
+                onChange={(v) => setGroupBy(v as never)}
+                options={[
+                  { value: 'day', label: 'Group by Day' },
+                  { value: 'month', label: 'Group by Month' },
+                  { value: 'year', label: 'Group by Year' },
+                  { value: 'location', label: 'Group by Location' },
+                  { value: 'favorites', label: 'Group by Favorites' }
+                ]}
+              />
             )}
 
             {(activeView === 'Grid' || activeView === 'Timeline' || activeView === 'Years') && activeNav !== 'trash' && <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>{activeView === 'Grid' ? 'Pinch to zoom' : 'Pinch to switch views'}</div>}
 
             {/* View order */}
             {selectedDrive && (activeView === 'Grid' || activeView === 'Timeline') && activeNav !== 'trash' && (
-              <select
+              <GlassSelect
+                label="View order"
                 value={viewOrder}
-                onChange={e => handleViewOrderChange(e.target.value as 'default' | 'reverse')}
-                className="cred-input"
-                title="View order"
-                style={{ padding: '2px 8px', fontSize: '10px', background: 'var(--app-surface, var(--app-surface, #111113))', border: '1px solid rgba(255,255,255,0.05)', height: '24px', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}
-              >
-                <option value="default">Top to bottom</option>
-                <option value="reverse">Bottom to top</option>
-              </select>
+                onChange={(v) => handleViewOrderChange(v as 'default' | 'reverse')}
+                options={[
+                  { value: 'default', label: 'Top to bottom' },
+                  { value: 'reverse', label: 'Bottom to top' }
+                ]}
+              />
             )}
 
             {/* Views selector tab */}
