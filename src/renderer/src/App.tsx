@@ -1183,7 +1183,7 @@ const MainContentArea: React.FC<{
     >
       {/* Settings Panel View */}
       {!scanning && activeNav === 'settings' && (
-        <div className="view-transition-enter" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+        <div className="view-transition-enter settings-page">
           <div>
             <h2 style={{ fontSize: '22px', fontWeight: 700, color: 'var(--app-fg, #f2f2f0)', letterSpacing: '-0.5px', margin: 0 }}>
               Settings
@@ -1195,81 +1195,55 @@ const MainContentArea: React.FC<{
 
           <AppearanceSetting />
 
-          <div style={{
-            background: 'var(--app-surface, var(--app-surface, #111114))',
-            borderRadius: '4px',
-            border: '1px solid rgba(255, 255, 255, 0.04)',
-            padding: '24px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '24px',
-            maxWidth: '600px'
-          }}>
-            {/* Interface Section */}
-            <div>
-              <h3 style={{ fontSize: '13px', fontWeight: 700, color: '#ffffff', letterSpacing: '0.5px', textTransform: 'uppercase', margin: '0 0 16px 0', borderBottom: '1px solid rgba(255,255,255,0.04)', paddingBottom: '8px' }}>
-                Interface Layout
-              </h3>
-              
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <label htmlFor="settings-tile-size-slider" style={{ fontSize: '12px', fontWeight: 600, color: 'var(--app-fg, #f2f2f0)' }}>Grid Tile Size</label>
-                  <span style={{ fontSize: '11px', color: '#e11d2e', fontWeight: 700 }}>
-                    {Math.round(tileSizePercent)}% ({tileSize}px)
-                  </span>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '16px' }}>
-                  <input
-                    id="settings-tile-size-slider"
-                    type="range"
-                    min="50"
-                    max="200"
-                    step="5"
-                    value={Math.round(tileSizePercent)}
-                    onChange={(e) => onTileSizeChange(Number(e.target.value))}
-                    style={{
-                      flex: 1,
-                      height: '4px',
-                      outline: 'none',
-                      cursor: 'pointer',
-                      accentColor: '#e11d2e',
-                      background: 'rgba(255, 255, 255, 0.1)'
-                    }}
-                  />
-                </div>
-                <div style={{ fontSize: '10px', color: 'var(--app-fg-dim, #8a8a8f)', marginTop: '4px' }}>
-                  Adjusts the scale of grid item cards in the main lists.
-                </div>
+          {/* Same glass card as Appearance and the dock, so Settings reads as
+              one surface rather than three different boxes. */}
+          <section className="glass-panel settings-card" aria-labelledby="interface-heading">
+            <h3 id="interface-heading" className="settings-heading">
+              Interface Layout
+            </h3>
+            <div className="settings-field">
+              <div className="settings-field-head">
+                <label htmlFor="settings-tile-size-slider" className="settings-label">
+                  Grid Tile Size
+                </label>
+                <span className="settings-value">
+                  {Math.round(tileSizePercent)}% ({tileSize}px)
+                </span>
               </div>
+              <input
+                id="settings-tile-size-slider"
+                className="settings-slider"
+                type="range"
+                min="50"
+                max="200"
+                step="5"
+                value={Math.round(tileSizePercent)}
+                onChange={(e) => onTileSizeChange(Number(e.target.value))}
+              />
+              <div className="settings-hint">Adjusts the scale of grid item cards in the main lists.</div>
             </div>
+          </section>
 
-            {/* Playback Section */}
-            <div>
-              <h3 style={{ fontSize: '13px', fontWeight: 700, color: '#ffffff', letterSpacing: '0.5px', textTransform: 'uppercase', margin: '0 0 16px 0', borderBottom: '1px solid rgba(255,255,255,0.04)', paddingBottom: '8px' }}>
-                Playback
-              </h3>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <label htmlFor="settings-hover-previews" style={{ fontSize: '12px', fontWeight: 600, color: 'var(--app-fg, #f2f2f0)' }}>Video hover previews</label>
+          <section className="glass-panel settings-card" aria-labelledby="playback-heading">
+            <h3 id="playback-heading" className="settings-heading">
+              Playback
+            </h3>
+            <div className="settings-field">
+              <div className="settings-field-head">
+                <label htmlFor="settings-hover-previews" className="settings-label">
+                  Video hover previews
+                </label>
                 <input
                   id="settings-hover-previews"
+                  className="settings-switch"
                   type="checkbox"
                   checked={hoverPreviewsEnabled}
                   onChange={(e) => onHoverPreviewsChange(e.target.checked)}
-                  style={{ accentColor: '#e11d2e', width: '16px', height: '16px', cursor: 'pointer' }}
                 />
               </div>
-              <div style={{ fontSize: '10px', color: 'var(--app-fg-dim, #8a8a8f)', marginTop: '4px' }}>
-                Play a short muted preview when hovering a video tile.
-              </div>
+              <div className="settings-hint">Play a short muted preview when hovering a video tile.</div>
             </div>
-
-            {/* Placeholder for future sections */}
-            <div>
-              <h3 style={{ fontSize: '13px', fontWeight: 700, color: 'var(--app-fg-dim, #8a8a8f)', letterSpacing: '0.5px', textTransform: 'uppercase', margin: '0 0 8px 0', opacity: 0.5 }}>
-                Advanced settings (coming soon)
-              </h3>
-            </div>
-          </div>
+          </section>
         </div>
       )}
 
@@ -1864,6 +1838,10 @@ export default function App(): React.JSX.Element {
   )
   const library = useLibrary(libraryQuery)
   libraryRef.current = library
+  // Settings is its own page: grouping, sorting, the view tabs, gallery
+  // search, Index Folder, the date ruler, the action circle and the
+  // gallery footer all belong to the library, not to it.
+  const isGalleryPage = activeNav !== 'settings'
   const formatGroupKey = useMemo(() => makeGroupFormatter(groupBy), [groupBy])
   patchLibraryThumbRef.current = library.patchThumb
 
@@ -2581,7 +2559,7 @@ export default function App(): React.JSX.Element {
               )}
               
               {/* Search Input */}
-              {selectedDrive && (
+              {selectedDrive && isGalleryPage && (
                 <input
                   type="text"
                   placeholder="Search file, camera:, date:, ext:, loc: ..."
@@ -2592,7 +2570,7 @@ export default function App(): React.JSX.Element {
                 />
               )}
               {/* Bounded: indexes exactly the chosen folder, nothing drive-wide. */}
-              {selectedDrive && (
+              {selectedDrive && isGalleryPage && (
                 <button
                   onClick={handleIndexFolder}
                   disabled={indexingFolder}
@@ -2625,7 +2603,7 @@ export default function App(): React.JSX.Element {
             )}
 
             {/* Group By selector */}
-            {selectedDrive && (activeView === 'Grid' || activeView === 'Timeline') && activeNav !== 'trash' && (
+            {selectedDrive && isGalleryPage && (activeView === 'Grid' || activeView === 'Timeline') && activeNav !== 'trash' && (
               <GlassSelect
                 label="Grouping"
                 value={groupBy}
@@ -2640,10 +2618,10 @@ export default function App(): React.JSX.Element {
               />
             )}
 
-            {(activeView === 'Grid' || activeView === 'Timeline' || activeView === 'Years') && activeNav !== 'trash' && <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>{activeView === 'Grid' ? 'Pinch to zoom' : 'Pinch to switch views'}</div>}
+            {isGalleryPage && (activeView === 'Grid' || activeView === 'Timeline' || activeView === 'Years') && activeNav !== 'trash' && <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>{activeView === 'Grid' ? 'Pinch to zoom' : 'Pinch to switch views'}</div>}
 
             {/* View order */}
-            {selectedDrive && (activeView === 'Grid' || activeView === 'Timeline') && activeNav !== 'trash' && (
+            {selectedDrive && isGalleryPage && (activeView === 'Grid' || activeView === 'Timeline') && activeNav !== 'trash' && (
               <GlassSelect
                 label="View order"
                 value={viewOrder}
@@ -2656,7 +2634,7 @@ export default function App(): React.JSX.Element {
             )}
 
             {/* Views selector tab */}
-            {activeNav !== 'trash' && (
+            {isGalleryPage && activeNav !== 'trash' && (
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                 <div style={{ display: 'flex', gap: '2px', background: 'var(--app-surface, var(--app-surface, #111113))', borderRadius: '4px', padding: '2px', border: '1px solid rgba(255,255,255,0.04)' }}>
                   {['Grid', 'Timeline', 'Years', 'Map'].map(v => (
@@ -2730,12 +2708,14 @@ export default function App(): React.JSX.Element {
                 zero. Printing 0 made a loading gallery indistinguishable from an
                 empty one - and from a diagnostic database with nothing in it. */}
             <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: 'var(--app-fg, #f2f2f0)', fontWeight: 700 }}>{libraryState === 'ready' ? totalFiles.toLocaleString() : '—'}</span> files</div>
+            {isGalleryPage && (
             <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: 'var(--app-fg, #f2f2f0)', fontWeight: 700 }}>{libraryState === 'ready' ? sortedGroupedData.keys.length : '—'}</span> groupings</div>
+            )}
             <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#e11d2e', fontWeight: 700 }}><Heart size={8} fill="#e11d2e" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} /> {libraryState === 'ready' ? favCount : '—'}</span> favourites{offlineFavCount > 0 && (
                 <span title="Favourites on a drive that is not connected. They are kept and counted, not deleted."> ({offlineFavCount} offline)</span>
               )}</div>
             {selected.size > 0 && <div style={{ fontSize: '9px', color: '#e11d2e', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}><Check size={8} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} /> {selected.size} selected</div>}
-            {activeView === 'Grid' && <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>tile: <span style={{ color: 'var(--app-fg, #f2f2f0)', fontWeight: 700 }}>{tileSize}px</span></div>}
+            {isGalleryPage && activeView === 'Grid' && <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>tile: <span style={{ color: 'var(--app-fg, #f2f2f0)', fontWeight: 700 }}>{tileSize}px</span></div>}
             {/* Driven by a queried flag, not a one-shot event, so a diagnostic
                 session is always labelled even if the sample never loaded or
                 the user navigated to a real drive. */}
@@ -2770,7 +2750,7 @@ export default function App(): React.JSX.Element {
             )}
             {/* Reconciliation is a deliberate action now. Opening a drive only
                 reads the cached index. */}
-            {selectedDrive && !scanning && (
+            {selectedDrive && !scanning && isGalleryPage && (
               <button
                 onClick={handleReconcile}
                 title={`Re-check ${selectedDrive} for new, changed or removed files. This reads the drive and may take a while on a large library.`}
@@ -2845,7 +2825,7 @@ export default function App(): React.JSX.Element {
       )}
 
       {/* Floating AI search action button (offset bottom: 55px to float above status bar) */}
-      {selectedDrive && (
+      {selectedDrive && isGalleryPage && (
         <button
           onClick={() => setShowAiOverlay(true)}
           className="gallery-chrome"

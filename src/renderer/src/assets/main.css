@@ -523,3 +523,80 @@ body.viewer-open .gallery-chrome {
   --app-surface-2: #eeeef2;
   --app-fg-muted: #6f6f7a;
 }
+
+/* ── Settings page ────────────────────────────────────────────────────────
+   Cards share .glass-panel with Appearance, the dock and the viewer chrome,
+   so Settings reads as one surface. No blurred thumbnails, no continuous
+   animation: the blur is on these panels only. */
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-width: 660px;
+  /* Clears the floating dock, which sits ~55px from the bottom. */
+  padding-bottom: 160px;
+}
+.settings-card {
+  padding: 18px 20px;
+}
+.settings-heading {
+  margin: 0 0 14px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--app-accent, #e11d2e);
+}
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.settings-field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.settings-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--app-fg, #f2f2f0);
+}
+.settings-value {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--app-accent, #e11d2e);
+  font-variant-numeric: tabular-nums;
+}
+.settings-hint {
+  font-size: 11px;
+  color: var(--app-fg-dim, #8a8a8f);
+}
+
+/* Slider and switch share one look and one focus ring. */
+.settings-slider {
+  width: 100%;
+  height: 4px;
+  cursor: pointer;
+  accent-color: var(--app-accent, #e11d2e);
+  background: var(--app-hairline, rgba(255, 255, 255, 0.14));
+  border-radius: 2px;
+}
+.settings-slider:focus-visible,
+.settings-switch:focus-visible {
+  outline: 2px solid var(--app-accent, #e11d2e);
+  outline-offset: 3px;
+}
+.settings-switch {
+  width: 17px;
+  height: 17px;
+  cursor: pointer;
+  accent-color: var(--app-accent, #e11d2e);
+}
+
+@media (max-width: 900px) {
+  .settings-page {
+    max-width: none;
+  }
+}
