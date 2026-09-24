@@ -137,33 +137,3 @@
     transition: none;
   }
 }
-
-/* Drag-to-reorder. Nothing here changes the resting appearance. */
-.app-dock-drop {
-  flex: 0 0 3px;
-  align-self: stretch;
-  margin: 6px 1px;
-  border-radius: 2px;
-  background: #e11d2e;
-  box-shadow: 0 0 10px rgba(225, 29, 46, 0.7);
-}
-.app-dock-item.is-dragged {
-  opacity: 0.45;
-}
-.app-dock.is-dragging .app-dock-item {
-  transition: transform 140ms ease;
-  cursor: grabbing;
-}
-/* Announcements for reordering, available to screen readers only. */
-.app-dock-sr {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-@media (prefers-reduced-motion: reduce) {
-  .app-dock.is-dragging .app-dock-item { transition: none; }
-}
