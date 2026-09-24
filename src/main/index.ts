@@ -838,20 +838,35 @@ app.whenReady().then(() => {
   })
 
   // ── SOFT DELETE (TRASH) ──
+  /**
+   * Re-push the favourites list. Trashing or restoring a favourited file
+   * changes what the badge and the Favourites view should show, and both read
+   * this one list - so it has to be resent, not just recomputed on next launch.
+   */
+  const pushFavourites = (): void => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('favourites-updated', getFavourites())
+    }
+  }
+
   ipcMain.handle('delete-files', (_event, filePaths: string[]) => {
     const paths = safePathList(filePaths)
     softDeleteFiles(paths)
+    pushFavourites()
     return { success: paths, failed: [] }
   })
 
   // ── TRASH IPC HANDLERS ──
   ipcMain.handle('restore-files', (_event, filePaths: string[]) => {
     restoreFiles(safePathList(filePaths))
+    pushFavourites()
     return { success: true }
   })
 
-  ipcMain.handle('delete-files-permanently', (_event, filePaths: string[]) => {
-    return deleteFilesPermanently(safePathList(filePaths))
+  ipcMain.handle('delete-files-permanently', async (_event, filePaths: string[]) => {
+    const r = await deleteFilesPermanently(safePathList(filePaths))
+    pushFavourites()
+    return r
   })
 
   ipcMain.handle('empty-trash', () => {

@@ -538,6 +538,8 @@ const MainContentArea: React.FC<{
   driveFiles?: Record<string, Record<string, ScannedFile[]>>
   allFiles: ScannedFile[]
   favourites: Set<string>
+  /** Every favourite row across all drives, already filtered by the main process. */
+  favRecords: ScannedFile[]
   selected: Set<string>
   deletingPaths: Set<string>
   handleTileOpen: (file: ScannedFile, indexOrList: number | ScannedFile[], e?: React.MouseEvent) => void
@@ -588,6 +590,7 @@ const MainContentArea: React.FC<{
   driveFiles,
   allFiles,
   favourites,
+  favRecords,
   selected,
   deletingPaths,
   handleTileOpen,
@@ -637,7 +640,9 @@ const MainContentArea: React.FC<{
     return () => window.removeEventListener('resize', handleResize)
   }, [])
 
-  const allFavFiles = useMemo(() => allFiles.filter(f => favourites.has(f.path)), [allFiles, favourites])
+  // Not `allFiles.filter(...)`: allFiles only holds the open drive's loaded
+  // rows, so favourites on any other drive were silently dropped.
+  const allFavFiles = favRecords
 
   const chunkArray = <T,>(array: T[], size: number): T[][] => {
     const result: T[][] = []
@@ -1439,6 +1444,9 @@ export default function App(): React.JSX.Element {
   const hasFilesRef = useRef(false)
 
   const [favourites, setFavourites] = useState<Set<string>>(new Set())
+  // Full favourite rows, across every drive, already filtered of trashed
+  // and hidden items by the main process.
+  const [favRecords, setFavRecords] = useState<ScannedFile[]>([])
   const [selected, setSelected] = useState<Set<string>>(new Set())
   // `index` navigates the paged library. `list` is only set by the views that
   // are not the library - favourites, trash - which hold their own arrays.
@@ -1634,24 +1642,24 @@ export default function App(): React.JSX.Element {
   useEffect(() => {
     const unsubDrives = window.api.onDrivesUpdated((d) => setDrives(d as DriveInfo[]))
     const unsubFavs = window.api.onFavouritesUpdated((files) => {
-      setFavourites(new Set((files as Array<{ path: string }>).map(f => f.path)))
+      // One source for both the badge and the Favourites view.
+      //
+      // The badge used to count favourite_paths (every drive, including
+      // trashed items) while the view filtered the OPEN drive's loaded rows -
+      // so a favourite on an unplugged drive was counted but never listed,
+      // which is the 4-vs-3 discrepancy. getFavourites() in the main process
+      // already returns exactly the right set: favourited, not trashed, not
+      // hidden, across all drives.
+      const records = (files as ScannedFile[]) || []
+      setFavRecords(records)
+      setFavourites(new Set(records.map((f) => f.path)))
     })
-    // Authoritative favourites, independent of which drive is open.
-    //
-    // The Set was previously filled from whatever rows the open drive had
-    // loaded, so the badge counted only that drive's favourites - it read 1
-    // while four files were favourited. favourite_paths is keyed by path and
-    // repointed whenever a record is relinked, so it stays correct across
-    // drives and across moves.
-    const loadFavPaths = (): void => {
-      window.api
-        .favouritePaths()
-        .then((paths) => setFavourites(new Set(paths)))
-        .catch(() => {})
-    }
-    loadFavPaths()
+    // Ask for the authoritative list once on mount, then again whenever a
+    // favourite is toggled, so the badge and the view never drift.
+    const loadFavs = (): void => window.api.getFavourites()
+    loadFavs()
     const unsubFavToggle = window.api.onFavouriteToggled
-      ? window.api.onFavouriteToggled(() => loadFavPaths())
+      ? window.api.onFavouriteToggled(() => loadFavs())
       : () => {}
     const unsubProgress = window.api.onScanProgress((d) => setScanCount(d.count))
     const unsubComplete = window.api.onScanComplete((d) => {
@@ -1887,7 +1895,18 @@ export default function App(): React.JSX.Element {
   // only the ones resident for the drive in view. Counting the latter made the
   // badge read "1" while four files were favourited, because the other three
   // were on a drive that was not open.
-  const favCount = favourites.size
+  // Same list the Favourites view renders, so the badge cannot disagree.
+  const favCount = favRecords.length
+  // Favourites whose drive is not currently connected. They are kept and
+  // counted - never deleted to make a number match - but called out so the
+  // list does not look as though items are missing.
+  const connectedLetters = useMemo(
+    () => new Set(drives.map((d) => (d.name || '').slice(0, 2).toUpperCase())),
+    [drives]
+  )
+  const offlineFavCount = favRecords.filter(
+    (f) => f.drive && !connectedLetters.has(f.drive.slice(0, 2).toUpperCase())
+  ).length
   const dockItems = useMemo(
     () => [
       { id: 'all', label: 'All files', icon: <FolderArchive size={18} />, isActive: activeNav === 'all', onClick: () => setActiveNav('all') },
@@ -2651,6 +2670,7 @@ export default function App(): React.JSX.Element {
 
         {/* Isolated Scroll Content Area */}
         <MainContentArea
+          favRecords={favRecords}
           activeNav={activeNav}
           activeView={activeView}
           scanning={scanning}
@@ -2711,7 +2731,9 @@ export default function App(): React.JSX.Element {
                 empty one - and from a diagnostic database with nothing in it. */}
             <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: 'var(--app-fg, #f2f2f0)', fontWeight: 700 }}>{libraryState === 'ready' ? totalFiles.toLocaleString() : '—'}</span> files</div>
             <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: 'var(--app-fg, #f2f2f0)', fontWeight: 700 }}>{libraryState === 'ready' ? sortedGroupedData.keys.length : '—'}</span> groupings</div>
-            <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#e11d2e', fontWeight: 700 }}><Heart size={8} fill="#e11d2e" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} /> {libraryState === 'ready' ? favCount : '—'}</span> favourites</div>
+            <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#e11d2e', fontWeight: 700 }}><Heart size={8} fill="#e11d2e" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} /> {libraryState === 'ready' ? favCount : '—'}</span> favourites{offlineFavCount > 0 && (
+                <span title="Favourites on a drive that is not connected. They are kept and counted, not deleted."> ({offlineFavCount} offline)</span>
+              )}</div>
             {selected.size > 0 && <div style={{ fontSize: '9px', color: '#e11d2e', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}><Check size={8} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} /> {selected.size} selected</div>}
             {activeView === 'Grid' && <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>tile: <span style={{ color: 'var(--app-fg, #f2f2f0)', fontWeight: 700 }}>{tileSize}px</span></div>}
             {/* Driven by a queried flag, not a one-shot event, so a diagnostic
