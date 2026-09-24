@@ -38,6 +38,9 @@ interface ImageLoaderProps {
   onImageLoaded: (dimensions: { width: number; height: number }) => void
   onNext?: () => void
   onPrev?: () => void
+  onFav?: (file: ScannedFile) => void
+  onShowHelp?: () => void
+  onToggleTheatre?: () => void
   /** True during the close animation, before unmount - stop audio immediately
    * rather than letting it play through the animation. */
   isClosing?: boolean
@@ -64,6 +67,9 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   onImageLoaded,
   onNext,
   onPrev,
+  onFav,
+  onShowHelp,
+  onToggleTheatre,
   isClosing
 }) => {
   const [highResSrc, setHighResSrc] = useState<string | null>(null)
@@ -102,6 +108,9 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   const lastMpvMouseRef = useRef<{ x: number; y: number } | null>(null)
   // Last playback position seen, to tell playing from paused (see 'time-pos').
   const lastTimePosRef = useRef<number | null>(null)
+  // Which preset the W / O subtitle cycles are currently on.
+  const subBgRef = useRef(0)
+  const subFgRef = useRef(0)
   const reducedMotion = useReducedMotionPref()
 
   // Single source of truth for "something happened, controls should be
@@ -645,133 +654,195 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   // Idle-playback cursor hiding, restored immediately on any activity.
   const hideCursor = isVideo && isPlaying && !controlsVisible && !forceVisible
 
-  // Capture-phase keydown listener for strict keyboard shortcuts overrides
+  // The one keyboard table for video.
+  //
+  // The MAIN window holds focus during playback, so the whole table lives here
+  // and drives mpv directly; any key that lands in the overlay window is
+  // relayed back to this same handler. That is what keeps one press to one
+  // action rather than Electron, React and mpv each reacting to it.
+  //
+  // Feedback has to be drawn by the overlay, which is the only surface that
+  // can appear over the native video, so each action pushes a toast there.
   useEffect(() => {
     if (!isVideo) return
 
-    const handleVideoKeyDown = (e: KeyboardEvent) => {
-      const activeEl = document.activeElement
-      if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.getAttribute('contenteditable') === 'true')) {
+    const mpv = (c: string, a: unknown[] = []): void => {
+      void window.api.sendMpvCommand(c, a as never[])
+    }
+    const say = (toast?: string): void => {
+      window.api.setOverlayMeta?.({ toast, show: true })
+      registerActivity()
+    }
+    /** Absolute seek that works on every backend, clamped to the file. */
+    const seekTo = (t: number, label?: string): void => {
+      const next = Math.max(0, Math.min(duration || Number.MAX_SAFE_INTEGER, t))
+      setCurrentTime(next)
+      if (videoMode === 'mpv') mpv('seek', [next, 'absolute'])
+      else if (videoMode === 'native' && videoRef.current) videoRef.current.currentTime = next
+      else if (videoMode === 'stream') {
+        setIsBuffering(true)
+        setSeekOffset(next)
+        void window.api.getVideoPlayInfo(file.path, next)
+      }
+      say(label)
+    }
+    const setVol = (v: number): void => {
+      const next = Math.max(0, Math.min(100, Math.round(v)))
+      setVolume(next / 100)
+      if (videoMode === 'mpv') {
+        mpv('set_property', ['volume', next])
+        mpv('set_property', ['mute', false])
+      } else if (videoRef.current) {
+        videoRef.current.volume = next / 100
+        videoRef.current.muted = false
+      }
+      setIsMuted(false)
+      say('Volume ' + next + '%')
+    }
+    const setRate = (r: number): void => {
+      const next = Math.max(0.25, Math.min(4, Math.round(r * 100) / 100))
+      setPlaybackSpeed(next)
+      if (videoMode === 'mpv') mpv('set_property', ['speed', next])
+      else if (videoRef.current) videoRef.current.playbackRate = next
+      say(next + 'x')
+    }
+    /** mpv-only capabilities. Everything else says so instead of no-opping. */
+    const mpvOnly = (label: string, run: () => void): void => {
+      if (videoMode === 'mpv') run()
+      else say(label + ' needs the mpv player')
+    }
+
+    const SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
+    const SUB_BG = ['#000000CC', '#00000000', '#FFFFFFCC']
+    const SUB_FG = ['#FFFFFF', '#FFFF00', '#00FFFF']
+
+    const onKey = (e: KeyboardEvent): void => {
+      // Typing, or working a focused control that has its own key behaviour.
+      const el = document.activeElement as HTMLElement | null
+      if (
+        el &&
+        (el.tagName === 'INPUT' ||
+          el.tagName === 'TEXTAREA' ||
+          el.tagName === 'SELECT' ||
+          el.getAttribute('contenteditable') === 'true' ||
+          el.getAttribute('role') === 'slider')
+      ) {
         return
       }
 
-      switch (e.key) {
-        // Seeking lives on J / L (and K for play-pause), the documented
-        // player keys. Left/Right stay with file navigation: binding them to
-        // seek here meant arrow keys did different things on a photo and on a
-        // video, and the capture phase silently stole them from the viewer's
-        // own prev/next.
-        case ' ':
-        case 'k':
-        case 'K':
-          e.preventDefault()
-          e.stopPropagation()
-          e.stopImmediatePropagation()
-          togglePlay()
-          break
-        case 'j':
-        case 'J': {
-          e.preventDefault()
-          e.stopPropagation()
-          e.stopImmediatePropagation()
-          const nextTimeL = Math.max(0, currentTime - 5)
-          setCurrentTime(nextTimeL)
-          if (videoMode === 'mpv') {
-            window.api.sendMpvCommand('seek', [nextTimeL, 'absolute'])
-          } else if (videoMode === 'native') {
-            if (videoRef.current) videoRef.current.currentTime = nextTimeL
-          } else if (videoMode === 'stream') {
-            setIsBuffering(true)
-            setSeekOffset(nextTimeL)
-            window.api.getVideoPlayInfo(file.path, nextTimeL)
-              .then((info) => {
-                setVideoUrl(info.url)
-                setIsBuffering(false)
-                if (videoRef.current) videoRef.current.play().catch(() => {})
-              })
-              .catch(() => setIsBuffering(false))
-          }
-          break
-        }
-        case 'l':
-        case 'L': {
-          e.preventDefault()
-          e.stopPropagation()
-          e.stopImmediatePropagation()
-          const nextTimeR = Math.min(duration, currentTime + 5)
-          setCurrentTime(nextTimeR)
-          if (videoMode === 'mpv') {
-            window.api.sendMpvCommand('seek', [nextTimeR, 'absolute'])
-          } else if (videoMode === 'native') {
-            if (videoRef.current) videoRef.current.currentTime = nextTimeR
-          } else if (videoMode === 'stream') {
-            setIsBuffering(true)
-            setSeekOffset(nextTimeR)
-            window.api.getVideoPlayInfo(file.path, nextTimeR)
-              .then((info) => {
-                setVideoUrl(info.url)
-                setIsBuffering(false)
-                if (videoRef.current) videoRef.current.play().catch(() => {})
-              })
-              .catch(() => setIsBuffering(false))
-          }
-          break
-        }
-        case 'ArrowUp': {
-          e.preventDefault()
-          e.stopPropagation()
-          e.stopImmediatePropagation()
-          const nextVolumeU = Math.min(1, volume + 0.05)
-          setVolume(nextVolumeU)
-          setIsMuted(false)
-          if (videoMode === 'mpv') {
-            window.api.sendMpvCommand('set_property', ['volume', nextVolumeU * 100])
-            window.api.sendMpvCommand('set_property', ['mute', false])
-          } else {
-            if (videoRef.current) videoRef.current.volume = nextVolumeU
-            if (videoRef.current) videoRef.current.muted = false
-          }
-          break
-        }
-        case 'ArrowDown': {
-          e.preventDefault()
-          e.stopPropagation()
-          e.stopImmediatePropagation()
-          const nextVolumeD = Math.max(0, volume - 0.05)
-          setVolume(nextVolumeD)
-          const isM = nextVolumeD === 0
-          setIsMuted(isM)
-          if (videoMode === 'mpv') {
-            window.api.sendMpvCommand('set_property', ['volume', nextVolumeD * 100])
-            window.api.sendMpvCommand('set_property', ['mute', isM])
-          } else {
-            if (videoRef.current) videoRef.current.volume = nextVolumeD
-            if (videoRef.current) videoRef.current.muted = isM
-          }
-          break
-        }
-        case 'm':
-        case 'M':
-          e.preventDefault()
-          e.stopPropagation()
-          e.stopImmediatePropagation()
-          toggleMute()
-          break
-        case 'f':
-        case 'F':
-          e.preventDefault()
-          e.stopPropagation()
-          e.stopImmediatePropagation()
-          toggleFullscreen()
-          break
+      const k = e.key
+      const shift = e.shiftKey
+      const ctrl = e.ctrlKey || e.metaKey
+      let handled = true
+
+      // Toggles ignore auto-repeat; seeking and volume are meant to repeat.
+      const isToggle = k === ' ' || k === 'k' || k === 'K' || k === 'm' || k === 'M'
+      if (e.repeat && isToggle) return
+
+      if (ctrl && (k === 'l' || k === 'L')) {
+        onFav?.(file)
+        say('Favourite toggled')
+      } else if (k === ' ' || k === 'k' || k === 'K') {
+        togglePlay()
+        say(isPlaying ? 'Paused' : 'Play')
+      } else if (k === 'j' || k === 'J') seekTo(currentTime - 10, '-10s')
+      else if (k === 'l' || k === 'L') seekTo(currentTime + 10, '+10s')
+      else if (k === 'ArrowLeft') seekTo(currentTime - 5, '-5s')
+      else if (k === 'ArrowRight') seekTo(currentTime + 5, '+5s')
+      else if (k === 'ArrowUp') setVol(volume * 100 + 5)
+      else if (k === 'ArrowDown') setVol(volume * 100 - 5)
+      else if (k === 'm' || k === 'M') {
+        toggleMute()
+        say(isMuted ? 'Unmuted' : 'Muted')
+      } else if (shift && (k === 'P' || k === 'p')) {
+        onPrev?.()
+      } else if (shift && (k === 'N' || k === 'n')) {
+        onNext?.()
+      } else if (k === '0' || k === 'Home') seekTo(0, 'Start')
+      else if (k >= '1' && k <= '9') {
+        const pct = Number(k) * 10
+        seekTo(((duration || 0) * pct) / 100, pct + '%')
+      } else if (k === 'f' || k === 'F') {
+        toggleFullscreen()
+        say('Fullscreen')
+      } else if (k === 'c' || k === 'C') {
+        mpvOnly('Subtitles', () => {
+          mpv('cycle', ['sub'])
+          say('Subtitles')
+        })
+      } else if (k === '+' || k === '=') {
+        mpvOnly('Subtitle size', () => {
+          mpv('add', ['sub-scale', 0.1])
+          say('Subtitle size +')
+        })
+      } else if (k === '-' || k === '_') {
+        mpvOnly('Subtitle size', () => {
+          mpv('add', ['sub-scale', -0.1])
+          say('Subtitle size -')
+        })
+      } else if (k === 'w' || k === 'W') {
+        mpvOnly('Subtitle background', () => {
+          subBgRef.current = (subBgRef.current + 1) % SUB_BG.length
+          mpv('set_property', ['sub-back-color', SUB_BG[subBgRef.current]])
+          say('Subtitle background')
+        })
+      } else if (k === 'o' || k === 'O') {
+        // The LETTER o. The digit 0 seeks to the start and is handled above.
+        mpvOnly('Subtitle colour', () => {
+          subFgRef.current = (subFgRef.current + 1) % SUB_FG.length
+          mpv('set_property', ['sub-color', SUB_FG[subFgRef.current]])
+          say('Subtitle colour')
+        })
+      } else if (shift && (k === '.' || k === '>')) {
+        const i = SPEEDS.indexOf(playbackSpeed)
+        setRate(SPEEDS[Math.min(SPEEDS.length - 1, (i < 0 ? 3 : i) + 1)])
+      } else if (shift && (k === ',' || k === '<')) {
+        const i = SPEEDS.indexOf(playbackSpeed)
+        setRate(SPEEDS[Math.max(0, (i < 0 ? 3 : i) - 1)])
+      } else if (k === '.' || k === ',') {
+        if (isPlaying) say('Pause first to step frames')
+        else
+          mpvOnly('Frame stepping', () => {
+            mpv(k === '.' ? 'frame-step' : 'frame-back-step', [])
+            say(k === '.' ? 'Frame +1' : 'Frame -1')
+          })
+      } else if (k === '?') {
+        onShowHelp?.()
+      } else if (k === 't' || k === 'T') {
+        onToggleTheatre?.()
+      } else {
+        handled = false
+      }
+
+      if (handled) {
+        e.preventDefault()
+        e.stopPropagation()
+        e.stopImmediatePropagation()
       }
     }
 
-    window.addEventListener('keydown', handleVideoKeyDown, true)
-    return () => {
-      window.removeEventListener('keydown', handleVideoKeyDown, true)
-    }
-  }, [isVideo, togglePlay, currentTime, duration, videoMode, file.path, volume, toggleMute, toggleFullscreen])
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [
+    isVideo,
+    videoMode,
+    file,
+    currentTime,
+    duration,
+    volume,
+    isMuted,
+    isPlaying,
+    playbackSpeed,
+    togglePlay,
+    toggleMute,
+    toggleFullscreen,
+    registerActivity,
+    onNext,
+    onPrev,
+    onFav,
+    onShowHelp,
+    onToggleTheatre
+  ])
 
   const formatTime = (secs: number) => {
     if (isNaN(secs)) return '0:00'

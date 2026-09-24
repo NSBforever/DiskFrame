@@ -94,6 +94,10 @@ declare global {
       setViewOrder: (order: 'default' | 'reverse') => Promise<void>
       getHoverPreviews: () => Promise<boolean>
       setHoverPreviews: (enabled: boolean) => Promise<void>
+      setOverlayMeta: (meta: { name?: string; isFav?: boolean; toast?: string; show?: boolean }) => void
+      onOverlayMeta: (
+        cb: (m: { name?: string; isFav?: boolean; toast?: string; show?: boolean }) => void
+      ) => () => void
       overlayAction: (action: string) => void
       setOverlayInteractive: (on: boolean) => void
       onOverlayAction: (cb: (action: string) => void) => () => void

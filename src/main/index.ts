@@ -61,7 +61,7 @@ import {
 import type { LibraryQuery } from './libraryQuery'
 
 import { initStreamServer, probeMedia, killActiveStream, closeStreamServer, authorizeStreamPath } from './streamServer'
-import { initMpv, sendMpvCommand, updateMpvBounds, closeMpv, refreshMpvBounds, setOverlayInteractive } from './mpvManager'
+import { initMpv, sendMpvCommand, updateMpvBounds, closeMpv, refreshMpvBounds, setOverlayInteractive, sendToOverlay } from './mpvManager'
 import { WatcherManager } from './watcher'
 import { IndexingService } from './indexingService'
 import { normalizeDrive, isSafeLocalPath, safePathList, THUMB_UNAVAILABLE, THUMB_VOLUME_OFFLINE } from './validation'
@@ -1052,6 +1052,13 @@ app.whenReady().then(() => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('overlay-action', action)
     }
+  })
+
+  // Filename, favourite state, toasts and "reveal the bars" all go the other
+  // way: main renderer -> overlay, because the overlay is the only surface
+  // that can actually be seen over the video.
+  ipcMain.on('overlay-meta', (_e, meta: unknown) => {
+    sendToOverlay('overlay-meta', meta)
   })
 
   ipcMain.on('overlay-interactive', (_e, on: unknown) => {

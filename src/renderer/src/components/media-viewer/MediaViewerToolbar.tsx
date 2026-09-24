@@ -29,6 +29,8 @@ interface MediaViewerToolbarProps {
   onFlip: () => void
   scale: number
   onZoomChange: (newScale: number) => void
+  /** Zoom, rotate and flip are photo-only; hidden when viewing video. */
+  isVideo?: boolean
   onFit: () => void
   onFill: () => void
   onActualSize: () => void
@@ -99,6 +101,7 @@ export const MediaViewerToolbar: React.FC<MediaViewerToolbarProps> = ({
   onFlip,
   scale,
   onZoomChange,
+  isVideo,
   onFit,
   onFill,
   onActualSize,
@@ -157,7 +160,10 @@ export const MediaViewerToolbar: React.FC<MediaViewerToolbarProps> = ({
 
       <div style={{ width: '1px', height: '22px', background: 'rgba(255,255,255,0.06)', flexShrink: 0 }} />
 
-      {/* Zoom Controls */}
+      {/* Zoom Controls - photo only. Zooming, rotating and flipping do not
+          apply to a video, so they are not offered there rather than being
+          shown as dead buttons. */}
+      {!isVideo && (
       <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
         <IconBtn onClick={() => onZoomChange(scale - 0.5)} title="Zoom Out ( - )">
           <ZoomOut size={16} />
@@ -199,10 +205,12 @@ export const MediaViewerToolbar: React.FC<MediaViewerToolbarProps> = ({
           <Maximize2 size={16} />
         </IconBtn>
       </div>
+      )}
 
       <div style={{ width: '1px', height: '22px', background: 'rgba(255,255,255,0.06)', flexShrink: 0 }} />
 
-      {/* Transform Controls */}
+      {/* Transform Controls - photo only. */}
+      {!isVideo && (
       <div style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
         <IconBtn onClick={onRotateLeft} title="Rotate Left">
           <RotateCcw size={16} />
@@ -214,6 +222,7 @@ export const MediaViewerToolbar: React.FC<MediaViewerToolbarProps> = ({
           <FlipHorizontal size={16} />
         </IconBtn>
       </div>
+      )}
 
       <div style={{ width: '1px', height: '22px', background: 'rgba(255,255,255,0.06)', flexShrink: 0 }} />
 

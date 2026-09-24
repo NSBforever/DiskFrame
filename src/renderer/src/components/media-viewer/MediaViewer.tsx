@@ -38,7 +38,28 @@ interface MediaViewerProps {
   rect?: DOMRect
 }
 
-export const MediaViewer: React.FC<MediaViewerProps> = ({
+export const SHORTCUT_HELP: [string, string][] = [
+  ['Space / K', 'Play or pause'],
+  ['J / L', 'Back / forward 10s'],
+  ['Left / Right', 'Back / forward 5s'],
+  ['Up / Down', 'Volume'],
+  ['M', 'Mute'],
+  ['Shift + P / N', 'Previous / next file'],
+  ['0 / Home', 'Seek to start'],
+  ['1 - 9', 'Seek to 10-90%'],
+  ['F', 'Fullscreen'],
+  ['T', 'Theatre mode'],
+  ['C', 'Subtitles'],
+  ['+ / -', 'Subtitle size'],
+  ['W / O', 'Subtitle background / colour'],
+  ['Shift + . / ,', 'Playback speed'],
+  ['. / ,', 'Frame step (paused)'],
+  ['Ctrl + L', 'Favourite'],
+  ['?', 'This help'],
+  ['Escape', 'Close viewer']
+]
+
+const MediaViewer: React.FC<MediaViewerProps> = ({
   file,
   list,
   isFav,
@@ -55,6 +76,13 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
   // opens, so zoom anchoring and pan bounds must measure THIS, not the viewer
   // root - anchoring against the root put every zoom 160px off with Info open.
   const stageRef = useRef<HTMLDivElement>(null)
+  // Theatre hides the viewer's own chrome and gives the stage the whole
+  // window; for video the mpv bounds follow the stage, so it genuinely
+  // enlarges rather than just hiding buttons.
+  const [isTheatre, setIsTheatre] = useState(false)
+  const [showHelp, setShowHelp] = useState(false)
+  const showHelpRef = useRef(false)
+  showHelpRef.current = showHelp
   const isPhoto = photoExts.includes(file.ext.toLowerCase())
   const isVideo = videoExts.includes(file.ext.toLowerCase())
   const [imgDimensions, setImgDimensions] = useState<{ width: number; height: number } | null>(null)
@@ -119,6 +147,12 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
     ro.observe(el)
     return () => ro.disconnect()
   }, [clampToBounds])
+
+  // The overlay draws the only chrome that is visible over the video, so
+  // it needs the filename and favourite state pushed to it.
+  useEffect(() => {
+    window.api.setOverlayMeta?.({ name: file.name, isFav })
+  }, [file.name, isFav])
 
   // Reset transforms when image file changes
   useEffect(() => {
@@ -186,6 +220,13 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
       if (action === 'prev') return handlePrev()
       if (action === 'next') return handleNext()
       if (action === 'fullscreen') return handleToggleFullscreen()
+      if (action === 'close') return handleClose()
+      if (action === 'fav') return onFav(file)
+      if (action === 'info') return setIsInfoOpen((o) => !o)
+      if (action === "reveal") return onReveal(file)
+      if (action === 'copyPath') return handleCopyPath()
+      if (action === 'download') return handleDownload()
+      if (action === 'delete') return handleDelete()
       if (action.startsWith('key:')) {
         const [, key, ...mods] = action.split(':')
         window.dispatchEvent(
@@ -198,7 +239,7 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
         )
       }
     })
-  }, [handleNext, handlePrev, handleToggleFullscreen])
+  }, [handleNext, handlePrev, handleToggleFullscreen, handleClose, onFav, onReveal, file])
 
   // Sync fullscreen state on external escape
   useEffect(() => {
@@ -256,6 +297,11 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
   // that same action rather than requiring a second press.
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && showHelpRef.current) {
+        setShowHelp(false)
+        e.preventDefault()
+        return
+      }
       if (e.key === 'Escape') {
         const active = document.activeElement
         if (
@@ -475,9 +521,11 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
         </button>
       )}
 
-      {/* Top toolbar */}
-      {controlsVisible && !isOpening && !isClosing && (
+      {/* Top toolbar. Hidden in theatre mode, and for video the real chrome is
+          the overlay inside the mpv window - this one is never visible there. */}
+      {controlsVisible && !isOpening && !isClosing && !isTheatre && (
         <MediaViewerToolbar
+          isVideo={isVideo}
           fileName={file.name}
           filePath={file.path}
           isFav={isFav}
@@ -607,6 +655,9 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
         }}
       >
         <ImageLoader
+          onFav={onFav}
+          onShowHelp={() => setShowHelp(true)}
+          onToggleTheatre={() => setIsTheatre((t) => !t)}
           file={file}
           list={list}
           rotation={rotation}
@@ -697,6 +748,49 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
               <MapPin size={12} color="#e11d2e" /> {file.lat.toFixed(3)}, {file.lng.toFixed(3)}
             </span>
           )}
+        </div>
+      )}
+
+      {showHelp && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Keyboard shortcuts"
+          onClick={() => setShowHelp(false)}
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 3000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: 'rgba(0,0,0,0.55)'
+          }}
+        >
+          <div
+            className="glass-panel"
+            onClick={(e) => e.stopPropagation()}
+            style={{ padding: '22px 26px', maxWidth: '640px', width: '90%', maxHeight: '80%', overflowY: 'auto' }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', marginBottom: '14px' }}>
+              <div style={{ fontSize: '15px', fontWeight: 700 }}>Keyboard shortcuts</div>
+              <button
+                onClick={() => setShowHelp(false)}
+                aria-label="Close shortcuts"
+                style={{ marginLeft: 'auto', background: 'transparent', border: 0, color: '#8a8a8f', cursor: 'pointer', fontSize: '18px' }}
+              >
+                x
+              </button>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 22px', fontSize: '12px' }}>
+              {SHORTCUT_HELP.map(([keys, what]) => (
+                <div key={keys} style={{ display: 'flex', gap: '10px' }}>
+                  <span style={{ minWidth: '116px', color: '#e11d2e', fontWeight: 700 }}>{keys}</span>
+                  <span style={{ color: '#c9c9d2' }}>{what}</span>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 

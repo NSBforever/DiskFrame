@@ -1,122 +1,242 @@
 <!doctype html>
 <meta charset="utf-8" />
 <!--
-  Playback controls rendered INSIDE the mpv window.
+  Video controls, rendered INSIDE the mpv window.
 
   They cannot live in the main window: mpv's window is an owned top-level
   window (parent=0, owner=<main>), and Windows always z-orders an owned window
   above its owner, so main-window DOM is never visible over the video whatever
   its z-index. Chromium's surface is a CHILD of this window, and a child paints
   above its parent's own drawing, so this overlay does composite above mpv's
-  output - verified on screen, not in the DOM.
+  output - verified with a real screen capture, not DOM state.
+
+  Shortcuts are NOT handled here. The main window has focus during playback, so
+  it owns the whole key table and drives mpv directly; any key that does land
+  here is relayed to it. That keeps exactly one handler per press.
 -->
 <style>
   html, body { margin:0; height:100%; background:transparent; overflow:hidden;
-    font-family: system-ui, sans-serif; user-select:none; cursor:default; }
-  #bar { position:fixed; left:0; right:0; bottom:0; padding:10px 16px 12px;
-    background:linear-gradient(to top, rgba(0,0,0,.92), rgba(0,0,0,.45) 60%, transparent);
-    opacity:0; transition:opacity .2s ease; pointer-events:none; color:#f2f2f0; }
-  #bar.on { opacity:1; pointer-events:auto; }
-  #seek { position:relative; height:16px; display:flex; align-items:center; cursor:pointer; }
-  #track { position:relative; height:4px; width:100%; background:rgba(255,255,255,.25); border-radius:2px; }
-  #fill { position:absolute; left:0; top:0; bottom:0; width:0%; background:#e11d2e; border-radius:2px; }
-  #knob { position:absolute; top:50%; left:0%; width:12px; height:12px; margin-left:-6px;
-    transform:translateY(-50%) scale(0); background:#e11d2e; border-radius:50%; transition:transform .12s; }
-  #seek:hover #knob { transform:translateY(-50%) scale(1); }
-  #row { display:flex; align-items:center; gap:14px; margin-top:6px; font-size:12px; }
-  button { background:transparent; border:0; color:#f2f2f0; cursor:pointer; padding:4px 7px;
-    border-radius:6px; font:inherit; line-height:1; display:flex; align-items:center; }
-  button:hover { background:rgba(255,255,255,.14); }
+    font-family: system-ui, "Segoe UI", sans-serif; user-select:none; cursor:default;
+    color:#f2f2f0; }
+
+  /* Liquid glass, confined to the two bars so the video itself is untouched. */
+  .glass {
+    background: rgba(18,18,22,0.52);
+    backdrop-filter: blur(22px) saturate(1.6);
+    -webkit-backdrop-filter: blur(22px) saturate(1.6);
+    border: 1px solid rgba(255,255,255,0.14);
+    box-shadow: 0 10px 34px rgba(0,0,0,0.5);
+    border-radius: 14px;
+    position: relative;
+  }
+  .glass::before {
+    content:''; position:absolute; top:0; left:0; right:0; height:1px;
+    border-radius:inherit; pointer-events:none;
+    background:linear-gradient(90deg, transparent, rgba(255,255,255,0.38), transparent);
+  }
+
+  #top, #bot {
+    position:fixed; opacity:0; transition:opacity .2s ease; pointer-events:none; z-index:5;
+  }
+  #top.on, #bot.on { opacity:1; pointer-events:auto; }
+  #top { left:14px; right:14px; top:12px; display:flex; align-items:center; gap:6px; padding:8px 10px; }
+  #bot { left:14px; right:14px; bottom:12px; padding:8px 14px 10px; }
+
+  #name { font-size:12px; font-weight:700; letter-spacing:.3px; text-transform:uppercase;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1 1 auto; min-width:0;
+    color:#d8d8e2; }
+
+  button { background:transparent; border:0; color:#f2f2f0; cursor:pointer; padding:6px 8px;
+    border-radius:8px; font:inherit; line-height:1; display:flex; align-items:center;
+    justify-content:center; flex:0 0 auto; }
+  button:hover:not([disabled]) { background:rgba(255,255,255,0.14); }
   button:focus-visible { outline:2px solid #e11d2e; outline-offset:1px; }
   button[disabled] { opacity:.35; cursor:not-allowed; }
-  #time { font-variant-numeric:tabular-nums; opacity:.9; }
-  #vol { width:72px; accent-color:#e11d2e; }
-  .sp { margin-left:auto; }
-  #toast { position:fixed; left:50%; top:46%; transform:translate(-50%,-50%);
-    background:rgba(0,0,0,.72); color:#fff; padding:10px 18px; border-radius:10px;
-    font-size:15px; font-weight:600; opacity:0; transition:opacity .18s; pointer-events:none; }
+  button.on { color:#e11d2e; }
+
+  #seek { position:relative; height:18px; display:flex; align-items:center; cursor:pointer; }
+  #track { position:relative; height:4px; width:100%; background:rgba(255,255,255,.25); border-radius:2px; }
+  #buf { position:absolute; left:0; top:0; bottom:0; width:0%; background:rgba(255,255,255,.18); border-radius:2px; }
+  #fill { position:absolute; left:0; top:0; bottom:0; width:0%; background:#e11d2e; border-radius:2px; }
+  #knob { position:absolute; top:50%; left:0%; width:12px; height:12px; margin-left:-6px;
+    transform:translateY(-50%) scale(0); background:#e11d2e; border-radius:50%;
+    transition:transform .12s; box-shadow:0 0 0 3px rgba(225,29,46,.25); }
+  #seek:hover #knob, #seek.drag #knob { transform:translateY(-50%) scale(1); }
+
+  #row { display:flex; align-items:center; gap:10px; margin-top:4px; font-size:12px; }
+  #time { font-variant-numeric:tabular-nums; opacity:.92; white-space:nowrap; }
+  #vol { width:78px; accent-color:#e11d2e; }
+  .spacer { margin-left:auto; }
+
+  .menu { position:absolute; bottom:56px; right:14px; min-width:210px; padding:6px;
+    display:none; flex-direction:column; gap:2px; z-index:9; font-size:12px; }
+  .menu.on { display:flex; }
+  .menu h4 { margin:6px 8px 2px; font-size:10px; letter-spacing:.6px; text-transform:uppercase;
+    color:#9a9aa6; font-weight:700; }
+  .menu button { justify-content:flex-start; width:100%; padding:7px 9px; }
+  .menu .none { padding:7px 9px; color:#9a9aa6; }
+
+  #toast { position:fixed; left:50%; top:50%; transform:translate(-50%,-50%);
+    padding:12px 20px; border-radius:12px; font-size:16px; font-weight:700;
+    opacity:0; transition:opacity .18s; pointer-events:none; z-index:20; }
   #toast.on { opacity:1; }
 </style>
-<div id="toast"></div>
-<div id="bar">
-  <div id="seek" title="Seek"><div id="track"><div id="fill"></div><div id="knob"></div></div></div>
+
+<div id="toast" class="glass"></div>
+
+<div id="top" class="glass">
+  <button id="close" title="Close (Esc)" aria-label="Close viewer">&#10005;</button>
+  <div id="name">&nbsp;</div>
+  <button id="prev" title="Previous file (Shift+P)" aria-label="Previous file">&#9198;</button>
+  <button id="next" title="Next file (Shift+N)" aria-label="Next file">&#9197;</button>
+  <button id="fav" title="Favourite (Ctrl+L)" aria-label="Toggle favourite">&#9825;</button>
+  <button id="info" title="Info" aria-label="Toggle info">&#9432;</button>
+  <button id="more" title="More actions" aria-label="More actions">&#8943;</button>
+</div>
+
+<div id="moreMenu" class="menu glass" style="top:58px;bottom:auto;">
+  <h4>File</h4>
+  <button data-act="reveal">Show in folder</button>
+  <button data-act="copyPath">Copy path</button>
+  <button data-act="download">Save a copy</button>
+  <button data-act="delete">Delete</button>
+</div>
+
+<div id="bot" class="glass">
+  <div id="seek" title="Seek" role="slider" aria-label="Seek" tabindex="-1">
+    <div id="track"><div id="buf"></div><div id="fill"></div><div id="knob"></div></div>
+  </div>
   <div id="row">
-    <button id="prev" title="Previous file (Shift+P)">&#9198;</button>
-    <button id="play" title="Play / Pause (Space or K)">&#9654;</button>
-    <button id="next" title="Next file (Shift+N)">&#9197;</button>
-    <button id="mute" title="Mute (M)">&#128266;</button>
-    <input id="vol" type="range" min="0" max="100" value="100" title="Volume (Up / Down)" />
+    <button id="play" title="Play / Pause (Space or K)" aria-label="Play or pause">&#9654;</button>
+    <button id="mute" title="Mute (M)" aria-label="Mute">&#128266;</button>
+    <input id="vol" type="range" min="0" max="100" value="100" title="Volume (Up / Down)" aria-label="Volume" />
     <span id="time">0:00 / 0:00</span>
-    <button id="speed" class="sp" title="Playback speed (Shift+. / Shift+,)">1x</button>
-    <button id="subs" title="Subtitles (C)">CC</button>
-    <button id="full" title="Fullscreen (F)">&#9974;</button>
+    <span class="spacer"></span>
+    <button id="speed" title="Playback speed (Shift+. / Shift+,)">1x</button>
+    <button id="subs" title="Subtitles (C)" aria-label="Subtitles">CC</button>
+    <button id="gear" title="Settings" aria-label="Playback settings">&#9881;</button>
+    <button id="full" title="Fullscreen (F)" aria-label="Fullscreen">&#9974;</button>
   </div>
 </div>
+
+<div id="gearMenu" class="menu glass"></div>
+
 <script>
   var api = window.api
   function $(id) { return document.getElementById(id) }
-  var bar = $('bar'), fill = $('fill'), knob = $('knob'), timeEl = $('time')
+  // NB: not `top` - window.top is a read-only global, so `var top` silently
+  // keeps referring to the frame, and its .classList is undefined.
+  var topBar = $('top'), bot = $('bot'), fill = $('fill'), knob = $('knob'), timeEl = $('time')
   var duration = 0, cur = 0, paused = true, muted = false, volume = 100, speed = 1
-  var subCount = null, hideT = 0, dragging = false
+  var subTracks = [], subActive = false, hideT = 0, dragging = false, menuOpen = false
+  var lastT = null
 
   function fmt(s) {
     if (!isFinite(s) || s < 0) s = 0
-    var m = Math.floor(s / 60), r = Math.floor(s % 60)
-    return m + ':' + (r < 10 ? '0' : '') + r
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = Math.floor(s % 60)
+    var mm = (h > 0 && m < 10 ? '0' : '') + m
+    return (h > 0 ? h + ':' : '') + mm + ':' + (r < 10 ? '0' : '') + r
   }
+
   function render() {
     var pct = duration > 0 ? Math.min(100, (cur / duration) * 100) : 0
     fill.style.width = pct + '%'
     knob.style.left = pct + '%'
+    $('seek').setAttribute('aria-valuenow', Math.round(pct))
     timeEl.textContent = fmt(cur) + ' / ' + fmt(duration)
     $('play').innerHTML = paused ? '&#9654;' : '&#10074;&#10074;'
+    $('play').title = (paused ? 'Play' : 'Pause') + ' (Space or K)'
     $('mute').innerHTML = (muted || volume === 0) ? '&#128263;' : '&#128266;'
     $('speed').textContent = speed + 'x'
-    $('subs').disabled = (subCount === 0)
-    $('subs').title = subCount === 0 ? 'No subtitle tracks in this file' : 'Subtitles (C)'
+    var noSubs = subTracks.length === 0
+    $('subs').disabled = noSubs
+    $('subs').className = (!noSubs && subActive) ? 'on' : ''
+    $('subs').title = noSubs ? 'No subtitle tracks in this file' : 'Subtitles (C)'
   }
+
   function toast(msg) {
     var t = $('toast')
     t.textContent = msg
     t.classList.add('on')
     clearTimeout(t._t)
-    t._t = setTimeout(function () { t.classList.remove('on') }, 900)
+    t._t = setTimeout(function () { t.classList.remove('on') }, 950)
   }
 
-  // Visible on open; fades only while actually playing, and never while
-  // paused, seeking, or with the pointer over the bar.
-  function show(temporary) {
-    bar.classList.add('on')
+  // Both bars share one visibility rule. `sticky` pins them (paused, hovering,
+  // dragging the timeline, a menu open) until that condition clears.
+  function show(sticky) {
+    topBar.classList.add('on'); bot.classList.add('on')
     if (api && api.setOverlayInteractive) api.setOverlayInteractive(true)
     clearTimeout(hideT)
-    if (temporary !== false && !paused && !dragging) {
-      hideT = setTimeout(function () {
-        bar.classList.remove('on')
-        if (api && api.setOverlayInteractive) api.setOverlayInteractive(false)
-      }, 3000)
-    }
+    if (sticky === false) return
+    if (paused || dragging || menuOpen) return
+    hideT = setTimeout(function () {
+      topBar.classList.remove('on'); bot.classList.remove('on')
+      closeMenus()
+      if (api && api.setOverlayInteractive) api.setOverlayInteractive(false)
+    }, 3000)
   }
+  window.__overlayShow = show
+  window.__overlayToast = toast
+
+  function closeMenus() {
+    $('moreMenu').classList.remove('on')
+    $('gearMenu').classList.remove('on')
+    menuOpen = false
+  }
+
   show()
   document.addEventListener('mousemove', function () { show() }, { passive: true })
-  bar.addEventListener('mouseenter', function () { show(false) })
-  bar.addEventListener('mouseleave', function () { show() })
+  ;[topBar, bot].forEach(function (el) {
+    el.addEventListener('mouseenter', function () { show(false) })
+    el.addEventListener('mouseleave', function () { show() })
+    el.addEventListener('focusin', function () { show(false) })
+    el.addEventListener('focusout', function () { show() })
+  })
 
+  // ---- state in ----
   if (api && api.onMpvPropertyChange) {
     api.onMpvPropertyChange(function (d) {
       var name = d.name, value = d.value
-      if (name === 'time-pos' && typeof value === 'number' && !dragging) cur = value
+      if (name === 'time-pos' && typeof value === 'number') {
+        // `pause` is edge-triggered: mpv emits it once when the property is
+        // observed, which happens before this listener exists, so a file
+        // played straight through never reports its state and `paused` would
+        // stay true forever - which silently disabled the idle fade. A
+        // position that moved forward means it is playing.
+        if (lastT !== null && value > lastT && paused) { paused = false; show() }
+        lastT = value
+        if (!dragging) cur = value
+      }
       else if (name === 'duration' && typeof value === 'number') duration = value
-      else if (name === 'pause' && typeof value === 'boolean') { paused = value; paused ? show(false) : show() }
+      else if (name === 'pause' && typeof value === 'boolean') { paused = value; show() }
       else if (name === 'volume' && typeof value === 'number') { volume = Math.round(value); $('vol').value = volume }
       else if (name === 'mute' && typeof value === 'boolean') muted = value
       else if (name === 'speed' && typeof value === 'number') speed = Math.round(value * 100) / 100
+      else if (name === 'sid') subActive = value !== false && value !== 'no' && value != null
       else if (name === 'track-list' && Array.isArray(value)) {
-        subCount = value.filter(function (t) { return t.type === 'sub' }).length
+        subTracks = value.filter(function (t) { return t.type === 'sub' })
+        buildGearMenu()
       } else return
       render()
     })
   }
 
+  // Filename and favourite state come from the main renderer.
+  if (api && api.onOverlayMeta) {
+    api.onOverlayMeta(function (m) {
+      if (m && typeof m.name === 'string') $('name').textContent = m.name
+      if (m && typeof m.isFav === 'boolean') {
+        $('fav').innerHTML = m.isFav ? '&#9829;' : '&#9825;'
+        $('fav').className = m.isFav ? 'on' : ''
+      }
+      if (m && m.toast) toast(m.toast)
+      if (m && m.show) show()
+      render()
+    })
+  }
+
+  // ---- commands out ----
   function cmd(c, a) { if (api && api.sendMpvCommand) api.sendMpvCommand(c, a || []) }
   function act(n) { if (api && api.overlayAction) api.overlayAction(n) }
 
@@ -127,39 +247,99 @@
     render()
     cmd('seek', [cur, 'absolute'])
   }
-  $('seek').addEventListener('mousedown', function (e) { dragging = true; seekTo(e); show(false) })
+  $('seek').addEventListener('mousedown', function (e) {
+    dragging = true; $('seek').classList.add('drag'); seekTo(e); show(false)
+  })
   document.addEventListener('mousemove', function (e) { if (dragging) seekTo(e) })
-  document.addEventListener('mouseup', function () { if (dragging) { dragging = false; show() } })
+  document.addEventListener('mouseup', function () {
+    if (!dragging) return
+    dragging = false; $('seek').classList.remove('drag'); show()
+  })
 
   $('play').onclick = function () { cmd('set_property', ['pause', !paused]); toast(paused ? 'Play' : 'Paused') }
   $('mute').onclick = function () { cmd('set_property', ['mute', !muted]); toast(muted ? 'Unmuted' : 'Muted') }
   $('vol').oninput = function (e) {
     var v = Number(e.target.value)
-    cmd('set_property', ['volume', v])
+    cmd('set_property', ['volume', v]); cmd('set_property', ['mute', false])
     toast('Volume ' + v + '%')
   }
+  var SPEEDS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2]
   $('speed').onclick = function () {
-    var steps = [0.5, 0.75, 1, 1.25, 1.5, 2]
-    var next = steps[(steps.indexOf(speed) + 1) % steps.length] || 1
-    cmd('set_property', ['speed', next])
-    toast(next + 'x')
+    var i = SPEEDS.indexOf(speed)
+    var next = SPEEDS[(i < 0 ? 3 : i + 1) % SPEEDS.length]
+    cmd('set_property', ['speed', next]); toast(next + 'x')
   }
   $('subs').onclick = function () {
-    if (subCount === 0) { toast('No subtitles in this file'); return }
-    cmd('cycle', ['sub'])
-    toast('Subtitles')
+    if (subTracks.length === 0) { toast('No subtitles in this file'); return }
+    cmd('cycle', ['sub']); toast('Subtitles')
   }
   $('prev').onclick = function () { act('prev') }
   $('next').onclick = function () { act('next') }
   $('full').onclick = function () { act('fullscreen') }
+  $('close').onclick = function () { act('close') }
+  $('fav').onclick = function () { act('fav') }
+  $('info').onclick = function () { act('info') }
 
-  // Keys that land here are forwarded to the main window, so each shortcut has
-  // exactly one handler no matter which window has focus.
+  $('more').onclick = function (e) {
+    e.stopPropagation()
+    var m = $('moreMenu')
+    var open = !m.classList.contains('on')
+    closeMenus(); if (open) { m.classList.add('on'); menuOpen = true }
+    show(open ? false : true)
+  }
+  $('moreMenu').addEventListener('click', function (e) {
+    var b = e.target.closest('button[data-act]')
+    if (!b) return
+    act(b.getAttribute('data-act')); closeMenus(); show()
+  })
+
+  function buildGearMenu() {
+    var m = $('gearMenu')
+    var html = '<h4>Speed</h4>'
+    SPEEDS.forEach(function (s) {
+      html += '<button data-speed="' + s + '">' + (s === speed ? '&#10003; ' : '') + s + 'x</button>'
+    })
+    html += '<h4>Subtitles</h4>'
+    if (subTracks.length === 0) html += '<div class="none">None in this file</div>'
+    else {
+      html += '<button data-sid="no">Off</button>'
+      subTracks.forEach(function (t) {
+        html += '<button data-sid="' + t.id + '">' + (t.lang || t.title || ('Track ' + t.id)) + '</button>'
+      })
+    }
+    m.innerHTML = html
+  }
+  buildGearMenu()
+  $('gear').onclick = function (e) {
+    e.stopPropagation()
+    var m = $('gearMenu')
+    var open = !m.classList.contains('on')
+    closeMenus(); buildGearMenu()
+    if (open) { m.classList.add('on'); menuOpen = true }
+    show(open ? false : true)
+  }
+  $('gearMenu').addEventListener('click', function (e) {
+    var b = e.target.closest('button')
+    if (!b) return
+    if (b.hasAttribute('data-speed')) {
+      var s = Number(b.getAttribute('data-speed'))
+      cmd('set_property', ['speed', s]); toast(s + 'x')
+    } else if (b.hasAttribute('data-sid')) {
+      var sid = b.getAttribute('data-sid')
+      cmd('set_property', ['sid', sid === 'no' ? 'no' : Number(sid)])
+      toast(sid === 'no' ? 'Subtitles off' : 'Subtitles on')
+    }
+    closeMenus(); show()
+  })
+  document.addEventListener('click', function () { if (menuOpen) { closeMenus(); show() } })
+
+  // Any key that lands here is relayed; the main window owns the key table.
   document.addEventListener('keydown', function (e) {
-    if (e.repeat && (e.key === ' ' || e.key === 'k' || e.key === 'm')) return
+    if (e.key === 'Escape' && menuOpen) { closeMenus(); show(); e.preventDefault(); return }
+    if (e.repeat && (e.key === ' ' || e.key === 'k' || e.key === 'K' || e.key === 'm' || e.key === 'M')) return
     act('key:' + e.key + (e.shiftKey ? ':shift' : '') + (e.ctrlKey ? ':ctrl' : ''))
     e.preventDefault()
   })
-  window.__overlayToast = toast
+
   render()
 </script>

@@ -70,6 +70,12 @@ function setWindowZOrder(childHwnd: string, parentHwnd: string) {
   })
 }
 
+/** Push a message to the control overlay, if it is alive. */
+export function sendToOverlay(channel: string, payload: unknown): void {
+  if (!mpvWindow || mpvWindow.isDestroyed()) return
+  mpvWindow.webContents.send(channel, payload)
+}
+
 export function setOverlayInteractive(interactive: boolean): void {
   if (!mpvWindow || mpvWindow.isDestroyed()) return
   mpvWindow.setIgnoreMouseEvents(!interactive, { forward: true })
@@ -311,6 +317,8 @@ function setupIpcListeners(socket: net.Socket, hostWindow: BrowserWindow) {
   sendCommand(socket, ['observe_property', 10, 'mouse-pos'])
   // Lets the overlay say "no subtitles" instead of offering a dead button.
   sendCommand(socket, ['observe_property', 11, 'track-list'])
+  // Which subtitle track is active, so the CC button can show its real state.
+  sendCommand(socket, ['observe_property', 12, 'sid'])
 
   let hasTriedHwdecFallback = false
   let buffer = ''

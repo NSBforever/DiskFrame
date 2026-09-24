@@ -127,6 +127,13 @@ const api = {
   playMpv: (filePath: string, relativeBounds: { left: number; top: number; width: number; height: number }) =>
     ipcRenderer.invoke('start-mpv', { filePath, relativeBounds }),
   // Used by the control overlay that runs inside the mpv window.
+  setOverlayMeta: (meta: { name?: string; isFav?: boolean; toast?: string; show?: boolean }) =>
+    ipcRenderer.send('overlay-meta', meta),
+  onOverlayMeta: (cb: (m: { name?: string; isFav?: boolean; toast?: string; show?: boolean }) => void) => {
+    const listener = (_e: unknown, m: { name?: string; isFav?: boolean; toast?: string; show?: boolean }): void => cb(m)
+    ipcRenderer.on('overlay-meta', listener)
+    return () => ipcRenderer.removeListener('overlay-meta', listener)
+  },
   overlayAction: (action: string) => ipcRenderer.send('overlay-action', action),
   setOverlayInteractive: (on: boolean) => ipcRenderer.send('overlay-interactive', on),
   onOverlayAction: (cb: (action: string) => void) => {
