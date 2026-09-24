@@ -174,8 +174,11 @@ export const MetadataPanel: React.FC<MetadataPanelProps> = ({
         zIndex: 1500,
         display: 'flex',
         flexDirection: 'column',
-        color: '#f2f2f0',
+        color: 'var(--app-fg, #f2f2f0)',
         overflowY: 'auto',
+        // Stops a scroll that reaches the end of this list from continuing
+        // into the gallery underneath.
+        overscrollBehavior: 'contain',
         fontFamily: 'system-ui, sans-serif'
       }}
     >
@@ -192,18 +195,22 @@ export const MetadataPanel: React.FC<MetadataPanelProps> = ({
         <div style={{ fontSize: '15px', fontWeight: 600, color: '#ffffff' }}>Info</div>
         <button
           onClick={onClose}
+          type="button"
+          aria-label="Close info panel"
+          title="Close info panel (I)"
           style={{
             background: 'transparent',
             border: 'none',
-            color: '#8a8a8f',
+            color: 'var(--app-fg-dim, #8a8a8f)',
             fontSize: '18px',
             cursor: 'pointer',
             padding: '4px',
+            borderRadius: '6px',
             display: 'flex',
             alignItems: 'center'
           }}
           onMouseEnter={(e) => (e.currentTarget.style.color = '#e11d2e')}
-          onMouseLeave={(e) => (e.currentTarget.style.color = '#8a8a8f')}
+          onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--app-fg-dim, #8a8a8f)')}
         >
           ✕
         </button>
@@ -228,26 +235,28 @@ export const MetadataPanel: React.FC<MetadataPanelProps> = ({
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             <div style={{ fontSize: '11px', color: '#e11d2e', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>File Details</div>
             <div style={{ fontSize: '14px', fontWeight: 500, color: '#fff', wordBreak: 'break-all' }}>{file.name}</div>
-            <div style={{ fontSize: '12px', color: '#8a8a8f', marginTop: '4px' }}>Path: {file.path}</div>
-            <div style={{ fontSize: '12px', color: '#8a8a8f' }}>Size: {meta?.fileSize}</div>
+            <div style={{ fontSize: '12px', color: 'var(--app-fg-dim, #8a8a8f)', marginTop: '4px', overflowWrap: 'anywhere', wordBreak: 'break-word' }}>
+              Path: {file.path}
+            </div>
+            <div style={{ fontSize: '12px', color: 'var(--app-fg-dim, #8a8a8f)' }}>Size: {meta?.fileSize}</div>
             {meta?.dimensions && (
-              <div style={{ fontSize: '12px', color: '#8a8a8f' }}>
+              <div style={{ fontSize: '12px', color: 'var(--app-fg-dim, #8a8a8f)' }}>
                 Dimensions: {meta.dimensions} {meta.resolution ? `(${meta.resolution})` : ''}
               </div>
             )}
-            {meta?.colorSpace && <div style={{ fontSize: '12px', color: '#8a8a8f' }}>Color Space: {meta.colorSpace}</div>}
+            {meta?.colorSpace && <div style={{ fontSize: '12px', color: 'var(--app-fg-dim, #8a8a8f)' }}>Color Space: {meta.colorSpace}</div>}
           </div>
 
           {/* EXIF */}
           {(meta?.camera || meta?.lens || meta?.iso || meta?.exposure || meta?.focalLength) && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <div style={{ fontSize: '11px', color: '#8a8a8f', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Camera Properties</div>
+              <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Camera Properties</div>
               {meta.camera && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                   <span style={{ fontSize: '16px' }}>📷</span>
                   <div style={{ fontSize: '13px' }}>
                     <div style={{ color: '#fff', fontWeight: 500 }}>{meta.camera}</div>
-                    <div style={{ fontSize: '11px', color: '#8a8a8f' }}>Camera</div>
+                    <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)' }}>Camera</div>
                   </div>
                 </div>
               )}
@@ -256,28 +265,28 @@ export const MetadataPanel: React.FC<MetadataPanelProps> = ({
                   <span style={{ fontSize: '16px' }}>🔍</span>
                   <div style={{ fontSize: '13px' }}>
                     <div style={{ color: '#fff', fontWeight: 500 }}>{meta.lens}</div>
-                    <div style={{ fontSize: '11px', color: '#8a8a8f' }}>Lens</div>
+                    <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)' }}>Lens</div>
                   </div>
                 </div>
               )}
               {(meta.exposure || meta.iso || meta.focalLength) && (
-                <div style={{ display: 'flex', gap: '16px', background: '#161619', padding: '10px 12px', borderRadius: '8px', marginTop: '6px' }}>
+                <div style={{ display: 'flex', gap: '16px', background: 'var(--app-surface-2, var(--app-surface-2, #161619))', padding: '10px 12px', borderRadius: '8px', marginTop: '6px' }}>
                   {meta.exposure && (
                     <div style={{ flex: 1, textAlign: 'center' }}>
                       <div style={{ fontSize: '12px', color: '#fff', fontWeight: 600 }}>{meta.exposure}</div>
-                      <div style={{ fontSize: '10px', color: '#8a8a8f' }}>Shutter</div>
+                      <div style={{ fontSize: '10px', color: 'var(--app-fg-dim, #8a8a8f)' }}>Shutter</div>
                     </div>
                   )}
                   {meta.focalLength && (
                     <div style={{ flex: 1, textAlign: 'center' }}>
                       <div style={{ fontSize: '12px', color: '#fff', fontWeight: 600 }}>{meta.focalLength}</div>
-                      <div style={{ fontSize: '10px', color: '#8a8a8f' }}>Focal</div>
+                      <div style={{ fontSize: '10px', color: 'var(--app-fg-dim, #8a8a8f)' }}>Focal</div>
                     </div>
                   )}
                   {meta.iso && (
                     <div style={{ flex: 1, textAlign: 'center' }}>
                       <div style={{ fontSize: '12px', color: '#fff', fontWeight: 600 }}>ISO {meta.iso}</div>
-                      <div style={{ fontSize: '10px', color: '#8a8a8f' }}>ISO</div>
+                      <div style={{ fontSize: '10px', color: 'var(--app-fg-dim, #8a8a8f)' }}>ISO</div>
                     </div>
                   )}
                 </div>
@@ -288,8 +297,8 @@ export const MetadataPanel: React.FC<MetadataPanelProps> = ({
           {/* Date Taken */}
           {meta?.dateTaken && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <div style={{ fontSize: '11px', color: '#8a8a8f', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Date Taken</div>
-              <div style={{ fontSize: '13px', color: '#f2f2f0', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Date Taken</div>
+              <div style={{ fontSize: '13px', color: 'var(--app-fg, #f2f2f0)', display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <span>📅</span> {meta.dateTaken}
               </div>
             </div>
@@ -298,7 +307,7 @@ export const MetadataPanel: React.FC<MetadataPanelProps> = ({
           {/* GPS Location */}
           {meta?.location && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <div style={{ fontSize: '11px', color: '#8a8a8f', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Location</div>
+              <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Location</div>
               <div style={{ fontSize: '12px', color: '#e11d2e', display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <span>📍</span>
                 <a
@@ -312,7 +321,7 @@ export const MetadataPanel: React.FC<MetadataPanelProps> = ({
                   {meta.location.lat.toFixed(5)}, {meta.location.lng.toFixed(5)}
                 </a>
               </div>
-              <div style={{ fontSize: '10px', color: '#8a8a8f', marginTop: '2px' }}>Opens external map view</div>
+              <div style={{ fontSize: '10px', color: 'var(--app-fg-dim, #8a8a8f)', marginTop: '2px' }}>Opens external map view</div>
             </div>
           )}
         </div>

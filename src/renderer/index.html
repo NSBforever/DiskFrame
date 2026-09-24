@@ -9,6 +9,25 @@
     />
   </head>
   <body>
+    <!-- Applied before the app bundle parses, so the first painted frame is
+         already the right theme. Reading this asynchronously over IPC would
+         paint dark first and then repaint - the theme flash. localStorage is
+         synchronous and survives restarts, so it is both the store and the
+         pre-paint source. -->
+    <script>
+      (function () {
+        try {
+          var pref = localStorage.getItem('diskframe-theme') || 'system'
+          var dark =
+            pref === 'dark' ||
+            (pref === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+          document.documentElement.dataset.theme = dark ? 'dark' : 'light'
+          document.documentElement.dataset.themePref = pref
+        } catch (e) {
+          document.documentElement.dataset.theme = 'dark'
+        }
+      })()
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

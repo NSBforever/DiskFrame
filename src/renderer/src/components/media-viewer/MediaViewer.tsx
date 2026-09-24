@@ -427,7 +427,7 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
             background: 'rgba(10, 10, 12, 0.85)',
             backdropFilter: 'blur(16px)',
             border: '1px solid rgba(225, 29, 46, 0.4)',
-            color: '#f2f2f0',
+            color: 'var(--app-fg, #f2f2f0)',
             fontSize: '12px',
             fontWeight: 600,
             cursor: 'pointer',
@@ -442,7 +442,7 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
           onMouseLeave={(e) => {
             e.currentTarget.style.background = 'rgba(10, 10, 12, 0.85)'
             e.currentTarget.style.borderColor = 'rgba(225, 29, 46, 0.4)'
-            e.currentTarget.style.color = '#f2f2f0'
+            e.currentTarget.style.color = 'var(--app-fg, #f2f2f0)'
           }}
         >
           <ArrowLeft size={16} color="#e11d2e" />
@@ -497,7 +497,7 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
             justifyContent: 'center',
             cursor: 'pointer',
             fontSize: '24px',
-            color: '#f2f2f0',
+            color: 'var(--app-fg, #f2f2f0)',
             zIndex: 100,
             backdropFilter: 'blur(12px)',
             transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.2s, background-color 0.2s'
@@ -542,7 +542,7 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
             justifyContent: 'center',
             cursor: 'pointer',
             fontSize: '24px',
-            color: '#f2f2f0',
+            color: 'var(--app-fg, #f2f2f0)',
             zIndex: 100,
             backdropFilter: 'blur(12px)',
             transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.2s, background-color 0.2s'
@@ -618,7 +618,7 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
             alignItems: 'center',
             gap: '24px',
             fontSize: '11px',
-            color: '#8a8a8f',
+            color: 'var(--app-fg-dim, #8a8a8f)',
             zIndex: 10,
             pointerEvents: 'none'
           }}
@@ -652,7 +652,7 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
             flexDirection: 'column',
             gap: '4px',
             fontSize: '11px',
-            color: '#8a8a8f',
+            color: 'var(--app-fg-dim, #8a8a8f)',
             zIndex: 100,
             maxWidth: '300px',
             pointerEvents: 'none',
@@ -710,7 +710,7 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
             <div style={{ fontSize: '14px', fontWeight: 700, color: '#ffffff', textTransform: 'uppercase', letterSpacing: '1px' }}>
               Move this file to Trash?
             </div>
-            <div style={{ fontSize: '12px', color: '#8a8a8f', lineHeight: 1.5 }}>
+            <div style={{ fontSize: '12px', color: 'var(--app-fg-dim, #8a8a8f)', lineHeight: 1.5 }}>
               The file "{file.name}" will be moved to DiskFrame Trash. It will be permanently deleted after 30 days.
             </div>
             <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '8px' }}>

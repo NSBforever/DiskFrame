@@ -1,4 +1,4 @@
-import React, { useCallback, useLayoutEffect, useRef, useState } from 'react'
+import React, { useCallback, useRef } from 'react'
 import { useReducedMotionPref } from '../hooks/useReducedMotionPref'
 import './MagneticDock.css'
 
@@ -11,75 +11,71 @@ export interface DockItemData {
   badge?: number
 }
 
-const ICON_SIZE = 44
-const MAX_SCALE = 1.4
-const MAGNETIC_DISTANCE = 110
-
+/**
+ * One glass capsule of equal-sized, labelled buttons.
+ *
+ * Replaces a macOS-style magnifier that scaled icons up to 1.4x on hover: that
+ * moved neighbouring icons, grew click targets under the pointer, and pushed
+ * labels and badges over each other - and it drove the scale of every item
+ * through React state on every pointer tick, re-rendering the dock ~60 times a
+ * second. The pointer highlight is now a CSS custom property written straight
+ * to the DOM node, so following the cursor costs no React render at all, and
+ * nothing ever changes size or position.
+ */
 function MagneticDock({ items }: { items: DockItemData[] }): React.JSX.Element {
   const reducedMotion = useReducedMotionPref()
-  const itemRefs = useRef<(HTMLButtonElement | null)[]>([])
-  // Cached horizontal centers, in page coordinates - measured once on mount/
-  // resize, never inside the mousemove handler (that's the layout-thrash bug
-  // to avoid: no getBoundingClientRect() per pointer tick).
-  const centers = useRef<number[]>([])
-  const [scales, setScales] = useState<number[]>(() => items.map(() => 1))
+  const dockRef = useRef<HTMLDivElement>(null)
   const raf = useRef(0)
 
-  const measure = useCallback(() => {
-    centers.current = itemRefs.current.map(el => {
-      if (!el) return Infinity
-      const rect = el.getBoundingClientRect()
-      return rect.left + rect.width / 2
-    })
-  }, [])
+  const handleMouseMove = useCallback(
+    (e: React.MouseEvent): void => {
+      if (reducedMotion || raf.current) return
+      const { clientX, clientY } = e
+      raf.current = requestAnimationFrame(() => {
+        raf.current = 0
+        const el = dockRef.current
+        if (!el) return
+        const r = el.getBoundingClientRect()
+        el.style.setProperty('--dock-mx', `${clientX - r.left}px`)
+        el.style.setProperty('--dock-my', `${clientY - r.top}px`)
+        el.style.setProperty('--dock-glow', '1')
+      })
+    },
+    [reducedMotion]
+  )
 
-  useLayoutEffect(() => {
-    measure()
-    window.addEventListener('resize', measure)
-    return () => window.removeEventListener('resize', measure)
-  }, [measure, items.length])
-
-  const handleMouseMove = (e: React.MouseEvent): void => {
-    if (reducedMotion || raf.current) return
-    const clientX = e.clientX
-    raf.current = requestAnimationFrame(() => {
-      raf.current = 0
-      setScales(
-        centers.current.map(c => {
-          const d = Math.abs(clientX - c)
-          return d >= MAGNETIC_DISTANCE ? 1 : 1 + (MAX_SCALE - 1) * (1 - d / MAGNETIC_DISTANCE)
-        })
-      )
-    })
-  }
-  const handleMouseLeave = (): void => {
+  const handleMouseLeave = useCallback((): void => {
     if (raf.current) cancelAnimationFrame(raf.current)
     raf.current = 0
-    setScales(items.map(() => 1))
-  }
+    dockRef.current?.style.setProperty('--dock-glow', '0')
+  }, [])
 
   return (
-    <div className="magnetic-dock" onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave}>
-      {items.map((item, i) => (
+    <div
+      ref={dockRef}
+      className="app-dock"
+      role="tablist"
+      aria-label="Library sections"
+      onMouseMove={handleMouseMove}
+      onMouseLeave={handleMouseLeave}
+    >
+      <span className="app-dock-sheen" aria-hidden="true" />
+      {items.map((item) => (
         <button
           key={item.id}
-          ref={el => { itemRefs.current[i] = el }}
           type="button"
-          className={'dock-item' + (item.isActive ? ' is-active' : '')}
+          role="tab"
+          className={'app-dock-item' + (item.isActive ? ' is-active' : '')}
           title={item.label}
           aria-label={item.label}
-          aria-current={item.isActive ? 'page' : undefined}
+          aria-selected={!!item.isActive}
           onClick={item.onClick}
-          style={{
-            width: ICON_SIZE,
-            height: ICON_SIZE,
-            transform: reducedMotion ? undefined : `scale(${scales[i] ?? 1}) translateY(${((scales[i] ?? 1) - 1) * -8}px)`
-          }}
         >
-          <span className="dock-item-glow" aria-hidden="true" />
-          <span className="dock-item-icon">{item.icon}</span>
-          {!!item.badge && <span className="dock-item-badge">{item.badge > 99 ? '99+' : item.badge}</span>}
-          <span className="dock-item-tooltip">{item.label}</span>
+          <span className="app-dock-icon">{item.icon}</span>
+          <span className="app-dock-label">{item.label}</span>
+          {!!item.badge && (
+            <span className="app-dock-badge">{item.badge > 99 ? '99+' : item.badge}</span>
+          )}
         </button>
       ))}
     </div>

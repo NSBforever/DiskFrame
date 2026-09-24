@@ -656,6 +656,11 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
       }
 
       switch (e.key) {
+        // Seeking lives on J / L (and K for play-pause), the documented
+        // player keys. Left/Right stay with file navigation: binding them to
+        // seek here meant arrow keys did different things on a photo and on a
+        // video, and the capture phase silently stole them from the viewer's
+        // own prev/next.
         case ' ':
         case 'k':
         case 'K':
@@ -664,7 +669,8 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
           e.stopImmediatePropagation()
           togglePlay()
           break
-        case 'ArrowLeft': {
+        case 'j':
+        case 'J': {
           e.preventDefault()
           e.stopPropagation()
           e.stopImmediatePropagation()
@@ -687,7 +693,8 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
           }
           break
         }
-        case 'ArrowRight': {
+        case 'l':
+        case 'L': {
           e.preventDefault()
           e.stopPropagation()
           e.stopImmediatePropagation()
@@ -832,7 +839,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
           {imgError ? (
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
               <div style={{ fontSize: '64px' }}>⚠️</div>
-              <div style={{ fontSize: '14px', color: '#8a8a8f' }}>Failed to load image</div>
+              <div style={{ fontSize: '14px', color: 'var(--app-fg-dim, #8a8a8f)' }}>Failed to load image</div>
             </div>
           ) : (
             <>
@@ -884,7 +891,32 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
             cursor: hideCursor ? 'none' : 'default'
           }}
         >
-          {(!videoError && (videoMode === 'mpv' || videoUrl)) ? (
+          {/* Three states, not two. videoMode and videoUrl are both null from
+              the moment a file is opened until the probe resolves, so an
+              error-or-player choice made the ERROR CARD the default rendering
+              of the loading state: every video flashed "Media file could not
+              be loaded or is missing from disk" a few hundred ms before it
+              played perfectly well. The error is shown only once something has
+              actually failed. */}
+          {videoError ? (
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '16px',
+                padding: '40px',
+                background: 'var(--app-surface, var(--app-surface, #111114))',
+                borderRadius: '4px',
+                border: '1px solid rgba(255, 255, 255, 0.04)'
+              }}
+            >
+              <div style={{ fontSize: '64px' }}>&#127916;</div>
+              <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--app-fg, #f2f2f0)' }}>{file.name}</div>
+              <div style={{ fontSize: '12px', color: 'var(--app-fg-dim, #8a8a8f)' }}>Media file could not be loaded or is missing from disk</div>
+            </div>
+          ) : (videoMode === 'mpv' || videoUrl) ? (
             <>
               {videoMode === 'mpv' ? (
                 <div style={{ width: '100%', height: '100%', background: 'transparent' }} />
@@ -1086,7 +1118,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
                         style={{
                           background: 'transparent',
                           border: 'none',
-                          color: list.indexOf(file) <= 0 ? '#4a4a4f' : '#f2f2f0',
+                          color: list.indexOf(file) <= 0 ? '#4a4a4f' : 'var(--app-fg, #f2f2f0)',
                           cursor: list.indexOf(file) <= 0 ? 'default' : 'pointer',
                           display: 'flex',
                           alignItems: 'center',
@@ -1096,7 +1128,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
                           if (list.indexOf(file) > 0) e.currentTarget.style.color = '#e11d2e'
                         }}
                         onMouseLeave={(e) => {
-                          if (list.indexOf(file) > 0) e.currentTarget.style.color = '#f2f2f0'
+                          if (list.indexOf(file) > 0) e.currentTarget.style.color = 'var(--app-fg, #f2f2f0)'
                         }}
                       >
                         <SkipBack size={18} />
@@ -1109,14 +1141,14 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
                       style={{
                         background: 'transparent',
                         border: 'none',
-                        color: '#f2f2f0',
+                        color: 'var(--app-fg, #f2f2f0)',
                         cursor: 'pointer',
                         display: 'flex',
                         alignItems: 'center',
                         padding: 0
                       }}
                       onMouseEnter={(e) => (e.currentTarget.style.color = '#e11d2e')}
-                      onMouseLeave={(e) => (e.currentTarget.style.color = '#f2f2f0')}
+                      onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--app-fg, #f2f2f0)')}
                     >
                       {isPlaying ? <Pause size={18} /> : <Play size={18} />}
                     </button>
@@ -1129,7 +1161,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
                         style={{
                           background: 'transparent',
                           border: 'none',
-                          color: list.indexOf(file) >= list.length - 1 ? '#4a4a4f' : '#f2f2f0',
+                          color: list.indexOf(file) >= list.length - 1 ? '#4a4a4f' : 'var(--app-fg, #f2f2f0)',
                           cursor: list.indexOf(file) >= list.length - 1 ? 'default' : 'pointer',
                           display: 'flex',
                           alignItems: 'center',
@@ -1139,7 +1171,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
                           if (list.indexOf(file) < list.length - 1) e.currentTarget.style.color = '#e11d2e'
                         }}
                         onMouseLeave={(e) => {
-                          if (list.indexOf(file) < list.length - 1) e.currentTarget.style.color = '#f2f2f0'
+                          if (list.indexOf(file) < list.length - 1) e.currentTarget.style.color = 'var(--app-fg, #f2f2f0)'
                         }}
                       >
                         <SkipForward size={18} />
@@ -1149,12 +1181,12 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
                     <div
                       style={{
                         fontSize: '11px',
-                        color: '#f2f2f0',
+                        color: 'var(--app-fg, #f2f2f0)',
                         fontWeight: 500,
                         letterSpacing: '0.5px'
                       }}
                     >
-                      {formatTime(currentTime)} <span style={{ color: '#8a8a8f' }}>/</span> {formatTime(duration)}
+                      {formatTime(currentTime)} <span style={{ color: 'var(--app-fg-dim, #8a8a8f)' }}>/</span> {formatTime(duration)}
                     </div>
                   </div>
 
@@ -1174,14 +1206,14 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
                         style={{
                           background: 'transparent',
                           border: 'none',
-                          color: '#f2f2f0',
+                          color: 'var(--app-fg, #f2f2f0)',
                           cursor: 'pointer',
                           display: 'flex',
                           alignItems: 'center',
                           padding: 0
                         }}
                         onMouseEnter={(e) => (e.currentTarget.style.color = '#e11d2e')}
-                        onMouseLeave={(e) => (e.currentTarget.style.color = '#f2f2f0')}
+                        onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--app-fg, #f2f2f0)')}
                       >
                         {isMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
                       </button>
@@ -1222,7 +1254,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
                         style={{
                           background: 'transparent',
                           border: 'none',
-                          color: '#f2f2f0',
+                          color: 'var(--app-fg, #f2f2f0)',
                           fontSize: '11px',
                           fontWeight: 600,
                           cursor: 'pointer',
@@ -1231,7 +1263,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
                           textTransform: 'uppercase'
                         }}
                         onMouseEnter={(e) => (e.currentTarget.style.color = '#e11d2e')}
-                        onMouseLeave={(e) => (e.currentTarget.style.color = '#f2f2f0')}
+                        onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--app-fg, #f2f2f0)')}
                       >
                         {playbackSpeed === 1.0 ? 'Normal' : `${playbackSpeed}x`}
                       </button>
@@ -1264,7 +1296,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
                                 padding: '6px 12px',
                                 cursor: 'pointer',
                                 fontSize: '11px',
-                                color: playbackSpeed === speed ? '#e11d2e' : '#f2f2f0',
+                                color: playbackSpeed === speed ? '#e11d2e' : 'var(--app-fg, #f2f2f0)',
                                 background: playbackSpeed === speed ? 'rgba(225,29,46,0.1)' : 'transparent',
                                 fontWeight: playbackSpeed === speed ? 'bold' : 'normal',
                                 textAlign: 'center'
@@ -1289,14 +1321,14 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
                       style={{
                         background: 'transparent',
                         border: 'none',
-                        color: '#f2f2f0',
+                        color: 'var(--app-fg, #f2f2f0)',
                         cursor: 'pointer',
                         display: 'flex',
                         alignItems: 'center',
                         padding: 0
                       }}
                       onMouseEnter={(e) => (e.currentTarget.style.color = '#e11d2e')}
-                      onMouseLeave={(e) => (e.currentTarget.style.color = '#f2f2f0')}
+                      onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--app-fg, #f2f2f0)')}
                     >
                       {isFullscreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
                     </button>
@@ -1305,22 +1337,40 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
               </div>
             </>
           ) : (
+            /* Starting: the file's own thumbnail as a poster so the frame is
+               not a black hole, plus a spinner. No claim about success or
+               failure is made here. */
             <div
               style={{
+                position: 'relative',
+                width: '100%',
+                height: '100%',
                 display: 'flex',
-                flexDirection: 'column',
                 alignItems: 'center',
                 justifyContent: 'center',
-                gap: '16px',
-                padding: '40px',
-                background: '#111114',
-                borderRadius: '4px',
-                border: '1px solid rgba(255, 255, 255, 0.04)'
+                background: '#000'
               }}
             >
-              <div style={{ fontSize: '64px' }}>🎬</div>
-              <div style={{ fontSize: '15px', fontWeight: 600, color: '#f2f2f0' }}>{file.name}</div>
-              <div style={{ fontSize: '12px', color: '#8a8a8f' }}>Media file could not be loaded or is missing from disk</div>
+              {thumbSrc && (
+                <img
+                  src={thumbSrc}
+                  alt=""
+                  style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', opacity: 0.5, filter: 'blur(6px)' }}
+                />
+              )}
+              <div
+                aria-label="Loading video"
+                role="status"
+                style={{
+                  position: 'absolute',
+                  width: '40px',
+                  height: '40px',
+                  border: '3px solid rgba(255,255,255,0.12)',
+                  borderTop: '3px solid #e11d2e',
+                  borderRadius: '50%',
+                  animation: 'tileSpin 0.8s linear infinite'
+                }}
+              />
             </div>
           )}
         </div>
@@ -1336,7 +1386,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
       {!isPhoto && !isVideo && !isPdf && (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px', padding: '40px' }}>
           <div style={{ fontSize: '72px' }}>📄</div>
-          <div style={{ fontSize: '14px', color: '#8a8a8f' }}>{file.name}</div>
+          <div style={{ fontSize: '14px', color: 'var(--app-fg-dim, #8a8a8f)' }}>{file.name}</div>
         </div>
       )}
     </div>

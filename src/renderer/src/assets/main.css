@@ -437,3 +437,89 @@ body.viewer-open .gallery-chrome {
   -webkit-backdrop-filter: none;
   background: rgba(18, 18, 22, 0.94);
 }
+
+/* ── Theme tokens ─────────────────────────────────────────────────────────
+   data-theme is set by an inline script in index.html before this stylesheet
+   is even parsed, so the first painted frame is already correct.
+
+   NOTE: these tokens currently drive the shared surfaces - page background,
+   glass panels, the dock, scrollbars, focus rings. Most component colours in
+   this app are still hard-coded hex values in inline styles (~398 of them),
+   so Light is a partial theme until those are converted to tokens. */
+:root,
+:root[data-theme='dark'] {
+  --app-bg: #0a0a0c;
+  --app-fg: #f2f2f0;
+  --app-fg-dim: #8a8a8f;
+  --app-panel: rgba(18, 18, 22, 0.42);
+  --app-hairline: rgba(255, 255, 255, 0.14);
+  --app-accent: #e11d2e;
+  --dock-bg: rgba(18, 18, 24, 0.55);
+  --dock-border: rgba(255, 255, 255, 0.14);
+  --dock-fg: #c9c9d2;
+  --dock-fg-strong: #f2f2f0;
+  --dock-item-hover: rgba(255, 255, 255, 0.08);
+  --dock-item-press: rgba(255, 255, 255, 0.14);
+  --dock-item-active: rgba(225, 29, 46, 0.18);
+  --pg-unavailable-fg: #b4654a;
+  --pg-unavailable-bg: rgba(180, 101, 74, 0.1);
+  --pg-offline-fg: #6f7d92;
+  --pg-offline-bg: rgba(111, 125, 146, 0.12);
+}
+
+:root[data-theme='light'] {
+  --app-bg: #f4f4f6;
+  --app-fg: #16161a;
+  --app-fg-dim: #5c5c66;
+  --app-panel: rgba(250, 250, 252, 0.55);
+  --app-hairline: rgba(0, 0, 0, 0.12);
+  --app-accent: #c2162a;
+  --dock-bg: rgba(250, 250, 252, 0.6);
+  --dock-border: rgba(0, 0, 0, 0.1);
+  --dock-fg: #45454f;
+  --dock-fg-strong: #16161a;
+  --dock-item-hover: rgba(0, 0, 0, 0.06);
+  --dock-item-press: rgba(0, 0, 0, 0.1);
+  --dock-item-active: rgba(194, 22, 42, 0.14);
+  --pg-unavailable-fg: #8c4227;
+  --pg-unavailable-bg: rgba(140, 66, 39, 0.1);
+  --pg-offline-fg: #4a5768;
+  --pg-offline-bg: rgba(74, 87, 104, 0.12);
+}
+
+/* Glass adapts to the theme instead of being locked to charcoal. */
+:root[data-theme='light'] .glass-panel {
+  background: var(--app-panel);
+  border-color: var(--app-hairline);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+  color: var(--app-fg);
+}
+:root[data-theme='light'] .glass-panel::before {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.9), transparent);
+}
+:root[data-theme='light'] .glass-panel button:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+/* The media stage stays dark in both themes: a light backdrop would shift how
+   a photograph reads and wash out video. */
+:root[data-theme='light'] body {
+  background-color: var(--app-bg);
+  color: var(--app-fg);
+}
+
+/* Surface tokens used by the component inline styles. Dark keeps the exact
+   original values, so Dark is unchanged; only Light diverges. */
+:root,
+:root[data-theme='dark'] {
+  --pg-tile-bg: #141417;
+  --app-surface: #111114;
+  --app-surface-2: #161619;
+  --app-fg-muted: #52525b;
+}
+:root[data-theme='light'] {
+  --pg-tile-bg: #e4e4ea;
+  --app-surface: #ffffff;
+  --app-surface-2: #eeeef2;
+  --app-fg-muted: #6f6f7a;
+}

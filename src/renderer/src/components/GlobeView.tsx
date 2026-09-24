@@ -155,14 +155,14 @@ export default function GlobeView({ files, onOpen }: GlobeViewProps): React.JSX.
           alignItems: 'center',
           justifyContent: 'center',
           gap: '12px',
-          background: '#0a0a0c',
+          background: 'var(--app-bg, #0a0a0c)',
           border: '1px solid rgba(225, 29, 46, 0.2)',
           borderRadius: '4px'
         }}
       >
         <AlertTriangle size={32} style={{ color: '#e11d2e' }} />
-        <div style={{ fontSize: '13px', fontWeight: 700, color: '#f2f2f0', textTransform: 'uppercase', letterSpacing: '1px' }}>Globe Failed to Load</div>
-        <div style={{ fontSize: '11px', color: '#8a8a8f', maxWidth: '80%', textAlign: 'center', lineHeight: '1.4' }}>
+        <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--app-fg, #f2f2f0)', textTransform: 'uppercase', letterSpacing: '1px' }}>Globe Failed to Load</div>
+        <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', maxWidth: '80%', textAlign: 'center', lineHeight: '1.4' }}>
           {errorMsg || 'Could not instantiate WebGL canvas context. Ensure hardware acceleration is enabled.'}
         </div>
       </div>
@@ -176,7 +176,7 @@ export default function GlobeView({ files, onOpen }: GlobeViewProps): React.JSX.
         width: '100%',
         height: '100%',
         position: 'relative',
-        background: '#0a0a0c',
+        background: 'var(--app-bg, #0a0a0c)',
         overflow: 'hidden',
         borderRadius: '4px'
       }}
@@ -185,7 +185,7 @@ export default function GlobeView({ files, onOpen }: GlobeViewProps): React.JSX.
         <div style={{ display: 'flex', alignItems: 'center', fontSize: '11px', color: '#e11d2e', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1.5px' }}>
           <GlobeIcon size={12} style={{ marginRight: '4px' }} /> 3D Places Globe
         </div>
-        <div style={{ fontSize: '9px', color: '#8a8a8f', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+        <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
           {geoFiles.length} Mapped Coordinates · Drag to rotate, scroll to zoom
         </div>
       </div>
@@ -200,14 +200,14 @@ export default function GlobeView({ files, onOpen }: GlobeViewProps): React.JSX.
             alignItems: 'center',
             justifyContent: 'center',
             gap: '12px',
-            background: '#0a0a0c',
+            background: 'var(--app-bg, #0a0a0c)',
             border: '1px solid rgba(255,255,255,0.05)',
             borderRadius: '4px'
           }}
         >
-          <GlobeIcon size={48} style={{ color: '#52525b' }} />
-          <div style={{ fontSize: '13px', color: '#8a8a8f', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px' }}>No Mapped Locations</div>
-          <div style={{ fontSize: '11px', color: '#52525b' }}>Photos containing GPS EXIF coordinates will show on the globe.</div>
+          <GlobeIcon size={48} style={{ color: 'var(--app-fg-muted, #52525b)' }} />
+          <div style={{ fontSize: '13px', color: 'var(--app-fg-dim, #8a8a8f)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px' }}>No Mapped Locations</div>
+          <div style={{ fontSize: '11px', color: 'var(--app-fg-muted, #52525b)' }}>Photos containing GPS EXIF coordinates will show on the globe.</div>
         </div>
       ) : (
         <Globe
@@ -215,7 +215,7 @@ export default function GlobeView({ files, onOpen }: GlobeViewProps): React.JSX.
           width={dimensions.width}
           height={dimensions.height}
           globeImageUrl={textureUrl}
-          backgroundColor="#0a0a0c"
+          backgroundColor="var(--app-bg, #0a0a0c)"
           atmosphereColor="#e11d2e"
           htmlElementsData={clusters}
           htmlLat={(d: any) => d.lat}
@@ -238,12 +238,12 @@ export default function GlobeView({ files, onOpen }: GlobeViewProps): React.JSX.
               el.innerHTML = `
                 <div style="width: 32px; height: 32px; border-radius: 4px; overflow: hidden; border: 1.5px solid #e11d2e; box-shadow: 0 0 10px rgba(225, 29, 46, 0.4); position: relative; transform: translate(-50%, -50%); transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);">
                   <img src="${src}" style="width: 100%; height: 100%; object-fit: cover;" />
-                  ${count > 1 ? `<div style="position: absolute; bottom: 0; right: 0; background: #e11d2e; color: #f2f2f0; font-size: 8px; font-weight: 700; padding: 1px 3px; line-height: 1; border-top-left-radius: 2px;">${count}</div>` : ''}
+                  ${count > 1 ? `<div style="position: absolute; bottom: 0; right: 0; background: #e11d2e; color: var(--app-fg, #f2f2f0); font-size: 8px; font-weight: 700; padding: 1px 3px; line-height: 1; border-top-left-radius: 2px;">${count}</div>` : ''}
                 </div>
               `
             } else {
               el.innerHTML = `
-                <div style="width: 20px; height: 20px; border-radius: 4px; background: #e11d2e; border: 1.5px solid #f2f2f0; box-shadow: 0 0 10px rgba(225, 29, 46, 0.4); display: flex; align-items: center; justify-content: center; color: #f2f2f0; font-size: 9px; font-weight: 700; transform: translate(-50%, -50%); transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);">
+                <div style="width: 20px; height: 20px; border-radius: 4px; background: #e11d2e; border: 1.5px solid var(--app-fg, #f2f2f0); box-shadow: 0 0 10px rgba(225, 29, 46, 0.4); display: flex; align-items: center; justify-content: center; color: var(--app-fg, #f2f2f0); font-size: 9px; font-weight: 700; transform: translate(-50%, -50%); transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);">
                   ${count > 1 ? count : '📍'}
                 </div>
               `
@@ -299,10 +299,10 @@ export default function GlobeView({ files, onOpen }: GlobeViewProps): React.JSX.
             }}
           >
             <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px', fontWeight: 700, color: '#f2f2f0', textTransform: 'uppercase', letterSpacing: '1px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '11px', fontWeight: 700, color: 'var(--app-fg, #f2f2f0)', textTransform: 'uppercase', letterSpacing: '1px' }}>
                 <MapPin size={12} color="#e11d2e" /> Cluster Files
               </div>
-              <div style={{ fontSize: '9px', color: '#8a8a8f', marginTop: '2px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+              <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', marginTop: '2px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                 {selectedCluster.files.length} item{selectedCluster.files.length > 1 ? 's' : ''} · {selectedCluster.lat.toFixed(3)}, {selectedCluster.lng.toFixed(3)}
               </div>
             </div>
@@ -311,7 +311,7 @@ export default function GlobeView({ files, onOpen }: GlobeViewProps): React.JSX.
               style={{
                 background: 'transparent',
                 border: 'none',
-                color: '#8a8a8f',
+                color: 'var(--app-fg-dim, #8a8a8f)',
                 fontSize: '18px',
                 cursor: 'pointer',
                 transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), color 0.15s',
@@ -324,7 +324,7 @@ export default function GlobeView({ files, onOpen }: GlobeViewProps): React.JSX.
                 e.currentTarget.style.color = '#e11d2e'
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.color = '#8a8a8f'
+                e.currentTarget.style.color = 'var(--app-fg-dim, #8a8a8f)'
               }}
               onMouseDown={(e) => {
                 e.currentTarget.style.transform = 'scale(0.85)'
@@ -400,11 +400,11 @@ export default function GlobeView({ files, onOpen }: GlobeViewProps): React.JSX.
                           display: 'flex',
                           alignItems: 'center',
                           justifyContent: 'center',
-                          color: '#f2f2f0',
+                          color: 'var(--app-fg, #f2f2f0)',
                           padding: 0
                         }}
                       >
-                        <Play size={10} fill="#f2f2f0" stroke="none" />
+                        <Play size={10} fill="var(--app-fg, #f2f2f0)" stroke="none" />
                       </div>
                     </div>
                   )}

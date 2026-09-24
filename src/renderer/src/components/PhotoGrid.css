@@ -34,7 +34,7 @@
 .pg-header-title {
   font-size: 19px;
   font-weight: 700;
-  color: #fff;
+  color: var(--app-fg, #fff);
   letter-spacing: -0.4px;
   line-height: 1;
   white-space: nowrap;
@@ -81,7 +81,7 @@
   position: absolute;
   inset: 0;
   overflow: hidden;
-  background: #141417;
+  background: var(--pg-tile-bg, #141417);
   transition: transform 0.12s ease-out;
 }
 .pg-tile:active .pg-tile-inner {

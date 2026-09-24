@@ -27,19 +27,31 @@ export function useShortcuts({
     if (!isOpen) return
 
     const handleKeyDown = (e: KeyboardEvent) => {
-      const activeEl = document.activeElement
-      if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' || activeEl.getAttribute('contenteditable') === 'true')) {
+      // Anything the user is typing into, or a slider they are nudging, keeps
+      // its own arrow behaviour. role="slider" covers the custom seek bar,
+      // which is a div rather than an <input type="range">.
+      const activeEl = document.activeElement as HTMLElement | null
+      if (
+        activeEl &&
+        (activeEl.tagName === 'INPUT' ||
+          activeEl.tagName === 'TEXTAREA' ||
+          activeEl.tagName === 'SELECT' ||
+          activeEl.getAttribute('contenteditable') === 'true' ||
+          activeEl.getAttribute('role') === 'slider')
+      ) {
         return
       }
 
       switch (e.key) {
+        // Left/Right always move between FILES, photo or video alike.
+        // Space is play/pause on a video (handled in the player), so it must
+        // not also mean "next file".
         case 'ArrowLeft':
         case 'Backspace':
           e.preventDefault()
           onPrev()
           break
         case 'ArrowRight':
-        case ' ':
           e.preventDefault()
           onNext()
           break

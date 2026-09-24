@@ -116,6 +116,7 @@ import SearchAgent from './components/SearchAgent'
 import DriveSelectionView from './components/DriveSelectionView'
 import PhotoGrid from './components/PhotoGrid'
 import MagneticDock from './components/MagneticDock'
+import AppearanceSetting from './components/AppearanceSetting'
 import DateScrubber from './components/DateScrubber'
 import { useLibrary, type LibraryGroup, type LibraryQuery } from './hooks/useLibrary'
 
@@ -329,7 +330,7 @@ export const FileTile = React.memo(({
         aspectRatio: '1',
         cursor: 'pointer',
         overflow: 'hidden',
-        background: '#111114',
+        background: 'var(--app-surface, var(--app-surface, #111114))',
         position: 'relative',
         border: `1px solid ${isSelected ? '#e11d2e' : hovered ? 'rgba(225,29,46,0.4)' : 'rgba(255,255,255,0.04)'}`,
         outline: isSelected ? '1px solid #e11d2e' : 'none',
@@ -344,7 +345,7 @@ export const FileTile = React.memo(({
       {(isPhoto || isVideo) && (isPhoto ? !error : (hasThumb && !error)) ? (
         <>
           {!loaded && (
-            <div style={{ position: 'absolute', inset: 0, background: '#111114', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ position: 'absolute', inset: 0, background: 'var(--app-surface, var(--app-surface, #111114))', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <div style={{ width: '16px', height: '16px', border: '1.5px solid #202025', borderTop: '1.5px solid #e11d2e', borderRadius: '0%', animation: 'tileSpin 0.8s linear infinite' }} />
             </div>
           )}
@@ -363,19 +364,19 @@ export const FileTile = React.memo(({
       ) : isVideo ? (
         <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px', background: '#1b1212' }}>
           <Film size={iconSize} color="#e11d2e" />
-          <div style={{ fontSize: subFontSize, color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{file.ext}</div>
-          {tileSize >= 80 && <div style={{ fontSize: '8px', color: '#8a8a8f', maxWidth: '90%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{file.name}</div>}
+          <div style={{ fontSize: subFontSize, color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{file.ext}</div>
+          {tileSize >= 80 && <div style={{ fontSize: '8px', color: 'var(--app-fg-dim, #8a8a8f)', maxWidth: '90%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{file.name}</div>}
         </div>
       ) : isDoc ? (
         <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px', background: '#121a1b' }}>
           <FileText size={iconSize} color="#d0d0e0" />
-          <div style={{ fontSize: subFontSize, color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{file.ext}</div>
-          {tileSize >= 80 && <div style={{ fontSize: '8px', color: '#8a8a8f', maxWidth: '90%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{file.name}</div>}
+          <div style={{ fontSize: subFontSize, color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{file.ext}</div>
+          {tileSize >= 80 && <div style={{ fontSize: '8px', color: 'var(--app-fg-dim, #8a8a8f)', maxWidth: '90%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{file.name}</div>}
         </div>
       ) : (
         <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '4px' }}>
-          <ImageIcon size={iconSize} color="#8a8a8f" />
-          <div style={{ fontSize: subFontSize, color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{file.ext}</div>
+          <ImageIcon size={iconSize} color="var(--app-fg-dim, #8a8a8f)" />
+          <div style={{ fontSize: subFontSize, color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{file.ext}</div>
         </div>
       )}
 
@@ -387,14 +388,14 @@ export const FileTile = React.memo(({
           opacity: hovered ? 1 : 0,
           transition: 'opacity 0.25s', pointerEvents: 'none'
         }}>
-          <div style={{ fontSize: '9px', fontWeight: 600, color: '#f2f2f0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', width: '100%', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{file.name}</div>
+          <div style={{ fontSize: '9px', fontWeight: 600, color: 'var(--app-fg, #f2f2f0)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', width: '100%', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{file.name}</div>
         </div>
       )}
 
       {/* Select item checkbox overlay */}
       {!isTrashView && (
         <div onClick={(e) => { e.stopPropagation(); onSelect(file, e) }}
-          style={{ position: 'absolute', top: '4px', left: '4px', width: '16px', height: '16px', borderRadius: '2px', background: isSelected ? '#e11d2e' : 'rgba(0,0,0,0.6)', border: `1.5px solid ${isSelected ? '#e11d2e' : 'rgba(255,255,255,0.3)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '9px', cursor: 'pointer', color: '#f2f2f0', opacity: hovered || isSelected ? 1 : 0, transition: 'opacity 0.15s' }}
+          style={{ position: 'absolute', top: '4px', left: '4px', width: '16px', height: '16px', borderRadius: '2px', background: isSelected ? '#e11d2e' : 'rgba(0,0,0,0.6)', border: `1.5px solid ${isSelected ? '#e11d2e' : 'rgba(255,255,255,0.3)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '9px', cursor: 'pointer', color: 'var(--app-fg, #f2f2f0)', opacity: hovered || isSelected ? 1 : 0, transition: 'opacity 0.15s' }}
         >
           {isSelected && <Check size={10} strokeWidth={3} />}
         </div>
@@ -407,13 +408,13 @@ export const FileTile = React.memo(({
             style={{ position: 'absolute', top: '4px', right: '4px', width: '20px', height: '20px', borderRadius: '4px', background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', opacity: hovered ? 1 : 0, transition: 'opacity 0.15s' }}
             title="Restore File"
           >
-            <RotateCcw size={12} color="#f2f2f0" />
+            <RotateCcw size={12} color="var(--app-fg, #f2f2f0)" />
           </div>
         ) : (
           <div onClick={(e) => { e.stopPropagation(); onFav(file) }}
             style={{ position: 'absolute', top: '4px', right: '4px', width: '20px', height: '20px', borderRadius: '4px', background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', opacity: hovered || isFav ? 1 : 0, transition: 'opacity 0.15s' }}
           >
-            <Heart size={12} color={isFav ? '#e11d2e' : '#f2f2f0'} fill={isFav ? '#e11d2e' : 'none'} />
+            <Heart size={12} color={isFav ? '#e11d2e' : 'var(--app-fg, #f2f2f0)'} fill={isFav ? '#e11d2e' : 'none'} />
           </div>
         )
       )}
@@ -427,7 +428,7 @@ export const FileTile = React.memo(({
             bottom: '4px',
             right: '4px',
             background: '#e11d2e',
-            color: '#f2f2f0',
+            color: 'var(--app-fg, #f2f2f0)',
             borderRadius: '2px',
             fontSize: '8px',
             fontWeight: 700,
@@ -485,9 +486,9 @@ function MapView({ files, onOpen }: { files: ScannedFile[]; onOpen: (f: ScannedF
       const marker = L.marker([first.lat, first.lng], { icon })
       const thumbsHtml = clusterFiles.slice(0, 4).map(f => {
         const src = f.thumb ? `media:///${f.thumb.replace(/\\/g, '/')}` : ''
-        return src ? `<img src="${src}" style="width:56px;height:56px;object-fit:cover;border-radius:4px;" />` : `<div style="width:56px;height:56px;background:#222226;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:18px;">${videoExts.includes(f.ext) ? '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:#8a8a8f;"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="17" x2="7" y2="17"/><line x1="17" y1="17" x2="22" y2="17"/><line x1="17" y1="7" x2="22" y2="7"/></svg>' : '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:#8a8a8f;"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>'}</div>`
+        return src ? `<img src="${src}" style="width:56px;height:56px;object-fit:cover;border-radius:4px;" />` : `<div style="width:56px;height:56px;background:#222226;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:18px;">${videoExts.includes(f.ext) ? '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--app-fg-dim, #8a8a8f);"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="17" x2="7" y2="17"/><line x1="17" y1="17" x2="22" y2="17"/><line x1="17" y1="7" x2="22" y2="7"/></svg>' : '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--app-fg-dim, #8a8a8f);"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>'}</div>`
       }).join('')
-      marker.bindPopup(`<div style="font-size:12px;min-width:140px;font-family:system-ui,sans-serif;"><div style="font-weight:600;margin-bottom:6px;color:#f2f2f0;">${count} file${count > 1 ? 's' : ''}</div><div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px;">${thumbsHtml}</div><div style="font-size:10px;color:#8a8a8f;">${new Date(first.date).toLocaleDateString()}</div>${count > 4 ? `<div style="font-size:10px;color:#e11d2e;margin-top:2px;">+${count - 4} more</div>` : ''}</div>`, { maxWidth: 200 })
+      marker.bindPopup(`<div style="font-size:12px;min-width:140px;font-family:system-ui,sans-serif;"><div style="font-weight:600;margin-bottom:6px;color:var(--app-fg, #f2f2f0);">${count} file${count > 1 ? 's' : ''}</div><div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px;">${thumbsHtml}</div><div style="font-size:10px;color:var(--app-fg-dim, #8a8a8f);">${new Date(first.date).toLocaleDateString()}</div>${count > 4 ? `<div style="font-size:10px;color:#e11d2e;margin-top:2px;">+${count - 4} more</div>` : ''}</div>`, { maxWidth: 200 })
       
       marker.on('click', (e) => {
         if (count > 1) {
@@ -511,10 +512,10 @@ function MapView({ files, onOpen }: { files: ScannedFile[]; onOpen: (f: ScannedF
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       {geoFiles.length === 0 ? (
-        <div style={{ flex: 1, background: '#111114', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.04)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
-          <MapIcon size={48} style={{ color: '#52525b' }} />
-          <div style={{ fontSize: '13px', color: '#8a8a8f', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px' }}>No Location Information</div>
-          <div style={{ fontSize: '11px', color: '#52525b' }}>Photos with GPS EXIF metadata will be plotted here.</div>
+        <div style={{ flex: 1, background: 'var(--app-surface, var(--app-surface, #111114))', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.04)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
+          <MapIcon size={48} style={{ color: 'var(--app-fg-muted, #52525b)' }} />
+          <div style={{ fontSize: '13px', color: 'var(--app-fg-dim, #8a8a8f)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px' }}>No Location Information</div>
+          <div style={{ fontSize: '11px', color: 'var(--app-fg-muted, #52525b)' }}>Photos with GPS EXIF metadata will be plotted here.</div>
         </div>
       ) : (
         <div ref={mapRef} style={{ flex: 1, borderRadius: '4px', overflow: 'hidden', minHeight: '400px', border: '1px solid rgba(255,255,255,0.05)' }} />
@@ -795,7 +796,7 @@ const MainContentArea: React.FC<{
         const { monthKey, filesCount, allSel } = item
         return (
           <div style={{ position: 'relative', marginBottom: '10px' }}>
-            <div style={{ position: 'absolute', left: '-28.5px', top: '8px', width: '8px', height: '8px', borderRadius: '50%', background: '#e11d2e', border: '2px solid #0a0a0c' }} />
+            <div style={{ position: 'absolute', left: '-28.5px', top: '8px', width: '8px', height: '8px', borderRadius: '50%', background: '#e11d2e', border: '2px solid var(--app-bg, #0a0a0c)' }} />
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', height: '24px' }}>
               <div style={{ fontSize: '18px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.3px', lineHeight: 1 }}>
                 {monthKey}
@@ -815,7 +816,7 @@ const MainContentArea: React.FC<{
                     justifyContent: 'center',
                     fontSize: '9px',
                     cursor: 'pointer',
-                    color: '#f2f2f0',
+                    color: 'var(--app-fg, #f2f2f0)',
                     marginLeft: '4px'
                   }}
                 >
@@ -823,7 +824,7 @@ const MainContentArea: React.FC<{
                 </div>
               )}
             </div>
-            <div style={{ fontSize: '11px', color: '#8a8a8f', marginTop: '4px' }}>{filesCount} files</div>
+            <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', marginTop: '4px' }}>{filesCount} files</div>
           </div>
         )
       }
@@ -849,7 +850,7 @@ const MainContentArea: React.FC<{
               />
               </div>
             ))}
-            {hasMore && <div onClick={() => jumpToGroup(monthKey)} title="Show all in grid" style={{ width: '80px', height: '80px', borderRadius: '4px', background: '#161619', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', color: '#e11d2e', cursor: 'pointer', fontWeight: 600 }}>+{remaining} more</div>}
+            {hasMore && <div onClick={() => jumpToGroup(monthKey)} title="Show all in grid" style={{ width: '80px', height: '80px', borderRadius: '4px', background: 'var(--app-surface-2, var(--app-surface-2, #161619))', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', color: '#e11d2e', cursor: 'pointer', fontWeight: 600 }}>+{remaining} more</div>}
           </div>
         )
       }
@@ -884,7 +885,7 @@ const MainContentArea: React.FC<{
               }
               return (
                 <div key={year} onClick={() => handleYearClick(year)}
-                  style={{ background: '#111114', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.04)', overflow: 'hidden', cursor: 'pointer', transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.25s' }}
+                  style={{ background: 'var(--app-surface, var(--app-surface, #111114))', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.04)', overflow: 'hidden', cursor: 'pointer', transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.25s' }}
                   onMouseEnter={e => { const el = e.currentTarget as HTMLDivElement; el.style.borderColor = '#e11d2e' }}
                   onMouseLeave={e => { const el = e.currentTarget as HTMLDivElement; el.style.borderColor = 'rgba(255,255,255,0.04)' }}
                   onMouseDown={e => { e.currentTarget.style.transform = 'scale(0.97)' }}
@@ -895,15 +896,15 @@ const MainContentArea: React.FC<{
                       const f = previewFiles[i]
                       const src = f ? ('media:///' + (f.thumb || f.path).replace(/\\/g, '/')) : null
                       return (
-                        <div key={i} style={{ background: '#161619', overflow: 'hidden', borderRight: i % 2 === 0 ? '1px solid #0a0a0c' : undefined, borderBottom: i < 2 ? '1px solid #0a0a0c' : undefined, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <div key={i} style={{ background: 'var(--app-surface-2, var(--app-surface-2, #161619))', overflow: 'hidden', borderRight: i % 2 === 0 ? '1px solid var(--app-bg, #0a0a0c)' : undefined, borderBottom: i < 2 ? '1px solid var(--app-bg, #0a0a0c)' : undefined, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                           {src ? <YearThumb src={src} /> : <Camera size={20} style={{ opacity: 0.15 }} />}
                         </div>
                       )
                     })}
                   </div>
                   <div style={{ padding: '12px 14px 14px' }}>
-                    <div style={{ fontSize: '18px', fontWeight: 700, color: '#f2f2f0', letterSpacing: '-0.3px' }}>{year}</div>
-                    <div style={{ fontSize: '9px', color: '#8a8a8f', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{info?.count ?? 0} files</div>
+                    <div style={{ fontSize: '18px', fontWeight: 700, color: 'var(--app-fg, #f2f2f0)', letterSpacing: '-0.3px' }}>{year}</div>
+                    <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{info?.count ?? 0} files</div>
                   </div>
                 </div>
               )
@@ -957,10 +958,10 @@ const MainContentArea: React.FC<{
         return (
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
             <div>
-              <h2 style={{ fontSize: '22px', fontWeight: 700, color: '#f2f2f0', letterSpacing: '-0.5px', margin: 0 }}>
+              <h2 style={{ fontSize: '22px', fontWeight: 700, color: 'var(--app-fg, #f2f2f0)', letterSpacing: '-0.5px', margin: 0 }}>
                 Trash Collection
               </h2>
-              <div style={{ fontSize: '9px', color: '#8a8a8f', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+              <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                 Items in trash are soft-deleted and permanently purged after 30 days.
               </div>
             </div>
@@ -968,7 +969,7 @@ const MainContentArea: React.FC<{
               <button
                 onClick={() => setShowEmptyTrashConfirm(true)}
                 className="cred-button"
-                style={{ background: '#e11d2e', color: '#f2f2f0', border: 'none', fontWeight: 700 }}
+                style={{ background: '#e11d2e', color: 'var(--app-fg, #f2f2f0)', border: 'none', fontWeight: 700 }}
               >
                 Empty Trash ({trashedFiles.length})
               </button>
@@ -1058,10 +1059,10 @@ const MainContentArea: React.FC<{
             <div style={{ width: '220px', height: '2px', background: '#1c1c22', overflow: 'hidden' }}>
               <div style={{ height: '100%', width: '40%', background: 'linear-gradient(90deg, transparent, #e11d2e, transparent)', animation: 'shimmer 1.4s ease-in-out infinite' }} />
             </div>
-            <div style={{ fontSize: '12px', color: '#f2f2f0', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px' }}>
+            <div style={{ fontSize: '12px', color: 'var(--app-fg, #f2f2f0)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px' }}>
               Loading {selectedDrive}…
             </div>
-            <div style={{ fontSize: '10px', color: '#8a8a8f' }}>
+            <div style={{ fontSize: '10px', color: 'var(--app-fg-dim, #8a8a8f)' }}>
               {scanning ? `${scanCount.toLocaleString()} files mapped so far` : 'Reading the cached index'}
             </div>
           </>
@@ -1071,20 +1072,20 @@ const MainContentArea: React.FC<{
             <div style={{ fontSize: '13px', color: '#f5c542', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px' }}>
               Diagnostic mode — your library is not loaded
             </div>
-            <div style={{ fontSize: '11px', color: '#8a8a8f', maxWidth: '520px', lineHeight: 1.6 }}>
+            <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', maxWidth: '520px', lineHeight: 1.6 }}>
               This window is using an isolated diagnostic database, so {selectedDrive} has no records here.
-              Your real library is untouched. Close this window and open <strong style={{ color: '#f2f2f0' }}>DiskFrame</strong> (not
+              Your real library is untouched. Close this window and open <strong style={{ color: 'var(--app-fg, #f2f2f0)' }}>DiskFrame</strong> (not
               “DiskFrame — Diagnostics”) to browse it.
             </div>
-            <div style={{ fontSize: '9px', color: '#52525b', wordBreak: 'break-all', maxWidth: '520px' }}>{runtimeMode?.userDataPath}</div>
+            <div style={{ fontSize: '9px', color: 'var(--app-fg-muted, #52525b)', wordBreak: 'break-all', maxWidth: '520px' }}>{runtimeMode?.userDataPath}</div>
           </>
         ) : driveOpened?.needsInitialScan ? (
           <>
-            <FolderOpen size={40} style={{ color: '#52525b' }} />
-            <div style={{ fontSize: '13px', color: '#f2f2f0', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px' }}>
+            <FolderOpen size={40} style={{ color: 'var(--app-fg-muted, #52525b)' }} />
+            <div style={{ fontSize: '13px', color: 'var(--app-fg, #f2f2f0)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px' }}>
               {selectedDrive} has not been indexed yet
             </div>
-            <div style={{ fontSize: '11px', color: '#8a8a8f', maxWidth: '460px', lineHeight: 1.6 }}>
+            <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', maxWidth: '460px', lineHeight: 1.6 }}>
               Opening a drive only reads the existing index — it never scans on its own. Scanning a large
               drive reads every folder and can take a long time.
             </div>
@@ -1094,11 +1095,11 @@ const MainContentArea: React.FC<{
           </>
         ) : (
           <>
-            <FolderOpen size={40} style={{ color: '#52525b' }} />
-            <div style={{ fontSize: '13px', color: '#f2f2f0', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px' }}>
+            <FolderOpen size={40} style={{ color: 'var(--app-fg-muted, #52525b)' }} />
+            <div style={{ fontSize: '13px', color: 'var(--app-fg, #f2f2f0)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px' }}>
               Nothing matches in {selectedDrive}
             </div>
-            <div style={{ fontSize: '11px', color: '#8a8a8f', maxWidth: '460px', lineHeight: 1.6 }}>
+            <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', maxWidth: '460px', lineHeight: 1.6 }}>
               {driveOpened ? `${driveOpened.indexed.toLocaleString()} records are indexed for this drive, but none match the current filter or search.` : 'No records match the current filter or search.'}
             </div>
           </>
@@ -1178,16 +1179,18 @@ const MainContentArea: React.FC<{
       {!scanning && activeNav === 'settings' && (
         <div className="view-transition-enter" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
           <div>
-            <h2 style={{ fontSize: '22px', fontWeight: 700, color: '#f2f2f0', letterSpacing: '-0.5px', margin: 0 }}>
+            <h2 style={{ fontSize: '22px', fontWeight: 700, color: 'var(--app-fg, #f2f2f0)', letterSpacing: '-0.5px', margin: 0 }}>
               Settings
             </h2>
-            <div style={{ fontSize: '9px', color: '#8a8a8f', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+            <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
               Configure application parameters and interface layout
             </div>
           </div>
 
+          <AppearanceSetting />
+
           <div style={{
-            background: '#111114',
+            background: 'var(--app-surface, var(--app-surface, #111114))',
             borderRadius: '4px',
             border: '1px solid rgba(255, 255, 255, 0.04)',
             padding: '24px',
@@ -1204,7 +1207,7 @@ const MainContentArea: React.FC<{
               
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <label htmlFor="settings-tile-size-slider" style={{ fontSize: '12px', fontWeight: 600, color: '#f2f2f0' }}>Grid Tile Size</label>
+                  <label htmlFor="settings-tile-size-slider" style={{ fontSize: '12px', fontWeight: 600, color: 'var(--app-fg, #f2f2f0)' }}>Grid Tile Size</label>
                   <span style={{ fontSize: '11px', color: '#e11d2e', fontWeight: 700 }}>
                     {Math.round(tileSizePercent)}% ({tileSize}px)
                   </span>
@@ -1228,7 +1231,7 @@ const MainContentArea: React.FC<{
                     }}
                   />
                 </div>
-                <div style={{ fontSize: '10px', color: '#8a8a8f', marginTop: '4px' }}>
+                <div style={{ fontSize: '10px', color: 'var(--app-fg-dim, #8a8a8f)', marginTop: '4px' }}>
                   Adjusts the scale of grid item cards in the main lists.
                 </div>
               </div>
@@ -1240,7 +1243,7 @@ const MainContentArea: React.FC<{
                 Playback
               </h3>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <label htmlFor="settings-hover-previews" style={{ fontSize: '12px', fontWeight: 600, color: '#f2f2f0' }}>Video hover previews</label>
+                <label htmlFor="settings-hover-previews" style={{ fontSize: '12px', fontWeight: 600, color: 'var(--app-fg, #f2f2f0)' }}>Video hover previews</label>
                 <input
                   id="settings-hover-previews"
                   type="checkbox"
@@ -1249,14 +1252,14 @@ const MainContentArea: React.FC<{
                   style={{ accentColor: '#e11d2e', width: '16px', height: '16px', cursor: 'pointer' }}
                 />
               </div>
-              <div style={{ fontSize: '10px', color: '#8a8a8f', marginTop: '4px' }}>
+              <div style={{ fontSize: '10px', color: 'var(--app-fg-dim, #8a8a8f)', marginTop: '4px' }}>
                 Play a short muted preview when hovering a video tile.
               </div>
             </div>
 
             {/* Placeholder for future sections */}
             <div>
-              <h3 style={{ fontSize: '13px', fontWeight: 700, color: '#8a8a8f', letterSpacing: '0.5px', textTransform: 'uppercase', margin: '0 0 8px 0', opacity: 0.5 }}>
+              <h3 style={{ fontSize: '13px', fontWeight: 700, color: 'var(--app-fg-dim, #8a8a8f)', letterSpacing: '0.5px', textTransform: 'uppercase', margin: '0 0 8px 0', opacity: 0.5 }}>
                 Advanced settings (coming soon)
               </h3>
             </div>
@@ -1267,9 +1270,9 @@ const MainContentArea: React.FC<{
       {/* Coming soon components */}
       {!scanning && activeNav === 'archive' && (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '12px' }} className="view-transition-enter">
-          <FolderArchive size={48} style={{ color: '#52525b' }} />
-          <div style={{ fontSize: '13px', fontWeight: 700, color: '#f2f2f0', textTransform: 'uppercase', letterSpacing: '1px' }}>Archive</div>
-          <div style={{ fontSize: '11px', color: '#8a8a8f', padding: '5px 12px', borderRadius: '4px', background: '#111114', border: '1px solid rgba(255,255,255,0.04)' }}>Coming soon</div>
+          <FolderArchive size={48} style={{ color: 'var(--app-fg-muted, #52525b)' }} />
+          <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--app-fg, #f2f2f0)', textTransform: 'uppercase', letterSpacing: '1px' }}>Archive</div>
+          <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', padding: '5px 12px', borderRadius: '4px', background: 'var(--app-surface, var(--app-surface, #111114))', border: '1px solid rgba(255,255,255,0.04)' }}>Coming soon</div>
         </div>
       )}
 
@@ -1278,18 +1281,18 @@ const MainContentArea: React.FC<{
         <div className="view-transition-enter">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
             <div>
-              <h2 style={{ fontSize: '22px', fontWeight: 700, color: '#f2f2f0', letterSpacing: '-0.5px', margin: 0 }}>
+              <h2 style={{ fontSize: '22px', fontWeight: 700, color: 'var(--app-fg, #f2f2f0)', letterSpacing: '-0.5px', margin: 0 }}>
                 Trash Collection
               </h2>
-              <div style={{ fontSize: '9px', color: '#8a8a8f', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+              <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                 Items in trash are soft-deleted and permanently purged after 30 days.
               </div>
             </div>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '50vh', gap: '12px' }}>
-            <Trash2 size={48} style={{ color: '#52525b' }} />
-            <div style={{ fontSize: '13px', color: '#8a8a8f', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px' }}>Trash is empty.</div>
-            <div style={{ fontSize: '10px', color: '#52525b' }}>Soft-deleted photos and videos will appear here.</div>
+            <Trash2 size={48} style={{ color: 'var(--app-fg-muted, #52525b)' }} />
+            <div style={{ fontSize: '13px', color: 'var(--app-fg-dim, #8a8a8f)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px' }}>Trash is empty.</div>
+            <div style={{ fontSize: '10px', color: 'var(--app-fg-muted, #52525b)' }}>Soft-deleted photos and videos will appear here.</div>
           </div>
         </div>
       )}
@@ -1309,7 +1312,7 @@ const MainContentArea: React.FC<{
       {scanning && !hasFiles && activeNav !== 'archive' && activeNav !== 'trash' && (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '12px' }} className="view-transition-enter">
           <div style={{ fontSize: '13px', color: '#e11d2e', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px' }}>Indexing media on {selectedDrive}...</div>
-          <div style={{ fontSize: '10px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{scanCount} files mapped</div>
+          <div style={{ fontSize: '10px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{scanCount} files mapped</div>
           <div style={{ width: '200px', height: '2px', background: '#1c1c22', borderRadius: '0px', overflow: 'hidden' }}>
             <div style={{ height: '100%', width: '40%', background: 'linear-gradient(90deg, transparent, #e11d2e, transparent)', animation: 'shimmer 1.4s ease-in-out infinite' }} />
           </div>
@@ -1322,7 +1325,7 @@ const MainContentArea: React.FC<{
           <div style={{ fontSize: '22px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.5px', marginBottom: '8px' }}>
             Favourites <span style={{ color: '#e11d2e', fontSize: '14px', fontWeight: 500 }}>0 items</span>
           </div>
-          <div style={{ color: '#8a8a8f', fontSize: '13px', marginTop: '16px' }}>No favourites yet. Add items to your favorites.</div>
+          <div style={{ color: 'var(--app-fg-dim, #8a8a8f)', fontSize: '13px', marginTop: '16px' }}>No favourites yet. Add items to your favorites.</div>
         </div>
       )}
 
@@ -1330,10 +1333,10 @@ const MainContentArea: React.FC<{
       {!scanning && activeNav === 'places' && (
         <div style={{ height: 'calc(100vh - 120px)', display: 'flex', flexDirection: 'column', gap: '10px' }} className="view-transition-enter">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
-            <div style={{ fontSize: '10px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700 }}>
+            <div style={{ fontSize: '10px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700 }}>
               📍 {allFiles.filter(f => f.lat !== null && f.lng !== null).length} Mapped Coordinates
             </div>
-            <div style={{ display: 'flex', background: '#111113', borderRadius: '4px', padding: '2px', border: '1px solid rgba(255,255,255,0.04)' }}>
+            <div style={{ display: 'flex', background: 'var(--app-surface, var(--app-surface, #111113))', borderRadius: '4px', padding: '2px', border: '1px solid rgba(255,255,255,0.04)' }}>
               <button
                 onClick={() => setPlacesSubView('map')}
                 style={{
@@ -1344,7 +1347,7 @@ const MainContentArea: React.FC<{
                   fontWeight: 700,
                   cursor: 'pointer',
                   background: placesSubView === 'map' ? 'rgba(225,29,46,0.15)' : 'transparent',
-                  color: placesSubView === 'map' ? '#e11d2e' : '#8a8a8f',
+                  color: placesSubView === 'map' ? '#e11d2e' : 'var(--app-fg-dim, #8a8a8f)',
                   textTransform: 'uppercase',
                   letterSpacing: '0.5px',
                   transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1)'
@@ -1364,7 +1367,7 @@ const MainContentArea: React.FC<{
                   fontWeight: 700,
                   cursor: 'pointer',
                   background: placesSubView === 'globe' ? 'rgba(225,29,46,0.15)' : 'transparent',
-                  color: placesSubView === 'globe' ? '#e11d2e' : '#8a8a8f',
+                  color: placesSubView === 'globe' ? '#e11d2e' : 'var(--app-fg-dim, #8a8a8f)',
                   textTransform: 'uppercase',
                   letterSpacing: '0.5px',
                   transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1)'
@@ -2433,7 +2436,7 @@ export default function App(): React.JSX.Element {
   const [yearFilter, setYearFilter] = useState<string | null>(null)
 
   return (
-    <div style={{ display: 'flex', width: '100vw', height: '100vh', background: '#0a0a0c', color: '#f2f2f0', fontFamily: 'system-ui, sans-serif', fontSize: '13px', overflow: 'hidden', position: 'fixed', inset: 0 }}>
+    <div style={{ display: 'flex', width: '100vw', height: '100vh', background: 'var(--app-bg, #0a0a0c)', color: 'var(--app-fg, #f2f2f0)', fontFamily: 'system-ui, sans-serif', fontSize: '13px', overflow: 'hidden', position: 'fixed', inset: 0 }}>
       <style>{`
         /* Inline animations for AI Search FAB Breathing Pulse */
         @keyframes breathingPulse {
@@ -2456,7 +2459,7 @@ export default function App(): React.JSX.Element {
 
         /* Embedded core visual parameters */
         ::-webkit-scrollbar { width: 4px; height: 4px; }
-        ::-webkit-scrollbar-track { background: #0a0a0c; }
+        ::-webkit-scrollbar-track { background: var(--app-bg, #0a0a0c); }
         ::-webkit-scrollbar-thumb { background: #1c1c22; border-radius: 0px; }
         ::-webkit-scrollbar-thumb:hover { background: #e11d2e; }
       `}</style>
@@ -2466,12 +2469,12 @@ export default function App(): React.JSX.Element {
         <div style={{ width: '230px', minWidth: '230px', background: '#0c0c0f', borderRight: '1px solid rgba(255,255,255,0.04)', display: 'flex', flexDirection: 'column', height: '100vh', overflowY: 'auto' }}>
           <div style={{ padding: '20px 22px 14px', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
             <div style={{ fontSize: '12px', fontWeight: 700, color: '#ffffff', letterSpacing: '1px', textTransform: 'uppercase' }}>DiskFrame</div>
-            <div style={{ fontSize: '9px', color: '#8a8a8f', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Universal media indexing</div>
+            <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Universal media indexing</div>
           </div>
 
           {/* Collections */}
           <div style={{ padding: '4px 0' }}>
-            <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '1px', padding: '0 22px', marginBottom: '8px', fontWeight: 700 }}>Collections</div>
+            <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '1px', padding: '0 22px', marginBottom: '8px', fontWeight: 700 }}>Collections</div>
             {[
               { id: 'all', label: 'All files', icon: <FolderArchive size={14} /> },
               { id: 'photos', label: 'Photos', icon: <ImageIcon size={14} /> },
@@ -2484,13 +2487,13 @@ export default function App(): React.JSX.Element {
               { id: 'settings', label: 'Settings', icon: <Settings size={14} /> }
             ].map(item => (
               <div key={item.id} onClick={() => setActiveNav(item.id)} className={`snav ${activeNav === item.id ? 'active' : ''}`}>
-                <span style={{ display: 'flex', alignItems: 'center', marginRight: '12px', color: activeNav === item.id ? '#e11d2e' : '#8a8a8f' }}>{item.icon}</span>
+                <span style={{ display: 'flex', alignItems: 'center', marginRight: '12px', color: activeNav === item.id ? '#e11d2e' : 'var(--app-fg-dim, #8a8a8f)' }}>{item.icon}</span>
                 <span style={{ flex: 1, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{item.label}</span>
                 {item.id === 'favourites' && allFavFiles.length > 0 && (
-                  <span style={{ fontSize: '9px', color: '#f2f2f0', background: 'rgba(225, 29, 46, 0.25)', borderRadius: '2px', padding: '2px 5px', fontWeight: 700 }}>{allFavFiles.length}</span>
+                  <span style={{ fontSize: '9px', color: 'var(--app-fg, #f2f2f0)', background: 'rgba(225, 29, 46, 0.25)', borderRadius: '2px', padding: '2px 5px', fontWeight: 700 }}>{allFavFiles.length}</span>
                 )}
                 {item.id === 'trash' && trashCount > 0 && (
-                  <span style={{ fontSize: '9px', color: '#f2f2f0', background: '#e11d2e', borderRadius: '2px', padding: '2px 5px', fontWeight: 700 }}>{trashCount}</span>
+                  <span style={{ fontSize: '9px', color: 'var(--app-fg, #f2f2f0)', background: '#e11d2e', borderRadius: '2px', padding: '2px 5px', fontWeight: 700 }}>{trashCount}</span>
                 )}
               </div>
             ))}
@@ -2499,7 +2502,7 @@ export default function App(): React.JSX.Element {
       )}
 
       {/* Main Container */}
-      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden', minWidth: 0, background: '#0a0a0c' }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100vh', overflow: 'hidden', minWidth: 0, background: 'var(--app-bg, #0a0a0c)' }}>
         
         {/* Top bar header - only rendered after a drive is selected */}
         {selectedDrive && (
@@ -2509,7 +2512,7 @@ export default function App(): React.JSX.Element {
               <button
                 onClick={() => setSidebarCollapsed(v => !v)}
                 title={sidebarCollapsed ? 'Show side panel' : 'Hide side panel'}
-                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '26px', height: '26px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '4px', cursor: 'pointer', color: '#8a8a8f' }}
+                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '26px', height: '26px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '4px', cursor: 'pointer', color: 'var(--app-fg-dim, #8a8a8f)' }}
               >
                 {sidebarCollapsed ? <PanelLeft size={13} /> : <PanelLeftClose size={13} />}
               </button>
@@ -2530,7 +2533,7 @@ export default function App(): React.JSX.Element {
                     background: 'rgba(255, 255, 255, 0.03)',
                     border: '1px solid rgba(255, 255, 255, 0.06)',
                     fontSize: '10px',
-                    color: '#8a8a8f',
+                    color: 'var(--app-fg-dim, #8a8a8f)',
                     textTransform: 'uppercase',
                     letterSpacing: '1px',
                     fontWeight: 700,
@@ -2552,7 +2555,7 @@ export default function App(): React.JSX.Element {
                   </span>
                 </div>
               ) : (
-                <div style={{ fontSize: '10px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700 }}>
+                <div style={{ fontSize: '10px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700 }}>
                   Select a drive
                 </div>
               )}
@@ -2574,7 +2577,7 @@ export default function App(): React.JSX.Element {
                   onClick={handleIndexFolder}
                   disabled={indexingFolder}
                   className="cred-input"
-                  style={{ padding: '4px 10px', fontSize: '10px', height: '24px', cursor: indexingFolder ? 'default' : 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 700, background: '#111113', border: '1px solid rgba(225,29,46,0.35)', color: indexingFolder ? '#8a8a8f' : '#e11d2e' }}
+                  style={{ padding: '4px 10px', fontSize: '10px', height: '24px', cursor: indexingFolder ? 'default' : 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 700, background: 'var(--app-surface, var(--app-surface, #111113))', border: '1px solid rgba(225,29,46,0.35)', color: indexingFolder ? 'var(--app-fg-dim, #8a8a8f)' : '#e11d2e' }}
                   title="Index one folder into the library (bounded, no drive-wide scan)"
                 >
                   {indexingFolder ? 'Indexing...' : '+ Index folder'}
@@ -2584,7 +2587,7 @@ export default function App(): React.JSX.Element {
                 <button
                   onClick={() => void window.api.cancelIndexFolder()}
                   className="cred-input"
-                  style={{ padding: '4px 10px', fontSize: '10px', height: '24px', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 700, background: '#111113', border: '1px solid rgba(255,255,255,0.15)', color: '#8a8a8f' }}
+                  style={{ padding: '4px 10px', fontSize: '10px', height: '24px', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 700, background: 'var(--app-surface, var(--app-surface, #111113))', border: '1px solid rgba(255,255,255,0.15)', color: 'var(--app-fg-dim, #8a8a8f)' }}
                   title="Stop indexing and keep whatever has been found so far"
                 >
                   Cancel
@@ -2593,11 +2596,11 @@ export default function App(): React.JSX.Element {
             </div>
 
             {selected.size > 0 && activeNav !== 'trash' && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '10px', color: '#f2f2f0', background: 'rgba(225,29,46,0.08)', border: '1px solid rgba(225,29,46,0.35)', borderRadius: '2px', padding: '3px 10px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '10px', color: 'var(--app-fg, #f2f2f0)', background: 'rgba(225,29,46,0.08)', border: '1px solid rgba(225,29,46,0.35)', borderRadius: '2px', padding: '3px 10px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
                 <span>{selected.size} selected</span>
                 <button onClick={handleBatchFavorite} style={{ background: 'transparent', border: 'none', color: '#e11d2e', cursor: 'pointer', fontWeight: 700, textTransform: 'uppercase' }}>❤️ Fav</button>
                 <button onClick={handleBatchDelete} style={{ background: 'transparent', border: 'none', color: '#e11d2e', cursor: 'pointer', fontWeight: 700, textTransform: 'uppercase' }}>🗑️ Delete</button>
-                <span onClick={() => setSelected(new Set())} style={{ cursor: 'pointer', color: '#8a8a8f', marginLeft: '2px' }}>✕</span>
+                <span onClick={() => setSelected(new Set())} style={{ cursor: 'pointer', color: 'var(--app-fg-dim, #8a8a8f)', marginLeft: '2px' }}>✕</span>
               </div>
             )}
 
@@ -2607,7 +2610,7 @@ export default function App(): React.JSX.Element {
                 value={groupBy}
                 onChange={e => setGroupBy(e.target.value as any)}
                 className="cred-input"
-                style={{ padding: '2px 8px', fontSize: '10px', background: '#111113', border: '1px solid rgba(255,255,255,0.05)', height: '24px', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}
+                style={{ padding: '2px 8px', fontSize: '10px', background: 'var(--app-surface, var(--app-surface, #111113))', border: '1px solid rgba(255,255,255,0.05)', height: '24px', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}
               >
                 <option value="day">Group by Day</option>
                 <option value="month">Group by Month</option>
@@ -2617,7 +2620,7 @@ export default function App(): React.JSX.Element {
               </select>
             )}
 
-            {(activeView === 'Grid' || activeView === 'Timeline' || activeView === 'Years') && activeNav !== 'trash' && <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>{activeView === 'Grid' ? 'Pinch to zoom' : 'Pinch to switch views'}</div>}
+            {(activeView === 'Grid' || activeView === 'Timeline' || activeView === 'Years') && activeNav !== 'trash' && <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>{activeView === 'Grid' ? 'Pinch to zoom' : 'Pinch to switch views'}</div>}
 
             {/* View order */}
             {selectedDrive && (activeView === 'Grid' || activeView === 'Timeline') && activeNav !== 'trash' && (
@@ -2626,7 +2629,7 @@ export default function App(): React.JSX.Element {
                 onChange={e => handleViewOrderChange(e.target.value as 'default' | 'reverse')}
                 className="cred-input"
                 title="View order"
-                style={{ padding: '2px 8px', fontSize: '10px', background: '#111113', border: '1px solid rgba(255,255,255,0.05)', height: '24px', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}
+                style={{ padding: '2px 8px', fontSize: '10px', background: 'var(--app-surface, var(--app-surface, #111113))', border: '1px solid rgba(255,255,255,0.05)', height: '24px', cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}
               >
                 <option value="default">Top to bottom</option>
                 <option value="reverse">Bottom to top</option>
@@ -2636,9 +2639,9 @@ export default function App(): React.JSX.Element {
             {/* Views selector tab */}
             {activeNav !== 'trash' && (
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                <div style={{ display: 'flex', gap: '2px', background: '#111113', borderRadius: '4px', padding: '2px', border: '1px solid rgba(255,255,255,0.04)' }}>
+                <div style={{ display: 'flex', gap: '2px', background: 'var(--app-surface, var(--app-surface, #111113))', borderRadius: '4px', padding: '2px', border: '1px solid rgba(255,255,255,0.04)' }}>
                   {['Grid', 'Timeline', 'Years', 'Map'].map(v => (
-                    <div key={v} onClick={() => setActiveView(v)} style={{ padding: '3px 10px', borderRadius: '3px', cursor: 'pointer', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', background: activeView === v ? '#1e1e24' : 'transparent', color: activeView === v ? '#ffffff' : '#8a8a8f', transition: 'all 0.15s ease' }}>{v}</div>
+                    <div key={v} onClick={() => setActiveView(v)} style={{ padding: '3px 10px', borderRadius: '3px', cursor: 'pointer', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', background: activeView === v ? '#1e1e24' : 'transparent', color: activeView === v ? '#ffffff' : 'var(--app-fg-dim, #8a8a8f)', transition: 'all 0.15s ease' }}>{v}</div>
                   ))}
                 </div>
               </div>
@@ -2702,15 +2705,15 @@ export default function App(): React.JSX.Element {
         {/* Status bar - only rendered after a drive is selected */}
         {selectedDrive && (
           <div className="df-glass" style={{ padding: '7px 18px', display: 'flex', alignItems: 'center', gap: '14px', flexShrink: 0, flexWrap: 'wrap', rowGap: '6px', borderRadius: 0, borderLeft: 'none', borderRight: 'none', borderBottom: 'none' }}>
-            <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#f2f2f0', fontWeight: 700 }}>{drives.length}</span> drives</div>
+            <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: 'var(--app-fg, #f2f2f0)', fontWeight: 700 }}>{drives.length}</span> drives</div>
             {/* While the library is still arriving these counts are unknown, not
                 zero. Printing 0 made a loading gallery indistinguishable from an
                 empty one - and from a diagnostic database with nothing in it. */}
-            <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#f2f2f0', fontWeight: 700 }}>{libraryState === 'ready' ? totalFiles.toLocaleString() : '—'}</span> files</div>
-            <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#f2f2f0', fontWeight: 700 }}>{libraryState === 'ready' ? sortedGroupedData.keys.length : '—'}</span> groupings</div>
-            <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#e11d2e', fontWeight: 700 }}><Heart size={8} fill="#e11d2e" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} /> {libraryState === 'ready' ? favCount : '—'}</span> favourites</div>
+            <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: 'var(--app-fg, #f2f2f0)', fontWeight: 700 }}>{libraryState === 'ready' ? totalFiles.toLocaleString() : '—'}</span> files</div>
+            <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: 'var(--app-fg, #f2f2f0)', fontWeight: 700 }}>{libraryState === 'ready' ? sortedGroupedData.keys.length : '—'}</span> groupings</div>
+            <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#e11d2e', fontWeight: 700 }}><Heart size={8} fill="#e11d2e" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} /> {libraryState === 'ready' ? favCount : '—'}</span> favourites</div>
             {selected.size > 0 && <div style={{ fontSize: '9px', color: '#e11d2e', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px' }}><Check size={8} style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} /> {selected.size} selected</div>}
-            {activeView === 'Grid' && <div style={{ fontSize: '9px', color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}>tile: <span style={{ color: '#f2f2f0', fontWeight: 700 }}>{tileSize}px</span></div>}
+            {activeView === 'Grid' && <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>tile: <span style={{ color: 'var(--app-fg, #f2f2f0)', fontWeight: 700 }}>{tileSize}px</span></div>}
             {/* Driven by a queried flag, not a one-shot event, so a diagnostic
                 session is always labelled even if the sample never loaded or
                 the user navigated to a real drive. */}
@@ -2722,7 +2725,7 @@ export default function App(): React.JSX.Element {
                   fontWeight: 700,
                   textTransform: 'uppercase',
                   letterSpacing: '0.5px',
-                  color: '#0a0a0c',
+                  color: 'var(--app-bg, #0a0a0c)',
                   background: '#f5c542',
                   borderRadius: '2px',
                   padding: '3px 10px',
@@ -2737,7 +2740,7 @@ export default function App(): React.JSX.Element {
                 title={`Using a non-default data directory: ${runtimeMode.userDataPath}`}
                 style={{
                   fontSize: '9px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px',
-                  color: '#0a0a0c', background: '#f5c542', borderRadius: '2px', padding: '3px 10px', whiteSpace: 'nowrap'
+                  color: 'var(--app-bg, #0a0a0c)', background: '#f5c542', borderRadius: '2px', padding: '3px 10px', whiteSpace: 'nowrap'
                 }}
               >
                 Alternate data directory
@@ -2752,7 +2755,7 @@ export default function App(): React.JSX.Element {
                 style={{
                   display: 'flex', alignItems: 'center', gap: '6px',
                   fontSize: '9px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px',
-                  color: '#8a8a8f', background: 'rgba(255,255,255,0.03)',
+                  color: 'var(--app-fg-dim, #8a8a8f)', background: 'rgba(255,255,255,0.03)',
                   border: '1px solid rgba(255,255,255,0.08)', borderRadius: '2px',
                   padding: '3px 10px', cursor: 'pointer', whiteSpace: 'nowrap'
                 }}
@@ -2768,7 +2771,7 @@ export default function App(): React.JSX.Element {
                   fontWeight: 700,
                   textTransform: 'uppercase',
                   letterSpacing: '0.5px',
-                  color: '#0a0a0c',
+                  color: 'var(--app-bg, #0a0a0c)',
                   background: '#f5c542',
                   borderRadius: '2px',
                   padding: '3px 10px',
@@ -2790,7 +2793,7 @@ export default function App(): React.JSX.Element {
                   fontWeight: 700,
                   textTransform: 'uppercase',
                   letterSpacing: '0.5px',
-                  color: '#f2f2f0',
+                  color: 'var(--app-fg, #f2f2f0)',
                   background: 'rgba(225,29,46,0.12)',
                   border: '1px solid rgba(225,29,46,0.45)',
                   borderRadius: '2px',
@@ -2831,7 +2834,7 @@ export default function App(): React.JSX.Element {
             width: '56px',
             height: '56px',
             borderRadius: '50%',
-            background: '#0a0a0c',
+            background: 'var(--app-bg, #0a0a0c)',
             border: '1px solid #e11d2e',
             boxShadow: '0 0 16px rgba(225, 29, 46, 0.4)',
             display: 'flex',
@@ -2861,7 +2864,7 @@ export default function App(): React.JSX.Element {
         >
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <circle cx="12" cy="12" r="10" stroke="#e11d2e" strokeWidth="1.5" strokeDasharray="3 3" />
-            <circle cx="12" cy="12" r="5" stroke="#f2f2f0" strokeWidth="1.5" />
+            <circle cx="12" cy="12" r="5" stroke="var(--app-fg, #f2f2f0)" strokeWidth="1.5" />
             <path d="M12 2C12 7M12 17C12 22M2 12C7 12M17 12C22 12" stroke="#e11d2e" strokeWidth="1" strokeLinecap="round" />
           </svg>
         </button>
@@ -2909,7 +2912,7 @@ export default function App(): React.JSX.Element {
                 style={{
                   background: 'transparent',
                   border: 'none',
-                  color: '#8a8a8f',
+                  color: 'var(--app-fg-dim, #8a8a8f)',
                   fontSize: '18px',
                   cursor: 'pointer',
                   transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), color 0.15s',
@@ -2919,7 +2922,7 @@ export default function App(): React.JSX.Element {
                   padding: 0
                 }}
                 onMouseEnter={e => e.currentTarget.style.color = '#e11d2e'}
-                onMouseLeave={e => e.currentTarget.style.color = '#8a8a8f'}
+                onMouseLeave={e => e.currentTarget.style.color = 'var(--app-fg-dim, #8a8a8f)'}
                 onMouseDown={e => e.currentTarget.style.transform = 'scale(0.85)'}
                 onMouseUp={e => e.currentTarget.style.transform = 'scale(1)'}
               >
@@ -2997,7 +3000,7 @@ export default function App(): React.JSX.Element {
                 onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'}
                 onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
               >
-                <ImageIcon size={12} color="#8a8a8f" /> Open in Viewer
+                <ImageIcon size={12} color="var(--app-fg-dim, #8a8a8f)" /> Open in Viewer
               </div>
               <div
                 onClick={() => handleFav(contextMenu.file)}
@@ -3013,7 +3016,7 @@ export default function App(): React.JSX.Element {
                 onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'}
                 onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
               >
-                <FolderOpen size={12} color="#8a8a8f" /> Show in Folder
+                <FolderOpen size={12} color="var(--app-fg-dim, #8a8a8f)" /> Show in Folder
               </div>
               <div
                 onClick={() => navigator.clipboard.writeText(contextMenu.file.path)}
@@ -3021,7 +3024,7 @@ export default function App(): React.JSX.Element {
                 onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'}
                 onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
               >
-                <Copy size={12} color="#8a8a8f" /> Copy Path
+                <Copy size={12} color="var(--app-fg-dim, #8a8a8f)" /> Copy Path
               </div>
               <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)', margin: '4px 0' }} />
               <div
@@ -3041,7 +3044,7 @@ export default function App(): React.JSX.Element {
                 onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'}
                 onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
               >
-                <RotateCcw size={12} color="#8a8a8f" /> Restore File
+                <RotateCcw size={12} color="var(--app-fg-dim, #8a8a8f)" /> Restore File
               </div>
               <div
                 onClick={() => setFileToDeletePermanently(contextMenu.file)}
@@ -3058,7 +3061,7 @@ export default function App(): React.JSX.Element {
 
       {/* Floating toast notification */}
       {toastMsg && (
-        <div className="cred-glass" style={{ position: 'fixed', bottom: '80px', right: '24px', padding: '12px 20px', borderRadius: '4px', zIndex: 10000, display: 'flex', alignItems: 'center', gap: '8px', color: '#f2f2f0', border: '1px solid #e11d2e', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '1.5px', fontWeight: 700 }}>
+        <div className="cred-glass" style={{ position: 'fixed', bottom: '80px', right: '24px', padding: '12px 20px', borderRadius: '4px', zIndex: 10000, display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--app-fg, #f2f2f0)', border: '1px solid #e11d2e', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '1.5px', fontWeight: 700 }}>
           <Sparkles size={12} color="#e11d2e" /> {toastMsg}
         </div>
       )}
@@ -3070,14 +3073,14 @@ export default function App(): React.JSX.Element {
             <div style={{ fontSize: '13px', fontWeight: 700, color: '#e11d2e', textTransform: 'uppercase', letterSpacing: '1.5px' }}>
               {ioProgress.completed === ioProgress.total ? 'Processing Complete' : 'Transferring Files...'}
             </div>
-            <div style={{ fontSize: '10px', color: '#8a8a8f', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textTransform: 'uppercase' }}>
+            <div style={{ fontSize: '10px', color: 'var(--app-fg-dim, #8a8a8f)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textTransform: 'uppercase' }}>
               {ioProgress.currentFile}
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', fontWeight: 700 }}>
-              <span style={{ color: '#8a8a8f', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Progress:</span>
-              <span style={{ color: '#f2f2f0' }}>{ioProgress.completed} / {ioProgress.total}</span>
+              <span style={{ color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Progress:</span>
+              <span style={{ color: 'var(--app-fg, #f2f2f0)' }}>{ioProgress.completed} / {ioProgress.total}</span>
             </div>
-            <div style={{ width: '100%', height: '4px', background: '#111114', overflow: 'hidden' }}>
+            <div style={{ width: '100%', height: '4px', background: 'var(--app-surface, var(--app-surface, #111114))', overflow: 'hidden' }}>
               <div style={{ width: `${(ioProgress.completed / ioProgress.total) * 100}%`, height: '100%', background: '#e11d2e', transition: 'width 0.15s ease' }} />
             </div>
           </div>
@@ -3119,7 +3122,7 @@ export default function App(): React.JSX.Element {
             <div style={{ fontSize: '14px', fontWeight: 700, color: '#ffffff', textTransform: 'uppercase', letterSpacing: '1px' }}>
               Move this file to Trash?
             </div>
-            <div style={{ fontSize: '11px', color: '#8a8a8f', lineHeight: 1.5 }}>
+            <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', lineHeight: 1.5 }}>
               The file "{fileToDelete.name}" will be moved to DiskFrame Trash. It will be permanently deleted after 30 days.
             </div>
             <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '8px' }}>
@@ -3195,7 +3198,7 @@ export default function App(): React.JSX.Element {
             <div style={{ fontSize: '14px', fontWeight: 700, color: '#ffffff', textTransform: 'uppercase', letterSpacing: '1px' }}>
               Move selected files to Trash?
             </div>
-            <div style={{ fontSize: '11px', color: '#8a8a8f', lineHeight: 1.5 }}>
+            <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', lineHeight: 1.5 }}>
               Are you sure you want to move the {selected.size} selected files to Trash? They will be permanently deleted after 30 days.
             </div>
             <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '8px' }}>
@@ -3293,7 +3296,7 @@ export default function App(): React.JSX.Element {
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', fontSize: '16px', fontWeight: 700, color: '#e11d2e', textTransform: 'uppercase', letterSpacing: '1px' }}>
               <AlertTriangle size={18} /> Permanent Deletion
             </div>
-            <div style={{ fontSize: '11px', color: '#8a8a8f', lineHeight: 1.5 }}>
+            <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', lineHeight: 1.5 }}>
               Are you sure you want to permanently delete "{fileToDeletePermanently.name}"? This will move the file to the OS Recycle Bin.
             </div>
             <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '8px' }}>
@@ -3321,7 +3324,7 @@ export default function App(): React.JSX.Element {
                   justifyContent: 'center',
                   background: '#e11d2e',
                   borderColor: '#e11d2e',
-                  color: '#f2f2f0',
+                  color: 'var(--app-fg, #f2f2f0)',
                   padding: '10px'
                 }}
               >
@@ -3368,7 +3371,7 @@ export default function App(): React.JSX.Element {
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', fontSize: '16px', fontWeight: 700, color: '#e11d2e', textTransform: 'uppercase', letterSpacing: '1px' }}>
               <AlertTriangle size={18} /> Empty Trash Bin
             </div>
-            <div style={{ fontSize: '11px', color: '#8a8a8f', lineHeight: 1.5 }}>
+            <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', lineHeight: 1.5 }}>
               Are you sure you want to permanently delete all {trashCount} items in the trash? This will move the files physically to the OS Recycle Bin.
             </div>
             <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', marginTop: '8px' }}>
@@ -3396,7 +3399,7 @@ export default function App(): React.JSX.Element {
                   justifyContent: 'center',
                   background: '#e11d2e',
                   borderColor: '#e11d2e',
-                  color: '#f2f2f0',
+                  color: 'var(--app-fg, #f2f2f0)',
                   padding: '10px'
                 }}
               >

@@ -157,7 +157,7 @@ export default function DriveSelectGrid({ onSelectDrive, drives: propDrives }: D
         <h1 style={{ fontSize: '20px', fontWeight: 800, color: '#ffffff', letterSpacing: '2px', textTransform: 'uppercase', margin: 0 }}>
           SELECT A DRIVE
         </h1>
-        <div style={{ fontSize: '11px', color: '#8a8a8f', marginTop: '6px', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 600 }}>
+        <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', marginTop: '6px', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 600 }}>
           Choose a storage volume to scan and organize media files
         </div>
       </div>

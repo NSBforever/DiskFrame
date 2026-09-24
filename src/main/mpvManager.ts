@@ -61,12 +61,12 @@ function setWindowZOrder(childHwnd: string, parentHwnd: string) {
     $Win32::SetParent($child, $parent)
     $Win32::SetWindowPos($child, [IntPtr]1, 0, 0, 0, 0, 0x0001 -bor 0x0002 -bor 0x0010)
   `
-  exec(`powershell -NoProfile -Command "${psCommand.replace(/\n/g, ' ')}"`, (err) => {
-    if (err) {
-      console.error('[mpvManager] Z-order PowerShell failed:', err)
-    } else {
-      console.log('[mpvManager] Z-order PowerShell succeeded')
-    }
+  return new Promise<void>((resolve) => {
+    exec(`powershell -NoProfile -Command "${psCommand.replace(/\n/g, ' ')}"`, (err) => {
+      if (err) console.error('[mpvManager] Z-order PowerShell failed:', err)
+      // Resolve either way: a failed re-parent must not hang video startup.
+      resolve()
+    })
   })
 }
 
@@ -105,8 +105,21 @@ export async function initMpv(
   cachedRelativeBounds = relativeBounds
 
   // Create a transparent, frameless child window
+  const contentBounds = hostWindow.getContentBounds()
+  const childX = Math.round(contentBounds.x + relativeBounds.left)
+  const childY = Math.round(contentBounds.y + relativeBounds.top)
+  const childW = Math.round(relativeBounds.width)
+  const childH = Math.round(relativeBounds.height)
+
+  // Born at its final size and position. Constructed without bounds it took
+  // Electron's default (800x600, OS-placed) and was only moved afterwards,
+  // which is the other half of the entrance flash.
   mpvWindow = new BrowserWindow({
     parent: hostWindow,
+    x: childX,
+    y: childY,
+    width: childW,
+    height: childH,
     frame: false,
     show: false,
     transparent: true,
@@ -117,28 +130,17 @@ export async function initMpv(
     }
   })
 
-  const contentBounds = hostWindow.getContentBounds()
-  const childX = Math.round(contentBounds.x + relativeBounds.left)
-  const childY = Math.round(contentBounds.y + relativeBounds.top)
-  const childW = Math.round(relativeBounds.width)
-  const childH = Math.round(relativeBounds.height)
-
-  mpvWindow.setBounds({
-    x: childX,
-    y: childY,
-    width: childW,
-    height: childH
-  })
-
   // Prevent capturing mouse events
   mpvWindow.setIgnoreMouseEvents(true)
-  mpvWindow.show()
 
   const mpvHwnd = getHwndString(mpvWindow)
   const mainHwnd = getHwndString(hostWindow)
 
-  // Set parent and move to bottom of Z-order
-  setWindowZOrder(mpvHwnd, mainHwnd)
+  // Start re-parenting now but do not block on it: the PowerShell round trip
+  // is the single slowest step in opening a video (Add-Type compiles on every
+  // call), and spawning mpv does not depend on it. Awaiting it before the
+  // spawn made startup the SUM of the two instead of the longer one.
+  const reparented = setWindowZOrder(mpvHwnd, mainHwnd)
 
   // Generate unique named pipe name
   const randId = Math.random().toString(36).substring(2, 9)
@@ -162,6 +164,14 @@ export async function initMpv(
 
   mpvProcess = spawn(mpvExe, args)
   console.log('[mpvManager] Spawning MPV process PID:', mpvProcess?.pid, 'Exe:', mpvExe, 'Args:', args.join(' '))
+
+  // Only now is it safe to show: the window is a child of the host, sunk to
+  // the bottom of the z-order, and restated at its final bounds. Showing
+  // earlier is what put the video in a corner for a few hundred milliseconds.
+  await reparented
+  if (!mpvWindow || mpvWindow.isDestroyed()) return
+  mpvWindow.setBounds({ x: childX, y: childY, width: childW, height: childH })
+  mpvWindow.show()
 
   mpvProcess.on('error', (err) => {
     console.error('[mpvManager] Spawn error:', err)

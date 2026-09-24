@@ -1,135 +1,139 @@
-.magnetic-dock {
-  display: inline-flex;
-  align-items: flex-end;
-  gap: 6px;
-  padding: 8px;
-  border-radius: 20px;
-  background: rgba(17, 17, 19, 0.72);
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
-}
-
-.dock-item {
+/* ── Dock: one translucent glass capsule ──────────────────────────────────
+   Follows the supplied reference (rounded capsule, equal icon-over-label
+   items, a single rounded highlight behind the active item, a fine bright
+   top border) but tinted to this app's charcoal and red rather than the
+   reference's landscape. */
+.app-dock {
+  --dock-mx: 50%;
+  --dock-my: 50%;
+  --dock-glow: 0;
   position: relative;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: 12px;
-  background: #1b1b1f;
-  color: #8a8a8f;
-  cursor: pointer;
-  transition: transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), background 0.15s ease, color 0.15s ease;
-  will-change: transform;
-}
-.dock-item:hover,
-.dock-item:focus-visible {
-  color: #f2f2f0;
-}
-.dock-item.is-active {
-  background: rgba(225, 29, 46, 0.15);
-  color: #e11d2e;
-}
-.dock-item:focus-visible {
-  outline: 2px solid #e11d2e;
-  outline-offset: 2px;
+  align-items: stretch;
+  gap: 2px;
+  padding: 7px;
+  border-radius: 999px;
+  isolation: isolate;
+  overflow: hidden;
+  background: var(--dock-bg, rgba(18, 18, 24, 0.55));
+  backdrop-filter: blur(26px) saturate(1.7);
+  -webkit-backdrop-filter: blur(26px) saturate(1.7);
+  border: 1px solid var(--dock-border, rgba(255, 255, 255, 0.14));
+  box-shadow:
+    0 14px 38px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
 
-.dock-item-glow {
+/* Bright reflective edge along the top, and a soft highlight that follows the
+   pointer. Both are confined to the capsule by overflow:hidden, so nothing
+   bleeds over the gallery. */
+.app-dock-sheen {
   position: absolute;
   inset: 0;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.08);
-  opacity: 0;
-  transition: opacity 0.15s ease;
+  border-radius: inherit;
   pointer-events: none;
-}
-.dock-item:hover .dock-item-glow {
-  opacity: 1;
+  z-index: 0;
+  background:
+    radial-gradient(
+      160px circle at var(--dock-mx) var(--dock-my),
+      rgba(255, 255, 255, calc(0.1 * var(--dock-glow))),
+      transparent 70%
+    ),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.12), transparent 42%);
+  transition: background 120ms linear;
 }
 
-.dock-item-icon {
+.app-dock-item {
+  position: relative;
+  z-index: 1;
+  /* Equal, fixed boxes: the click target never moves or resizes. */
+  width: 74px;
+  height: 52px;
+  flex: 0 0 74px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 0;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  color: var(--dock-fg, #c9c9d2);
+  cursor: pointer;
+  font: inherit;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
+}
+
+.app-dock-icon {
   display: flex;
   align-items: center;
   justify-content: center;
+  line-height: 0;
 }
 
-.dock-item-badge {
+.app-dock-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  white-space: nowrap;
+  /* Labels are sized to the widest item so none of them wrap or collide. */
+  max-width: 68px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.app-dock-item:hover {
+  background: var(--dock-item-hover, rgba(255, 255, 255, 0.08));
+  color: var(--dock-fg-strong, #f2f2f0);
+}
+.app-dock-item:active {
+  background: var(--dock-item-press, rgba(255, 255, 255, 0.14));
+}
+.app-dock-item:focus-visible {
+  outline: 2px solid #e11d2e;
+  outline-offset: -2px;
+}
+
+/* The rounded highlight behind the selected item, as in the reference. */
+.app-dock-item.is-active {
+  background: var(--dock-item-active, rgba(225, 29, 46, 0.18));
+  color: #fff;
+  box-shadow: inset 0 0 0 1px rgba(225, 29, 46, 0.45);
+}
+
+.app-dock-badge {
   position: absolute;
-  top: -4px;
-  right: -4px;
-  min-width: 16px;
-  height: 16px;
+  top: 2px;
+  right: 10px;
+  min-width: 15px;
+  height: 15px;
   padding: 0 4px;
-  border-radius: 8px;
+  border-radius: 999px;
   background: #e11d2e;
   color: #fff;
   font-size: 9px;
   font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.dock-item-tooltip {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 4px 9px;
-  border-radius: 6px;
-  background: #1b1b1f;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  color: #f2f2f0;
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  white-space: nowrap;
-  opacity: 0;
+  line-height: 15px;
+  text-align: center;
   pointer-events: none;
-  transition: opacity 0.12s ease;
-}
-.dock-item:hover .dock-item-tooltip,
-.dock-item:focus-visible .dock-item-tooltip {
-  opacity: 1;
 }
 
+/* Reduced effects / reduced motion: no blur, no pointer highlight, no fades. */
+.df-reduced-effects .app-dock {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: rgba(18, 18, 24, 0.95);
+}
+.df-reduced-effects .app-dock-sheen {
+  display: none;
+}
 @media (prefers-reduced-motion: reduce) {
-  .dock-item {
-    transition: background 0.15s ease, color 0.15s ease;
+  .app-dock-item,
+  .app-dock-sheen {
+    transition: none;
   }
-}
-
-/* Glass dock. Fixed-size layout slots: the magnetic enlargement is a transform
-   on the icon only, so neighbours never reflow while the pointer moves. */
-.magnetic-dock {
-  background: rgba(18, 18, 24, 0.62);
-  backdrop-filter: blur(18px) saturate(1.35);
-  -webkit-backdrop-filter: blur(18px) saturate(1.35);
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  border-radius: 16px;
-  position: relative;
-}
-.magnetic-dock::before {
-  content: '';
-  position: absolute;
-  inset: 0 0 auto 0;
-  height: 1px;
-  border-radius: 16px 16px 0 0;
-  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.16) 18%, rgba(255,255,255,0.16) 82%, transparent);
-  pointer-events: none;
-}
-.dock-item {
-  transition: transform 170ms cubic-bezier(0.22, 1, 0.36, 1), background-color 170ms ease;
-}
-.dock-item:active { transform: scale(0.94); }
-@media (prefers-reduced-motion: reduce) {
-  .dock-item { transition: none; }
-  .dock-item:active { transform: none; }
-}
-.df-reduced-effects .magnetic-dock {
-  backdrop-filter: none; -webkit-backdrop-filter: none;
-  background: rgba(14, 14, 19, 0.96);
 }

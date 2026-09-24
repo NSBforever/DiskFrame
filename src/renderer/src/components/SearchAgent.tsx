@@ -272,10 +272,10 @@ export default function SearchAgent({
               <ApertureLogo />
             </div>
             <div style={{ textAlign: 'center' }}>
-              <h2 style={{ fontSize: '20px', fontWeight: 700, color: '#f2f2f0', margin: 0 }}>
+              <h2 style={{ fontSize: '20px', fontWeight: 700, color: 'var(--app-fg, #f2f2f0)', margin: 0 }}>
                 DiskFrame Search Agent
               </h2>
-              <p style={{ fontSize: '11px', color: '#8a8a8f', marginTop: '6px', maxWidth: '380px', lineHeight: 1.5 }}>
+              <p style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', marginTop: '6px', maxWidth: '380px', lineHeight: 1.5 }}>
                 Enter natural queries to search your local index for file types, creation dates, favorites, and GPS locations.
               </p>
             </div>
@@ -297,7 +297,7 @@ export default function SearchAgent({
             className="cred-button"
             style={{
               background: '#e11d2e',
-              color: '#f2f2f0',
+              color: 'var(--app-fg, #f2f2f0)',
               border: 'none',
               padding: '0 20px',
               height: '40px',
@@ -312,7 +312,7 @@ export default function SearchAgent({
 
         {/* Suggestion Chips */}
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center', width: '100%', marginTop: '4px' }}>
-          {!hasSearch && <span style={{ fontSize: '11px', color: '#8a8a8f', alignSelf: 'center', marginRight: '4px' }}>Try now:</span>}
+          {!hasSearch && <span style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', alignSelf: 'center', marginRight: '4px' }}>Try now:</span>}
           {suggestionChips.map((chip) => (
             <div
               key={chip}
@@ -323,17 +323,17 @@ export default function SearchAgent({
                 borderRadius: '16px',
                 border: '1px solid rgba(225, 29, 46, 0.2)',
                 background: 'rgba(225, 29, 46, 0.05)',
-                color: '#8a8a8f',
+                color: 'var(--app-fg-dim, #8a8a8f)',
                 cursor: 'pointer',
                 transition: 'all 0.25s'
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.color = '#f2f2f0'
+                e.currentTarget.style.color = 'var(--app-fg, #f2f2f0)'
                 e.currentTarget.style.borderColor = '#e11d2e'
                 e.currentTarget.style.background = 'rgba(225, 29, 46, 0.15)'
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.color = '#8a8a8f'
+                e.currentTarget.style.color = 'var(--app-fg-dim, #8a8a8f)'
                 e.currentTarget.style.borderColor = 'rgba(225, 29, 46, 0.2)'
                 e.currentTarget.style.background = 'rgba(225, 29, 46, 0.05)'
               }}
@@ -347,7 +347,7 @@ export default function SearchAgent({
       {/* Grid Results */}
       {hasSearch && (
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', padding: '0 20px 20px' }} className="view-transition-enter">
-          <div style={{ fontSize: '13px', color: '#8a8a8f', marginBottom: '12px', fontWeight: 500, paddingLeft: '4px' }}>
+          <div style={{ fontSize: '13px', color: 'var(--app-fg-dim, #8a8a8f)', marginBottom: '12px', fontWeight: 500, paddingLeft: '4px' }}>
             Found {results.length} match{results.length !== 1 ? 'es' : ''} for query "{activeQuery}"
           </div>
           {results.length === 0 ? (
@@ -364,9 +364,9 @@ export default function SearchAgent({
                 border: '1px solid rgba(255,255,255,0.04)'
               }}
             >
-              <Search size={32} style={{ color: '#52525b' }} />
-              <div style={{ fontSize: '13px', color: '#8a8a8f' }}>No matching items found.</div>
-              <div style={{ fontSize: '11px', color: '#52525b' }}>Try broadening your search or modifying keywords.</div>
+              <Search size={32} style={{ color: 'var(--app-fg-muted, #52525b)' }} />
+              <div style={{ fontSize: '13px', color: 'var(--app-fg-dim, #8a8a8f)' }}>No matching items found.</div>
+              <div style={{ fontSize: '11px', color: 'var(--app-fg-muted, #52525b)' }}>Try broadening your search or modifying keywords.</div>
             </div>
           ) : (
             <div style={{ flex: 1, overflowY: 'auto', paddingRight: '4px' }}>
