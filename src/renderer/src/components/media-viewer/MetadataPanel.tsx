@@ -162,18 +162,18 @@ export const MetadataPanel: React.FC<MetadataPanelProps> = ({
 
   return (
     <div
+      className="glass-panel glass-panel--drawer"
       style={{
         position: 'absolute',
         top: 0,
         right: 0,
         width: '320px',
         height: '100%',
-        background: '#0c0c0f',
-        borderLeft: '1px solid rgba(255,255,255,0.04)',
+        // Was an opaque #0c0c0f with no blur at all, which is why this never
+        // read as glass. Surface now comes from .glass-panel.
         zIndex: 1500,
         display: 'flex',
         flexDirection: 'column',
-        boxShadow: '-8px 0 24px rgba(0,0,0,0.6)',
         color: '#f2f2f0',
         overflowY: 'auto',
         fontFamily: 'system-ui, sans-serif'

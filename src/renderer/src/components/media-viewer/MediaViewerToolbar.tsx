@@ -108,7 +108,7 @@ export const MediaViewerToolbar: React.FC<MediaViewerToolbarProps> = ({
   return (
     <div
       onClick={(e) => e.stopPropagation()}
-      className="media-viewer-controls"
+      className="media-viewer-controls glass-panel"
       style={{
         position: 'absolute',
         top: '12px',
@@ -117,14 +117,12 @@ export const MediaViewerToolbar: React.FC<MediaViewerToolbarProps> = ({
         display: 'flex',
         alignItems: 'center',
         gap: '8px',
-        background: 'rgba(12, 12, 16, 0.75)',
-        backdropFilter: 'blur(24px) saturate(1.5)',
-        WebkitBackdropFilter: 'blur(24px) saturate(1.5)',
-        border: '1px solid rgba(225, 29, 46, 0.3)',
-        borderRadius: '4px',
+        // Surface (fill, blur, border, radius, shadow, top highlight) comes
+        // from .glass-panel so the toolbar and the Info panel cannot drift
+        // apart. Inline values here would win over the class and were what
+        // made the blur invisible.
         padding: '6px 12px',
         zIndex: 1000,
-        boxShadow: '0 8px 32px rgba(0, 0, 0, 0.5)',
         maxWidth: 'calc(100vw - 40px)',
         minWidth: '720px',
         justifyContent: 'space-between',

@@ -373,3 +373,67 @@ body {
 .df-reduced-effects body {
   background-image: none;
 }
+
+/* ── Gallery chrome: hidden whenever any file viewer is open ──────────────
+   Driven solely by the viewer-open state (App toggles body.viewer-open from
+   `lightbox`), never by fullscreen, mouse idle, or whether the media decoded -
+   so a PDF, a generic preview and a file that failed to load all hide it the
+   same way. visibility:hidden is delayed until the fade finishes, which also
+   takes these out of the tab order: Tab cannot reach a control the user
+   cannot see. */
+.gallery-chrome {
+  transition: opacity 160ms ease, visibility 0s 0s;
+}
+body.viewer-open .gallery-chrome {
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  /* The circle carries a looping breathing pulse as an INLINE style, which
+     beats a plain class rule - hence !important. Left running it fights the
+     fade and keeps burning frames on something nobody can see. */
+  animation: none !important;
+  transition: opacity 160ms ease, visibility 0s 160ms;
+}
+
+/* ── Viewer glass surfaces ────────────────────────────────────────────────
+   Translucent charcoal over a real backdrop blur, so colour from the media
+   underneath bleeds through. The fill has to stay this transparent for the
+   blur to register at all: the toolbar previously used a 0.75 fill and the
+   Info panel an opaque #0c0c0f, which is why neither looked like glass no
+   matter how large the blur radius was.
+   Only the surface is blurred - never the media, never grid tiles. */
+.glass-panel {
+  background: rgba(18, 18, 22, 0.42);
+  backdrop-filter: blur(28px) saturate(1.7);
+  -webkit-backdrop-filter: blur(28px) saturate(1.7);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+}
+/* The bright edge a real glass panel catches along its top. */
+.glass-panel::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4), transparent);
+  pointer-events: none;
+}
+/* Full-height right-hand drawer: round only the edge that faces the media. */
+.glass-panel--drawer {
+  border-radius: 14px 0 0 14px;
+  border-right: none;
+}
+/* Restrained hover. Buttons carrying their own inline hover keep it. */
+.glass-panel button:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+/* Reduced-effects mode already drops the desktop backdrop; drop the blur too
+   rather than paying for it, and compensate with an opaque fill. */
+.df-reduced-effects .glass-panel {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: rgba(18, 18, 22, 0.94);
+}

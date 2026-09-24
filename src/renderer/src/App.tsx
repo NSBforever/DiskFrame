@@ -1485,6 +1485,16 @@ export default function App(): React.JSX.Element {
   const [toastMsg, setToastMsg] = useState<string | null>(null)
   const [indexingFolder, setIndexingFolder] = useState(false)
 
+  // The one signal that hides gallery chrome. `lightbox` is the shared
+  // viewer-open state, so every viewer - photo, video, PDF, generic preview,
+  // and the loading and error states of each - hides the circle, dock and date
+  // ruler identically. A class on <body> rather than prop-drilling a flag into
+  // the grid subtree for three widgets that only need to disappear.
+  useEffect(() => {
+    document.body.classList.toggle('viewer-open', !!lightbox)
+    return () => document.body.classList.remove('viewer-open')
+  }, [lightbox])
+
   // Index one folder the user picks, through the normal library path.
   // Bounded by the main process (file count + depth); no thumbnails are
   // generated here - those follow the viewport like any other view.
@@ -2763,7 +2773,7 @@ export default function App(): React.JSX.Element {
 
       {/* Magnetic glass navigation dock, floating above the status bar */}
       {selectedDrive && (
-        <div style={{ position: 'fixed', bottom: '55px', left: '50%', transform: 'translateX(-50%)', zIndex: 1999 }}>
+        <div className="gallery-chrome" style={{ position: 'fixed', bottom: '55px', left: '50%', transform: 'translateX(-50%)', zIndex: 1999 }}>
           <MagneticDock items={dockItems} />
         </div>
       )}
@@ -2772,6 +2782,7 @@ export default function App(): React.JSX.Element {
       {selectedDrive && (
         <button
           onClick={() => setShowAiOverlay(true)}
+          className="gallery-chrome"
           style={{
             position: 'fixed',
             bottom: '55px',

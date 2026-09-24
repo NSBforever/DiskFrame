@@ -143,7 +143,7 @@ export default function DateScrubber({ groups, formatGroupKey, currentKey, onJum
   return (
     <div
       ref={railRef}
-      className="date-scrubber"
+      className="date-scrubber gallery-chrome"
       role="slider"
       aria-label="Jump to date"
       aria-valuemin={0}
