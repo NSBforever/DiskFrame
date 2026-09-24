@@ -155,6 +155,16 @@ let stopActivePreview: (() => void) | null = null
 const HOVER_DELAY_MS = 350
 const PREVIEW_MAX_SECONDS = 5
 
+/**
+ * Where the gallery was last scrolled to.
+ *
+ * Module level on purpose: a React ref lives and dies with whichever component
+ * holds it, and anything that remounts that component (navigating to Settings
+ * and back, a library refresh) silently reset the position to the top. This
+ * survives all of it, and there is only ever one gallery.
+ */
+let lastGalleryScrollTop = 0
+
 const GridTile = memo(function GridTile({
   file,
   x,
@@ -650,6 +660,11 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
       raf = requestAnimationFrame(() => {
         raf = 0
         setScrollTop(el.scrollTop)
+        // Remember the position so it survives this grid being unmounted -
+        // visiting Settings and coming back used to drop the user at the top.
+        // Not before the restore has run: a freshly mounted scroller emits a
+        // scroll at 0 as its content grows, which would erase the target.
+        if (restoredRef.current) lastGalleryScrollTop = el.scrollTop
       })
     }
     el.addEventListener('scroll', onScroll, { passive: true })
@@ -658,6 +673,26 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
       cancelAnimationFrame(raf)
     }
   }, [])
+
+  // Restore the remembered position once, on mount, before paint so there is
+  // no visible jump from the top.
+  const restoredRef = useRef(false)
+  // Read at the first render of this instance, before any scroll event of it.
+  const wantRef = useRef(lastGalleryScrollTop)
+  useLayoutEffect(() => {
+    if (restoredRef.current) return
+    const el = scrollerRef.current
+    const want = wantRef.current
+    if (!el || want <= 0) {
+      restoredRef.current = true
+      return
+    }
+    // The content needs its height before a scrollTop can stick.
+    if (el.scrollHeight <= el.clientHeight) return
+    el.scrollTop = want
+    setScrollTop(want)
+    restoredRef.current = true
+  })
 
   // ── Pinch / ctrl+wheel zoom ──
   const gesture = useRef({ active: false, raw: 1, endTimer: 0 as number | undefined, lastStep: 0, startedAtDensest: false, startedAtLargest: false, edgeNotches: 0, edgeNotchesIn: 0 })
