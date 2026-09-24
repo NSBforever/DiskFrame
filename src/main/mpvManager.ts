@@ -70,6 +70,11 @@ function setWindowZOrder(childHwnd: string, parentHwnd: string) {
   })
 }
 
+export function setOverlayInteractive(interactive: boolean): void {
+  if (!mpvWindow || mpvWindow.isDestroyed()) return
+  mpvWindow.setIgnoreMouseEvents(!interactive, { forward: true })
+}
+
 export function updateMpvBounds(bounds: { left: number; top: number; width: number; height: number }) {
   if (!mpvWindow || !hostWindowRef) return
   cachedRelativeBounds = bounds
@@ -89,6 +94,31 @@ export function refreshMpvBounds() {
   updateMpvBounds(cachedRelativeBounds)
 }
 
+
+
+/**
+ * The control overlay's HTML, written to userData on first use.
+ *
+ * A file:// page rather than a data: URL so the shared preload (and therefore
+ * window.api) applies to it normally.
+ */
+/** Overlay page, resolved the same way as the bundled mpv binary. */
+function getOverlayPath(): string {
+  const isDev = !app.isPackaged
+  const root = app.getAppPath()
+  const unpackedRoot = root.replace('app.asar', 'app.asar.unpacked')
+  const candidates = [
+    isDev
+      ? join(root, 'resources', 'overlay', 'controls.html')
+      : join(unpackedRoot, 'resources', 'overlay', 'controls.html'),
+    join(root, 'resources', 'overlay', 'controls.html'),
+    join(process.cwd(), 'resources', 'overlay', 'controls.html')
+  ]
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c
+  }
+  return candidates[0]
+}
 
 export async function initMpv(
   filePath: string,
@@ -126,12 +156,19 @@ export async function initMpv(
     hasShadow: false,
     webPreferences: {
       nodeIntegration: false,
-      contextIsolation: true
+      contextIsolation: true,
+      // Same as the main window: the shared preload uses Node APIs, so a
+      // sandboxed renderer refuses to load it ("Unable to load preload
+      // script") and window.api is undefined in the overlay.
+      sandbox: false,
+      preload: join(__dirname, '../preload/index.js')
     }
   })
 
   // Prevent capturing mouse events
-  mpvWindow.setIgnoreMouseEvents(true)
+  // Mouse passes straight through to the video by default; the overlay asks
+  // for interactivity only while its control bar is actually showing.
+  mpvWindow.setIgnoreMouseEvents(true, { forward: true })
 
   const mpvHwnd = getHwndString(mpvWindow)
   const mainHwnd = getHwndString(hostWindow)
@@ -171,6 +208,18 @@ export async function initMpv(
   await reparented
   if (!mpvWindow || mpvWindow.isDestroyed()) return
   mpvWindow.setBounds({ x: childX, y: childY, width: childW, height: childH })
+
+  // Controls live in THIS window, not the main one.
+  //
+  // mpv's window is an OWNED top-level window (parent=0, owner=<main>), and
+  // Windows always z-orders an owned window above its owner - so nothing
+  // rendered in the main window can ever appear over the video, whatever its
+  // z-index. Chromium renders into a child HWND of this window, and a child
+  // paints above its parent's own drawing, so an overlay loaded here does
+  // composite above mpv's video. Verified on screen, not in the DOM.
+  mpvWindow.loadFile(getOverlayPath()).catch((e) => {
+    console.error('[mpvManager] overlay failed to load:', e)
+  })
   mpvWindow.show()
 
   mpvProcess.on('error', (err) => {
@@ -260,6 +309,8 @@ function setupIpcListeners(socket: net.Socket, hostWindow: BrowserWindow) {
   // input as an activity signal we can forward back over the existing
   // mpv-property-change channel.
   sendCommand(socket, ['observe_property', 10, 'mouse-pos'])
+  // Lets the overlay say "no subtitles" instead of offering a dead button.
+  sendCommand(socket, ['observe_property', 11, 'track-list'])
 
   let hasTriedHwdecFallback = false
   let buffer = ''
@@ -278,11 +329,14 @@ function setupIpcListeners(socket: net.Socket, hostWindow: BrowserWindow) {
             console.log('[mpvManager] d3d11va hwdec inactive, falling back to dxva2...')
             sendCommand(socket, ['set_property', 'hwdec', 'dxva2'])
           }
+          const payload = { name: msg.name, value: msg.data }
           if (!hostWindow.isDestroyed()) {
-            hostWindow.webContents.send('mpv-property-change', {
-              name: msg.name,
-              value: msg.data
-            })
+            hostWindow.webContents.send('mpv-property-change', payload)
+          }
+          // The control bar lives in the mpv window, so it needs the same
+          // stream of state - otherwise it would render a static bar.
+          if (mpvWindow && !mpvWindow.isDestroyed()) {
+            mpvWindow.webContents.send('mpv-property-change', payload)
           }
         }
       } catch (err) {

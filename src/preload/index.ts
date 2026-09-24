@@ -126,6 +126,14 @@ const api = {
   favouritePaths: () => ipcRenderer.invoke('favourite-paths'),
   playMpv: (filePath: string, relativeBounds: { left: number; top: number; width: number; height: number }) =>
     ipcRenderer.invoke('start-mpv', { filePath, relativeBounds }),
+  // Used by the control overlay that runs inside the mpv window.
+  overlayAction: (action: string) => ipcRenderer.send('overlay-action', action),
+  setOverlayInteractive: (on: boolean) => ipcRenderer.send('overlay-interactive', on),
+  onOverlayAction: (cb: (action: string) => void) => {
+    const listener = (_e: unknown, action: string): void => cb(action)
+    ipcRenderer.on('overlay-action', listener)
+    return () => ipcRenderer.removeListener('overlay-action', listener)
+  },
   sendMpvCommand: (command: string, args: any[]) =>
     ipcRenderer.send('mpv-command', { command, args }),
   resizeMpv: (bounds: { left: number; top: number; width: number; height: number }) =>

@@ -61,7 +61,7 @@ import {
 import type { LibraryQuery } from './libraryQuery'
 
 import { initStreamServer, probeMedia, killActiveStream, closeStreamServer, authorizeStreamPath } from './streamServer'
-import { initMpv, sendMpvCommand, updateMpvBounds, closeMpv, refreshMpvBounds } from './mpvManager'
+import { initMpv, sendMpvCommand, updateMpvBounds, closeMpv, refreshMpvBounds, setOverlayInteractive } from './mpvManager'
 import { WatcherManager } from './watcher'
 import { IndexingService } from './indexingService'
 import { normalizeDrive, isSafeLocalPath, safePathList, THUMB_UNAVAILABLE, THUMB_VOLUME_OFFLINE } from './validation'
@@ -1043,6 +1043,20 @@ app.whenReady().then(() => {
   // reads it synchronously, so it must be refreshed when drives come and go.
   void refreshVolumeCache()
   setInterval(() => void refreshVolumeCache(), 30000)
+
+  // The control overlay runs in the mpv window; its clicks and key presses
+  // are relayed to the main renderer so there is a single place that decides
+  // what each action means.
+  ipcMain.on('overlay-action', (_e, action: string) => {
+    if (typeof action !== 'string' || action.length > 64) return
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('overlay-action', action)
+    }
+  })
+
+  ipcMain.on('overlay-interactive', (_e, on: unknown) => {
+    setOverlayInteractive(!!on)
+  })
 
   ipcMain.handle('cancel-index-folder', () => {
     cancelFolderIndex()

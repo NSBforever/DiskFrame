@@ -1,0 +1,165 @@
+<!doctype html>
+<meta charset="utf-8" />
+<!--
+  Playback controls rendered INSIDE the mpv window.
+
+  They cannot live in the main window: mpv's window is an owned top-level
+  window (parent=0, owner=<main>), and Windows always z-orders an owned window
+  above its owner, so main-window DOM is never visible over the video whatever
+  its z-index. Chromium's surface is a CHILD of this window, and a child paints
+  above its parent's own drawing, so this overlay does composite above mpv's
+  output - verified on screen, not in the DOM.
+-->
+<style>
+  html, body { margin:0; height:100%; background:transparent; overflow:hidden;
+    font-family: system-ui, sans-serif; user-select:none; cursor:default; }
+  #bar { position:fixed; left:0; right:0; bottom:0; padding:10px 16px 12px;
+    background:linear-gradient(to top, rgba(0,0,0,.92), rgba(0,0,0,.45) 60%, transparent);
+    opacity:0; transition:opacity .2s ease; pointer-events:none; color:#f2f2f0; }
+  #bar.on { opacity:1; pointer-events:auto; }
+  #seek { position:relative; height:16px; display:flex; align-items:center; cursor:pointer; }
+  #track { position:relative; height:4px; width:100%; background:rgba(255,255,255,.25); border-radius:2px; }
+  #fill { position:absolute; left:0; top:0; bottom:0; width:0%; background:#e11d2e; border-radius:2px; }
+  #knob { position:absolute; top:50%; left:0%; width:12px; height:12px; margin-left:-6px;
+    transform:translateY(-50%) scale(0); background:#e11d2e; border-radius:50%; transition:transform .12s; }
+  #seek:hover #knob { transform:translateY(-50%) scale(1); }
+  #row { display:flex; align-items:center; gap:14px; margin-top:6px; font-size:12px; }
+  button { background:transparent; border:0; color:#f2f2f0; cursor:pointer; padding:4px 7px;
+    border-radius:6px; font:inherit; line-height:1; display:flex; align-items:center; }
+  button:hover { background:rgba(255,255,255,.14); }
+  button:focus-visible { outline:2px solid #e11d2e; outline-offset:1px; }
+  button[disabled] { opacity:.35; cursor:not-allowed; }
+  #time { font-variant-numeric:tabular-nums; opacity:.9; }
+  #vol { width:72px; accent-color:#e11d2e; }
+  .sp { margin-left:auto; }
+  #toast { position:fixed; left:50%; top:46%; transform:translate(-50%,-50%);
+    background:rgba(0,0,0,.72); color:#fff; padding:10px 18px; border-radius:10px;
+    font-size:15px; font-weight:600; opacity:0; transition:opacity .18s; pointer-events:none; }
+  #toast.on { opacity:1; }
+</style>
+<div id="toast"></div>
+<div id="bar">
+  <div id="seek" title="Seek"><div id="track"><div id="fill"></div><div id="knob"></div></div></div>
+  <div id="row">
+    <button id="prev" title="Previous file (Shift+P)">&#9198;</button>
+    <button id="play" title="Play / Pause (Space or K)">&#9654;</button>
+    <button id="next" title="Next file (Shift+N)">&#9197;</button>
+    <button id="mute" title="Mute (M)">&#128266;</button>
+    <input id="vol" type="range" min="0" max="100" value="100" title="Volume (Up / Down)" />
+    <span id="time">0:00 / 0:00</span>
+    <button id="speed" class="sp" title="Playback speed (Shift+. / Shift+,)">1x</button>
+    <button id="subs" title="Subtitles (C)">CC</button>
+    <button id="full" title="Fullscreen (F)">&#9974;</button>
+  </div>
+</div>
+<script>
+  var api = window.api
+  function $(id) { return document.getElementById(id) }
+  var bar = $('bar'), fill = $('fill'), knob = $('knob'), timeEl = $('time')
+  var duration = 0, cur = 0, paused = true, muted = false, volume = 100, speed = 1
+  var subCount = null, hideT = 0, dragging = false
+
+  function fmt(s) {
+    if (!isFinite(s) || s < 0) s = 0
+    var m = Math.floor(s / 60), r = Math.floor(s % 60)
+    return m + ':' + (r < 10 ? '0' : '') + r
+  }
+  function render() {
+    var pct = duration > 0 ? Math.min(100, (cur / duration) * 100) : 0
+    fill.style.width = pct + '%'
+    knob.style.left = pct + '%'
+    timeEl.textContent = fmt(cur) + ' / ' + fmt(duration)
+    $('play').innerHTML = paused ? '&#9654;' : '&#10074;&#10074;'
+    $('mute').innerHTML = (muted || volume === 0) ? '&#128263;' : '&#128266;'
+    $('speed').textContent = speed + 'x'
+    $('subs').disabled = (subCount === 0)
+    $('subs').title = subCount === 0 ? 'No subtitle tracks in this file' : 'Subtitles (C)'
+  }
+  function toast(msg) {
+    var t = $('toast')
+    t.textContent = msg
+    t.classList.add('on')
+    clearTimeout(t._t)
+    t._t = setTimeout(function () { t.classList.remove('on') }, 900)
+  }
+
+  // Visible on open; fades only while actually playing, and never while
+  // paused, seeking, or with the pointer over the bar.
+  function show(temporary) {
+    bar.classList.add('on')
+    if (api && api.setOverlayInteractive) api.setOverlayInteractive(true)
+    clearTimeout(hideT)
+    if (temporary !== false && !paused && !dragging) {
+      hideT = setTimeout(function () {
+        bar.classList.remove('on')
+        if (api && api.setOverlayInteractive) api.setOverlayInteractive(false)
+      }, 3000)
+    }
+  }
+  show()
+  document.addEventListener('mousemove', function () { show() }, { passive: true })
+  bar.addEventListener('mouseenter', function () { show(false) })
+  bar.addEventListener('mouseleave', function () { show() })
+
+  if (api && api.onMpvPropertyChange) {
+    api.onMpvPropertyChange(function (d) {
+      var name = d.name, value = d.value
+      if (name === 'time-pos' && typeof value === 'number' && !dragging) cur = value
+      else if (name === 'duration' && typeof value === 'number') duration = value
+      else if (name === 'pause' && typeof value === 'boolean') { paused = value; paused ? show(false) : show() }
+      else if (name === 'volume' && typeof value === 'number') { volume = Math.round(value); $('vol').value = volume }
+      else if (name === 'mute' && typeof value === 'boolean') muted = value
+      else if (name === 'speed' && typeof value === 'number') speed = Math.round(value * 100) / 100
+      else if (name === 'track-list' && Array.isArray(value)) {
+        subCount = value.filter(function (t) { return t.type === 'sub' }).length
+      } else return
+      render()
+    })
+  }
+
+  function cmd(c, a) { if (api && api.sendMpvCommand) api.sendMpvCommand(c, a || []) }
+  function act(n) { if (api && api.overlayAction) api.overlayAction(n) }
+
+  function seekTo(e) {
+    var r = $('seek').getBoundingClientRect()
+    var p = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width))
+    cur = p * duration
+    render()
+    cmd('seek', [cur, 'absolute'])
+  }
+  $('seek').addEventListener('mousedown', function (e) { dragging = true; seekTo(e); show(false) })
+  document.addEventListener('mousemove', function (e) { if (dragging) seekTo(e) })
+  document.addEventListener('mouseup', function () { if (dragging) { dragging = false; show() } })
+
+  $('play').onclick = function () { cmd('set_property', ['pause', !paused]); toast(paused ? 'Play' : 'Paused') }
+  $('mute').onclick = function () { cmd('set_property', ['mute', !muted]); toast(muted ? 'Unmuted' : 'Muted') }
+  $('vol').oninput = function (e) {
+    var v = Number(e.target.value)
+    cmd('set_property', ['volume', v])
+    toast('Volume ' + v + '%')
+  }
+  $('speed').onclick = function () {
+    var steps = [0.5, 0.75, 1, 1.25, 1.5, 2]
+    var next = steps[(steps.indexOf(speed) + 1) % steps.length] || 1
+    cmd('set_property', ['speed', next])
+    toast(next + 'x')
+  }
+  $('subs').onclick = function () {
+    if (subCount === 0) { toast('No subtitles in this file'); return }
+    cmd('cycle', ['sub'])
+    toast('Subtitles')
+  }
+  $('prev').onclick = function () { act('prev') }
+  $('next').onclick = function () { act('next') }
+  $('full').onclick = function () { act('fullscreen') }
+
+  // Keys that land here are forwarded to the main window, so each shortcut has
+  // exactly one handler no matter which window has focus.
+  document.addEventListener('keydown', function (e) {
+    if (e.repeat && (e.key === ' ' || e.key === 'k' || e.key === 'm')) return
+    act('key:' + e.key + (e.shiftKey ? ':shift' : '') + (e.ctrlKey ? ':ctrl' : ''))
+    e.preventDefault()
+  })
+  window.__overlayToast = toast
+  render()
+</script>

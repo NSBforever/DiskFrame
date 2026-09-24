@@ -94,6 +94,9 @@ declare global {
       setViewOrder: (order: 'default' | 'reverse') => Promise<void>
       getHoverPreviews: () => Promise<boolean>
       setHoverPreviews: (enabled: boolean) => Promise<void>
+      overlayAction: (action: string) => void
+      setOverlayInteractive: (on: boolean) => void
+      onOverlayAction: (cb: (action: string) => void) => () => void
       prioritizeThumbnails: (filePaths: string[]) => Promise<(string | null)[]>
       pickFolder: () => Promise<string | null>
       indexFolder: (

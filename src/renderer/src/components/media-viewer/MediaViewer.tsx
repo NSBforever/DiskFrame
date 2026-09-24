@@ -175,6 +175,31 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
     }
   }, [])
 
+  // Clicks and key presses inside the mpv-window overlay arrive here, so a
+  // single place decides what each action means regardless of which window
+  // had focus. Key presses are replayed as one synthetic keydown, which keeps
+  // exactly one handler per press instead of Electron, React and the overlay
+  // each acting on it.
+  useEffect(() => {
+    if (!window.api.onOverlayAction) return
+    return window.api.onOverlayAction((action: string) => {
+      if (action === 'prev') return handlePrev()
+      if (action === 'next') return handleNext()
+      if (action === 'fullscreen') return handleToggleFullscreen()
+      if (action.startsWith('key:')) {
+        const [, key, ...mods] = action.split(':')
+        window.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key,
+            shiftKey: mods.includes('shift'),
+            ctrlKey: mods.includes('ctrl'),
+            bubbles: true
+          })
+        )
+      }
+    })
+  }, [handleNext, handlePrev, handleToggleFullscreen])
+
   // Sync fullscreen state on external escape
   useEffect(() => {
     const handleFullscreenChange = () => {
