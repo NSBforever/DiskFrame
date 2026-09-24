@@ -539,7 +539,7 @@ const MainContentArea: React.FC<{
   favourites: Set<string>
   selected: Set<string>
   deletingPaths: Set<string>
-  handleTileOpen: (file: ScannedFile, currentList: ScannedFile[], e?: React.MouseEvent) => void
+  handleTileOpen: (file: ScannedFile, indexOrList: number | ScannedFile[], e?: React.MouseEvent) => void
   handleFav: (file: ScannedFile) => void
   handleSelect: (file: ScannedFile, e: React.MouseEvent) => void
   handleTileContextMenu: (file: ScannedFile, currentList: ScannedFile[], e: React.MouseEvent) => void
@@ -1437,7 +1437,14 @@ export default function App(): React.JSX.Element {
 
   const [favourites, setFavourites] = useState<Set<string>>(new Set())
   const [selected, setSelected] = useState<Set<string>>(new Set())
-  const [lightbox, setLightbox] = useState<{ file: ScannedFile; list: ScannedFile[]; rect?: DOMRect } | null>(null)
+  // `index` navigates the paged library. `list` is only set by the views that
+  // are not the library - favourites, trash - which hold their own arrays.
+  const [lightbox, setLightbox] = useState<{ file: ScannedFile; index: number; rect?: DOMRect; list?: ScannedFile[] } | null>(null)
+  // Navigation reads the library live, so it is not pinned to whatever rows
+  // happened to be resident when the viewer opened.
+  const libraryRef = useRef<ReturnType<typeof useLibrary> | null>(null)
+  const lightboxRef = useRef<typeof lightbox>(null)
+  lightboxRef.current = lightbox
   const [activeView, setActiveView] = useState('Grid')
 
   const [tileSize, setTileSize] = useState(120)
@@ -1833,7 +1840,6 @@ export default function App(): React.JSX.Element {
   }, [])
 
   const handleReveal = useCallback((file: ScannedFile): void => { window.electron.ipcRenderer.send('reveal-file', file.path) }, [])
-  const openLightbox = useCallback((file: ScannedFile, list: ScannedFile[], rect?: DOMRect): void => { setLightbox({ file, list, rect }) }, [])
 
   // The library is read through SQLite. The renderer keeps the group summary
   // and a bounded window of pages - never the whole index.
@@ -1845,6 +1851,7 @@ export default function App(): React.JSX.Element {
     [selectedDrive, activeNav, searchQuery, groupBy, viewOrder]
   )
   const library = useLibrary(libraryQuery)
+  libraryRef.current = library
   const formatGroupKey = useMemo(() => makeGroupFormatter(groupBy), [groupBy])
   patchLibraryThumbRef.current = library.patchThumb
 
@@ -2050,15 +2057,49 @@ export default function App(): React.JSX.Element {
 
   const lastSelectedPathRef = useRef<string | null>(null)
 
-  const handleTileOpen = useCallback((file: ScannedFile, currentList: ScannedFile[], e?: React.MouseEvent): void => {
+  const handleTileOpen = useCallback((file: ScannedFile, indexOrList: number | ScannedFile[], e?: React.MouseEvent): void => {
     const rect = e?.currentTarget?.getBoundingClientRect()
-    if (selected.size > 0 && selected.has(file.path)) {
-      const selectionList = allFiles.filter(f => selected.has(f.path))
-      openLightbox(file, selectionList, rect)
+    if (typeof indexOrList === 'number') {
+      setLightbox({ file, index: indexOrList, rect })
     } else {
-      openLightbox(file, currentList, rect)
+      const i = indexOrList.indexOf(file)
+      setLightbox({ file, index: i < 0 ? 0 : i, rect, list: indexOrList })
     }
-  }, [selected, allFiles, openLightbox])
+  }, [])
+
+  /**
+   * Step to the next/previous file in the ACTIVE query order.
+   *
+   * The grid used to hand the viewer a one-element array, so prev/next had
+   * nowhere to go at all. Navigating by library index instead follows the
+   * current filter and sort, and crosses a database page boundary by asking
+   * for the page and waiting briefly for it rather than stopping at the edge
+   * of what is resident.
+   */
+  const navigateLightbox = useCallback(async (delta: number): Promise<void> => {
+    const lb = lightboxRef.current
+    const lib = libraryRef.current
+    if (!lb) return
+    // A view with its own array (favourites, trash) navigates that array.
+    if (lb.list) {
+      const next = lb.index + delta
+      if (next < 0 || next >= lb.list.length) return
+      setLightbox({ file: lb.list[next], index: next, list: lb.list })
+      return
+    }
+    if (!lib) return
+    const next = lb.index + delta
+    if (next < 0 || next >= lib.total) return
+    let row = lib.getRow(next)
+    if (!row) {
+      lib.ensureRange(next, next)
+      for (let i = 0; i < 24 && !row; i++) {
+        await new Promise((r) => setTimeout(r, 50))
+        row = libraryRef.current?.getRow(next)
+      }
+    }
+    if (row) setLightbox({ file: row, index: next })
+  }, [])
 
   const handleFileDeleted = useCallback((deletedPath: string): void => {
     setDeletingPaths(prev => {
@@ -2909,23 +2950,24 @@ export default function App(): React.JSX.Element {
       {lightbox && (
         <MediaViewer
           file={lightbox.file}
-          list={lightbox.list}
+          // Bounded neighbour window: the previous, current and next resident
+          // rows. Enough for the viewer to preload one either side and to know
+          // whether the arrows apply, without holding the whole library.
+          list={
+            lightbox.list
+              ? lightbox.list
+              : ([
+                  library.getRow(lightbox.index - 1),
+                  lightbox.file,
+                  library.getRow(lightbox.index + 1)
+                ].filter(Boolean) as ScannedFile[])
+          }
           isFav={favourites.has(lightbox.file.path)}
           onFav={handleFav}
           onReveal={handleReveal}
           onClose={() => setLightbox(null)}
-          onNext={() => {
-            const idx = lightbox.list.indexOf(lightbox.file)
-            if (idx < lightbox.list.length - 1) {
-              setLightbox({ file: lightbox.list[idx + 1], list: lightbox.list })
-            }
-          }}
-          onPrev={() => {
-            const idx = lightbox.list.indexOf(lightbox.file)
-            if (idx > 0) {
-              setLightbox({ file: lightbox.list[idx - 1], list: lightbox.list })
-            }
-          }}
+          onNext={() => void navigateLightbox(1)}
+          onPrev={() => void navigateLightbox(-1)}
           onDelete={handleFileDeleted}
           rect={lightbox.rect}
         />

@@ -139,7 +139,7 @@ function anchorContentPoint(layout: Layout, a: Anchor): { x: number; y: number }
 
 // ─── Tile ────────────────────────────────────────────────────────────────────
 export interface GridActions {
-  open: (file: ScannedFile, e: React.MouseEvent) => void
+  open: (file: ScannedFile, index: number, e: React.MouseEvent) => void
   select: (file: ScannedFile, e: React.MouseEvent) => void
   fav: (file: ScannedFile) => void
   context: (file: ScannedFile, e: React.MouseEvent) => void
@@ -165,10 +165,13 @@ const GridTile = memo(function GridTile({
   isDeleting,
   thumb,
   actions,
-  hoverPreviewsEnabled
+  hoverPreviewsEnabled,
+  index
 }: {
   file: ScannedFile
   thumb: string | null
+  /** Global library index, so the viewer can page past this screen. */
+  index: number
   x: number
   y: number
   size: number
@@ -291,7 +294,7 @@ const GridTile = memo(function GridTile({
     press.current = null
     if (e.button !== 0 || !p || p.dragged) return
     if (e.ctrlKey || e.metaKey || e.shiftKey) actions.select(file, e)
-    else actions.open(file, e)
+    else actions.open(file, index, e)
   }
   // Overlay buttons must not start a press on the tile (otherwise mouseup opens the viewer).
   const stop = (e: React.MouseEvent): void => e.stopPropagation()
@@ -441,7 +444,7 @@ export interface PhotoGridProps {
   onZoomOutBeyond: () => void
   /** Pinched in past the largest level - caller makes the grouping finer. */
   onZoomInBeyond?: () => void
-  onOpen: (file: ScannedFile, list: ScannedFile[], e?: React.MouseEvent) => void
+  onOpen: (file: ScannedFile, index: number, e?: React.MouseEvent) => void
   onSelect: (file: ScannedFile, e: React.MouseEvent) => void
   onFav: (file: ScannedFile) => void
   onContextMenu: (file: ScannedFile, list: ScannedFile[], e: React.MouseEvent) => void
@@ -489,7 +492,7 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
 
   const actions = useMemo<GridActions>(
     () => ({
-      open: (f, e) => propsRef.current.onOpen(f, [f], e),
+      open: (f, i, e) => propsRef.current.onOpen(f, i, e),
       select: (f, e) => propsRef.current.onSelect(f, e),
       fav: f => propsRef.current.onFav(f),
       context: (f, e) => propsRef.current.onContextMenu(f, [f], e),
@@ -941,6 +944,7 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
             thumb={f.thumb}
             actions={actions}
             hoverPreviewsEnabled={hoverPreviewsEnabled}
+            index={globalIndex}
           />
         )
       }

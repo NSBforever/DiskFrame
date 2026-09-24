@@ -815,8 +815,14 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
             transform: transformStyle,
             transformOrigin: 'center',
             transition: 'transform 0.15s cubic-bezier(0.16, 1, 0.3, 1)',
-            maxWidth: '100%',
-            maxHeight: '100%',
+            // Definite size, not max-*. A percentage max-height resolves
+            // against the parent's height, and this wrapper's height was auto,
+            // so maxHeight:100% on the <img> computed to `none` and only the
+            // width ever constrained it. A 5616x3744 photo fitted to width in
+            // a 1267x764 stage rendered 1267x845 and lost 81px off the top and
+            // bottom to overflow:hidden - the crop in the recording.
+            width: '100%',
+            height: '100%',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',

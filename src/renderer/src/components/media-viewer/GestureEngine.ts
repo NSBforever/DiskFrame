@@ -10,6 +10,7 @@ export interface GestureProps {
   lastMousePosRef: React.MutableRefObject<{ x: number; y: number }>
   velocityRef: React.MutableRefObject<{ x: number; y: number }>
   lastTimeRef: React.MutableRefObject<number>
+  startInertia: () => void
   onNext: () => void
   onPrev: () => void
 }
@@ -23,6 +24,7 @@ export function useGestures({
   lastMousePosRef,
   velocityRef,
   lastTimeRef,
+  startInertia,
   onNext,
   onPrev
 }: GestureProps) {
@@ -44,9 +46,12 @@ export function useGestures({
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault()
 
-      if (e.ctrlKey) {
-        // Trackpad pinch-to-zoom
-        const zoomFactor = 1 - e.deltaY * 0.007
+      // A vertical wheel zooms at the pointer - ctrl-held (trackpad pinch) or
+      // not. Previously a plain wheel only ever navigated files, so an
+      // ordinary mouse could not zoom at all; zoom was reachable only via the
+      // toolbar, which cannot anchor to a detail.
+      if (e.ctrlKey || Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+        const zoomFactor = 1 - e.deltaY * (e.ctrlKey ? 0.007 : 0.0015)
         const nextScale = scale * zoomFactor
         zoomTo(nextScale, e.clientX, e.clientY)
       } else {
@@ -139,6 +144,9 @@ export function useGestures({
       if (!isDraggingRef.current) return
       isDraggingRef.current = false
       el.releasePointerCapture(e.pointerId)
+      // The inertia loop only runs while there is motion to spend, so the
+      // drag that produced the velocity has to start it.
+      startInertia()
 
       if (scale === 1) {
         const threshold = 100
@@ -229,7 +237,7 @@ export function useGestures({
       el.removeEventListener('touchmove', handleTouchMove)
       el.removeEventListener('touchend', handleTouchEnd)
     }
-  }, [containerRef, scale, panBy, zoomTo, onNext, onPrev, isDraggingRef, lastMousePosRef, velocityRef, lastTimeRef])
+  }, [containerRef, scale, panBy, zoomTo, onNext, onPrev, isDraggingRef, lastMousePosRef, velocityRef, lastTimeRef, startInertia])
 
   return {
     swipeOffset,

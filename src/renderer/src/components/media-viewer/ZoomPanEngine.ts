@@ -25,6 +25,23 @@ export function useZoomPan(
     velocityRef.current = { x: 0, y: 0 }
   }, [])
 
+  /**
+   * Screen pixels per image pixel when the image is fitted.
+   *
+   * Capped at 1: fitting must never upscale, which keeps "Fit" and "100%"
+   * identical for an image smaller than the viewport and matches what the CSS
+   * actually renders (object-fit: contain under max-width/height: 100%).
+   * `scale` throughout this hook is a multiplier ON TOP of this, so scale === 1
+   * means fitted - which is exactly why the toolbar must not print it as 100%.
+   */
+  const getFitScale = useCallback(() => {
+    if (!containerRef.current || !imageDimensions) return 1
+    const { clientWidth: cw, clientHeight: ch } = containerRef.current
+    const { width: iw, height: ih } = imageDimensions
+    if (!iw || !ih || !cw || !ch) return 1
+    return Math.min(1, Math.min(cw / iw, ch / ih))
+  }, [imageDimensions, containerRef])
+
   const getBounds = useCallback((scale: number) => {
     if (!containerRef.current || !imageDimensions) {
       return { minX: 0, maxX: 0, minY: 0, maxY: 0 }
@@ -35,7 +52,7 @@ export function useZoomPan(
     const iw = imageDimensions.width
     const ih = imageDimensions.height
 
-    const scaleToFit = Math.min(cw / iw, ch / ih)
+    const scaleToFit = Math.min(1, Math.min(cw / iw, ch / ih))
     const fitW = iw * scaleToFit
     const fitH = ih * scaleToFit
 
@@ -78,15 +95,21 @@ export function useZoomPan(
       return
     }
 
+    // Anchor measured from the container's CENTRE, because the image is
+    // centred and transformed with transform-origin: center. Measuring from
+    // the top-left (as this did) offsets every zoom by half the viewport, so
+    // the detail under the pointer slid away as you zoomed. The rect is read
+    // live, so a narrowed container (Info panel open) is accounted for.
     const rect = containerRef.current.getBoundingClientRect()
-    const containerX = clientX - rect.left
-    const containerY = clientY - rect.top
+    const anchorX = clientX - rect.left - rect.width / 2
+    const anchorY = clientY - rect.top - rect.height / 2
 
     const ratio = nextScale / current.scale
-    
-    // Zoom to cursor coordinates logic
-    const nextTx = containerX - (containerX - current.translateX) * ratio
-    const nextTy = containerY - (containerY - current.translateY) * ratio
+
+    // Keep the image point under the anchor fixed:
+    //   t' = a - (a - t) * ratio
+    const nextTx = anchorX - (anchorX - current.translateX) * ratio
+    const nextTy = anchorY - (anchorY - current.translateY) * ratio
 
     const clamped = clampTranslation(nextScale, nextTx, nextTy)
     setState({ scale: nextScale, translateX: clamped.x, translateY: clamped.y })
@@ -101,26 +124,33 @@ export function useZoomPan(
     })
   }, [clampTranslation])
 
-  useEffect(() => {
-    const updateInertia = (time: number) => {
+  /**
+   * Inertia after a drag. Runs ONLY while there is motion to spend.
+   *
+   * This used to reschedule itself unconditionally for the whole life of the
+   * viewer, so an idle open photo still woke the renderer every frame forever.
+   * It now stops when velocity dies and is restarted by the drag that creates
+   * new velocity, which is also what stops rapid zoom gestures queueing frames
+   * behind an already-running loop.
+   */
+  const startInertia = useCallback(() => {
+    if (rafRef.current !== null) return
+    lastTimeRef.current = 0
+    const step = (time: number) => {
       if (isDraggingRef.current) {
         lastTimeRef.current = time
-        rafRef.current = requestAnimationFrame(updateInertia)
+        rafRef.current = requestAnimationFrame(step)
         return
       }
-
-      if (!lastTimeRef.current) {
-        lastTimeRef.current = time
-      }
+      if (!lastTimeRef.current) lastTimeRef.current = time
       const elapsed = time - lastTimeRef.current
       lastTimeRef.current = time
 
       let vx = velocityRef.current.x
       let vy = velocityRef.current.y
-
       if (Math.abs(vx) < 0.05 && Math.abs(vy) < 0.05) {
         velocityRef.current = { x: 0, y: 0 }
-        rafRef.current = requestAnimationFrame(updateInertia)
+        rafRef.current = null
         return
       }
 
@@ -128,20 +158,32 @@ export function useZoomPan(
       vx *= friction
       vy *= friction
       velocityRef.current = { x: vx, y: vy }
-
-      const dx = vx * (elapsed / 16)
-      const dy = vy * (elapsed / 16)
-
-      panBy(dx, dy)
-
-      rafRef.current = requestAnimationFrame(updateInertia)
+      panBy(vx * (elapsed / 16), vy * (elapsed / 16))
+      rafRef.current = requestAnimationFrame(step)
     }
-
-    rafRef.current = requestAnimationFrame(updateInertia)
-    return () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current)
-    }
+    rafRef.current = requestAnimationFrame(step)
   }, [panBy])
+
+  useEffect(() => {
+    return () => {
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
+      rafRef.current = null
+    }
+  }, [])
+
+  /**
+   * Re-clamp after the viewport changes (window resize, Info panel opening).
+   * Scale is a multiplier over fit, so a fitted image stays fitted for free;
+   * this only pulls a panned, zoomed image back inside the new bounds instead
+   * of leaving it stranded outside them.
+   */
+  const clampToBounds = useCallback(() => {
+    setState((prev) => {
+      const clamped = clampTranslation(prev.scale, prev.translateX, prev.translateY)
+      if (clamped.x === prev.translateX && clamped.y === prev.translateY) return prev
+      return { ...prev, translateX: clamped.x, translateY: clamped.y }
+    })
+  }, [clampTranslation])
 
   return {
     scale: state.scale,
@@ -150,6 +192,9 @@ export function useZoomPan(
     zoomTo,
     panBy,
     reset,
+    getFitScale,
+    clampToBounds,
+    startInertia,
     isDraggingRef,
     lastMousePosRef,
     velocityRef,

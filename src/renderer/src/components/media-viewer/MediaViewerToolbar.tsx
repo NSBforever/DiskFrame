@@ -29,9 +29,12 @@ interface MediaViewerToolbarProps {
   onFlip: () => void
   scale: number
   onZoomChange: (newScale: number) => void
-  onFitWidth: () => void
-  onFitHeight: () => void
+  onFit: () => void
+  onFill: () => void
   onActualSize: () => void
+  /** True magnification (scale x fitScale), already a percentage. */
+  displayPercent: number
+  fitScale: number
   onDownload: () => void
   onCopyPath: () => void
   onDelete: () => void
@@ -96,15 +99,19 @@ export const MediaViewerToolbar: React.FC<MediaViewerToolbarProps> = ({
   onFlip,
   scale,
   onZoomChange,
-  onFitWidth,
-  onFitHeight,
+  onFit,
+  onFill,
   onActualSize,
+  displayPercent,
+  fitScale,
   onDownload,
   onCopyPath,
   onDelete,
   onToggleInfo,
   isInfoOpen
 }) => {
+  const isFit = Math.abs(scale - 1) < 0.01
+  const isActual = fitScale > 0 && Math.abs(scale * fitScale - 1) < 0.01
   return (
     <div
       onClick={(e) => e.stopPropagation()}
@@ -162,6 +169,7 @@ export const MediaViewerToolbar: React.FC<MediaViewerToolbarProps> = ({
             max="800"
             value={Math.round(scale * 100)}
             onChange={(e) => onZoomChange(Number(e.target.value) / 100)}
+            title={`Zoom (${displayPercent}% of original)`}
             style={{
               width: '80px',
               height: '4px',
@@ -169,8 +177,11 @@ export const MediaViewerToolbar: React.FC<MediaViewerToolbarProps> = ({
               cursor: 'pointer'
             }}
           />
+          {/* The true magnification, not the fit multiplier. A fitted 5616px
+              photo in a 1267px window is 23%, and printing that as 100% was
+              the reason the number never matched what was on screen. */}
           <div style={{ fontSize: '8px', fontWeight: 700, color: '#e11d2e', marginTop: '2px', minWidth: '32px', textAlign: 'center', letterSpacing: '0.5px' }}>
-            {Math.round(scale * 100)}%
+            {isFit ? `FIT ${displayPercent}%` : `${displayPercent}%`}
           </div>
         </div>
         <IconBtn onClick={() => onZoomChange(scale + 0.5)} title="Zoom In ( + )">
@@ -178,14 +189,14 @@ export const MediaViewerToolbar: React.FC<MediaViewerToolbarProps> = ({
         </IconBtn>
 
         {/* Zoom Presets */}
-        <IconBtn onClick={onFitWidth} title="Fit Width">
-          <Maximize2 size={16} />
-        </IconBtn>
-        <IconBtn onClick={onFitHeight} title="Fit Height">
+        <IconBtn onClick={onFit} title="Fit — whole image, never cropped (0)" active={isFit}>
           <Minimize2 size={16} />
         </IconBtn>
-        <IconBtn onClick={onActualSize} title="Actual Size (1:1 / 0)">
+        <IconBtn onClick={onActualSize} title="Actual size — 100%, one image pixel per screen pixel (1)" active={isActual}>
           <Maximize size={16} />
+        </IconBtn>
+        <IconBtn onClick={onFill} title="Fill — cover the window, may crop">
+          <Maximize2 size={16} />
         </IconBtn>
       </div>
 

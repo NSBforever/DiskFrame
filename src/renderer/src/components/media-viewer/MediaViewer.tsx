@@ -51,6 +51,10 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
   rect
 }) => {
   const containerRef = useRef<HTMLDivElement>(null)
+  // The box the image is actually centred in. It narrows when the Info panel
+  // opens, so zoom anchoring and pan bounds must measure THIS, not the viewer
+  // root - anchoring against the root put every zoom 160px off with Info open.
+  const stageRef = useRef<HTMLDivElement>(null)
   const isPhoto = photoExts.includes(file.ext.toLowerCase())
   const isVideo = videoExts.includes(file.ext.toLowerCase())
   const [imgDimensions, setImgDimensions] = useState<{ width: number; height: number } | null>(null)
@@ -78,8 +82,11 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
     isDraggingRef,
     lastMousePosRef,
     velocityRef,
-    lastTimeRef
-  } = useZoomPan(containerRef, imgDimensions)
+    lastTimeRef,
+    getFitScale,
+    clampToBounds,
+    startInertia
+  } = useZoomPan(stageRef, imgDimensions)
 
   // Trigger opening animation
   useEffect(() => {
@@ -99,6 +106,19 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
       onClose()
     }, 320)
   }, [onClose])
+
+  // Window resize, Info panel opening, entering fullscreen: the stage changes
+  // size, so a fitted image refits for free (scale is a fit multiplier) and a
+  // zoomed one is pulled back inside the new bounds instead of being stranded
+  // outside them. ResizeObserver rather than a window listener, because the
+  // Info panel resizes the stage without resizing the window.
+  useEffect(() => {
+    const el = stageRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => clampToBounds())
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [clampToBounds])
 
   // Reset transforms when image file changes
   useEffect(() => {
@@ -137,6 +157,7 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
     lastMousePosRef,
     velocityRef,
     lastTimeRef,
+    startInertia,
     onNext: handleNext,
     onPrev: handlePrev
   })
@@ -259,26 +280,26 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
     zoomTo(newScale)
   }
 
-  const handleFitWidth = () => {
-    if (!containerRef.current || !imgDimensions) return
-    const cw = containerRef.current.clientWidth
-    const iw = imgDimensions.width
-    const ih = imgDimensions.height
-    const scaleToFit = Math.min(cw / iw, containerRef.current.clientHeight / ih)
-    const fitW = iw * scaleToFit
-    const targetScale = cw / fitW
-    zoomTo(targetScale)
-  }
+  // `scale` is a multiplier over the fitted size, so scale 1 IS Fit and the
+  // true magnification is scale * fitScale. Everything user-facing below
+  // converts between the two rather than pretending they are the same.
+  const fitScale = getFitScale()
+  const displayPercent = Math.round(scale * fitScale * 100)
 
-  const handleFitHeight = () => {
-    if (!containerRef.current || !imgDimensions) return
-    const ch = containerRef.current.clientHeight
-    const iw = imgDimensions.width
-    const ih = imgDimensions.height
-    const scaleToFit = Math.min(containerRef.current.clientWidth / iw, ch / ih)
-    const fitH = ih * scaleToFit
-    const targetScale = ch / fitH
-    zoomTo(targetScale)
+  /** Whole image, original aspect, never cropped. */
+  const handleFit = () => reset()
+
+  /** One image pixel per screen pixel. */
+  const handleActualSize = () => zoomTo(1 / (fitScale || 1))
+
+  /** Cover the stage: may crop, which is the one mode allowed to. */
+  const handleFill = () => {
+    if (!stageRef.current || !imgDimensions) return
+    const { clientWidth: cw, clientHeight: ch } = stageRef.current
+    const { width: iw, height: ih } = imgDimensions
+    if (!iw || !ih) return
+    const cover = Math.max(cw / iw, ch / ih)
+    zoomTo(cover / (fitScale || 1))
   }
 
   const handleDownload = () => {
@@ -316,11 +337,15 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
   }
 
   const handleDoubleClick = (e: React.MouseEvent) => {
-    if (scale > 1) {
+    if (scale > 1.01) {
       reset()
-    } else {
-      zoomTo(3.0, e.clientX, e.clientY)
+      return
     }
+    // Land on 1:1 where that is a real magnification, otherwise a plain 2x.
+    // Jumping to a fixed 3x made the step depend on the image's size rather
+    // than on anything the viewer could see.
+    const target = fitScale > 0 && fitScale < 0.5 ? 1 / fitScale : 2
+    zoomTo(target, e.clientX, e.clientY)
   }
 
   // Calculate inline transition styles
@@ -439,9 +464,11 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
           onFlip={handleFlip}
           scale={scale}
           onZoomChange={handleZoomChange}
-          onFitWidth={handleFitWidth}
-          onFitHeight={handleFitHeight}
-          onActualSize={reset}
+          onFit={handleFit}
+          onFill={handleFill}
+          onActualSize={handleActualSize}
+          displayPercent={displayPercent}
+          fitScale={fitScale}
           onDownload={handleDownload}
           onCopyPath={handleCopyPath}
           onDelete={handleDelete}
@@ -542,6 +569,7 @@ export const MediaViewer: React.FC<MediaViewerProps> = ({
 
       {/* Main Image View Container */}
       <div
+        ref={stageRef}
         onDoubleClick={handleDoubleClick}
         style={{
           width: isInfoOpen && !isOpening && !isClosing ? 'calc(100% - 320px)' : '100%',
