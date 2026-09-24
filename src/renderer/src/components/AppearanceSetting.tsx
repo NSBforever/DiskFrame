@@ -1,4 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react'
+import { Sun, Moon } from 'lucide-react'
+import { useReducedMotionPref } from '../hooks/useReducedMotionPref'
+import './AppearanceSetting.css'
 
 export type ThemePref = 'system' | 'light' | 'dark'
 
@@ -14,37 +17,41 @@ export function readThemePref(): ThemePref {
   return 'system'
 }
 
+function systemPrefersDark(): boolean {
+  return window.matchMedia('(prefers-color-scheme: dark)').matches
+}
+
 /** Resolves `system` against the OS and writes it where the CSS can see it. */
 export function applyThemePref(pref: ThemePref): void {
-  const dark =
-    pref === 'dark' ||
-    (pref === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+  const dark = pref === 'dark' || (pref === 'system' && systemPrefersDark())
   document.documentElement.dataset.theme = dark ? 'dark' : 'light'
   document.documentElement.dataset.themePref = pref
 }
 
-const OPTIONS: { id: ThemePref; label: string; hint: string }[] = [
-  { id: 'system', label: 'System', hint: 'Follow Windows' },
-  { id: 'light', label: 'Light', hint: 'Always light' },
-  { id: 'dark', label: 'Dark', hint: 'Always dark' }
-]
-
 /**
- * Appearance picker. The value is stored in localStorage rather than the
- * database because index.html reads it synchronously before the bundle parses
- * - an async round trip would paint the old theme first and then repaint.
+ * Light/Dark capsule with a sliding thumb, plus a separate "use system theme"
+ * control so following the OS is still reachable.
+ *
+ * The value is stored in localStorage rather than the database because
+ * index.html reads it synchronously before the bundle parses - an async round
+ * trip would paint the old theme first and then repaint, which is the flash
+ * this is meant to avoid.
  */
 export default function AppearanceSetting(): React.JSX.Element {
+  const reducedMotion = useReducedMotionPref()
   const [pref, setPref] = useState<ThemePref>(readThemePref)
+  const [systemDark, setSystemDark] = useState<boolean>(systemPrefersDark)
 
-  // Track the OS only while the choice is "system".
+  // Track the OS so the capsule shows what "system" currently resolves to.
   useEffect(() => {
-    if (pref !== 'system') return
     const mq = window.matchMedia('(prefers-color-scheme: dark)')
-    const onChange = (): void => applyThemePref('system')
+    const onChange = (): void => {
+      setSystemDark(mq.matches)
+      if (readThemePref() === 'system') applyThemePref('system')
+    }
     mq.addEventListener('change', onChange)
     return () => mq.removeEventListener('change', onChange)
-  }, [pref])
+  }, [])
 
   const choose = useCallback((next: ThemePref) => {
     setPref(next)
@@ -56,64 +63,69 @@ export default function AppearanceSetting(): React.JSX.Element {
     applyThemePref(next)
   }, [])
 
+  const usingSystem = pref === 'system'
+  const isDark = pref === 'dark' || (usingSystem && systemDark)
+
   return (
     <section
       aria-labelledby="appearance-heading"
-      style={{
-        background: 'var(--app-panel, var(--app-surface, var(--app-surface, #111114)))',
-        border: '1px solid var(--app-hairline, rgba(255,255,255,0.06))',
-        borderRadius: '8px',
-        padding: '18px 20px'
-      }}
+      className="glass-panel appearance-card"
     >
-      <h3
-        id="appearance-heading"
-        style={{
-          margin: 0,
-          fontSize: '11px',
-          fontWeight: 700,
-          letterSpacing: '0.5px',
-          textTransform: 'uppercase',
-          color: 'var(--app-accent, #e11d2e)'
-        }}
-      >
+      <h3 id="appearance-heading" className="appearance-title">
         Appearance
       </h3>
-      <div style={{ fontSize: '12px', color: 'var(--app-fg-dim, var(--app-fg-dim, #8a8a8f))', margin: '6px 0 14px' }}>
+      <div className="appearance-sub">
         Media keeps its own colours in every theme, and the viewer background stays dark.
       </div>
-      <div role="radiogroup" aria-labelledby="appearance-heading" style={{ display: 'flex', gap: '8px' }}>
-        {OPTIONS.map((o) => {
-          const active = pref === o.id
-          return (
-            <button
-              key={o.id}
-              type="button"
-              role="radio"
-              aria-checked={active}
-              onClick={() => choose(o.id)}
-              style={{
-                flex: '1 1 0',
-                padding: '10px 12px',
-                borderRadius: '8px',
-                cursor: 'pointer',
-                textAlign: 'left',
-                background: active
-                  ? 'var(--dock-item-active, rgba(225,29,46,0.18))'
-                  : 'var(--dock-item-hover, rgba(255,255,255,0.05))',
-                border: active
-                  ? '1px solid var(--app-accent, #e11d2e)'
-                  : '1px solid var(--app-hairline, rgba(255,255,255,0.08))',
-                color: 'var(--app-fg, var(--app-fg, #f2f2f0))'
-              }}
-            >
-              <div style={{ fontSize: '13px', fontWeight: 600 }}>{o.label}</div>
-              <div style={{ fontSize: '10px', color: 'var(--app-fg-dim, var(--app-fg-dim, #8a8a8f))', marginTop: '2px' }}>
-                {o.hint}
-              </div>
-            </button>
-          )
-        })}
+
+      <div className="appearance-row">
+        <div
+          className={
+            'theme-switch' +
+            (isDark ? ' is-dark' : '') +
+            (usingSystem ? ' is-system' : '') +
+            (reducedMotion ? ' no-anim' : '')
+          }
+          role="radiogroup"
+          aria-label="Theme"
+        >
+          {/* One thumb that slides between the two halves. */}
+          <span className="theme-switch-thumb" aria-hidden="true" />
+          <button
+            type="button"
+            role="radio"
+            aria-checked={!isDark}
+            className={'theme-switch-half' + (!isDark ? ' is-on' : '')}
+            onClick={() => choose('light')}
+          >
+            <Sun size={14} aria-hidden="true" />
+            <span>Light</span>
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={isDark}
+            className={'theme-switch-half' + (isDark ? ' is-on' : '')}
+            onClick={() => choose('dark')}
+          >
+            <Moon size={14} aria-hidden="true" />
+            <span>Dark</span>
+          </button>
+        </div>
+
+        <label className="theme-system">
+          <input
+            type="checkbox"
+            checked={usingSystem}
+            onChange={(e) => choose(e.target.checked ? 'system' : systemDark ? 'dark' : 'light')}
+          />
+          <span>
+            Use system theme
+            {usingSystem && (
+              <span className="theme-system-hint"> — currently {systemDark ? 'dark' : 'light'}</span>
+            )}
+          </span>
+        </label>
       </div>
     </section>
   )

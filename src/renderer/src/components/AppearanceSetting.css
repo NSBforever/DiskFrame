@@ -1,0 +1,155 @@
+/* ── Appearance card ───────────────────────────────────────────────────── */
+.appearance-card {
+  padding: 18px 20px;
+}
+.appearance-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--app-accent, #e11d2e);
+}
+.appearance-sub {
+  font-size: 12px;
+  color: var(--app-fg-dim, #8a8a8f);
+  margin: 6px 0 14px;
+}
+.appearance-row {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+/* ── Theme capsule ─────────────────────────────────────────────────────────
+   Translucent capsule with a single thumb that slides between the halves.
+   The glow and highlight are static gradients - nothing animates unless the
+   selection changes, so there is no continuous cost. */
+.theme-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  padding: 4px;
+  border-radius: 999px;
+  isolation: isolate;
+  background: var(--switch-bg, rgba(12, 12, 16, 0.55));
+  backdrop-filter: blur(18px) saturate(1.5);
+  -webkit-backdrop-filter: blur(18px) saturate(1.5);
+  border: 1px solid var(--switch-border, rgba(255, 255, 255, 0.16));
+  box-shadow:
+    0 8px 22px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+/* Fine reflective edge along the top. */
+.theme-switch::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0.16), transparent 46%);
+}
+
+.theme-switch-thumb {
+  position: absolute;
+  z-index: 0;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: calc(50% - 4px);
+  border-radius: 999px;
+  background: var(--switch-thumb, rgba(255, 255, 255, 0.14));
+  border: 1px solid var(--switch-thumb-border, rgba(255, 255, 255, 0.2));
+  box-shadow:
+    0 2px 10px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24);
+  transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1), background-color 260ms ease;
+}
+.theme-switch.is-dark .theme-switch-thumb {
+  transform: translateX(100%);
+  /* Soft glow, only on the active side. */
+  box-shadow:
+    0 2px 14px rgba(120, 140, 255, 0.25),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24);
+}
+.theme-switch:not(.is-dark) .theme-switch-thumb {
+  box-shadow:
+    0 2px 14px rgba(255, 196, 92, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+.theme-switch.no-anim .theme-switch-thumb {
+  transition: none;
+}
+
+.theme-switch-half {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  /* Equal halves so the thumb lines up with either one exactly. */
+  width: 104px;
+  padding: 8px 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-fg-dim, #9a9aa6);
+  transition: color 200ms ease;
+}
+.theme-switch-half.is-on {
+  color: var(--app-fg, #f2f2f0);
+}
+.theme-switch-half:focus-visible {
+  outline: 2px solid var(--app-accent, #e11d2e);
+  outline-offset: 2px;
+}
+.theme-switch.no-anim .theme-switch-half {
+  transition: none;
+}
+
+/* While the OS is in charge the capsule still reports the resolved theme, but
+   reads as secondary so it is clear it is not a manual choice. */
+.theme-switch.is-system {
+  opacity: 0.78;
+}
+
+.theme-system {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--app-fg-dim, #8a8a8f);
+  cursor: pointer;
+}
+.theme-system input {
+  accent-color: var(--app-accent, #e11d2e);
+  cursor: pointer;
+}
+.theme-system-hint {
+  opacity: 0.75;
+}
+
+:root[data-theme='light'] .theme-switch {
+  --switch-bg: rgba(255, 255, 255, 0.6);
+  --switch-border: rgba(0, 0, 0, 0.12);
+  --switch-thumb: rgba(255, 255, 255, 0.9);
+  --switch-thumb-border: rgba(0, 0, 0, 0.08);
+}
+
+.df-reduced-effects .theme-switch {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: var(--app-surface, #111114);
+}
+@media (prefers-reduced-motion: reduce) {
+  .theme-switch-thumb,
+  .theme-switch-half {
+    transition: none;
+  }
+}
