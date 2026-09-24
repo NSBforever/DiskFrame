@@ -715,6 +715,16 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
     restoredRef.current = true
   })
 
+  // Changing the grouping rebuilds the section layout, often to a very
+  // different height. When the content shrinks the browser clamps scrollTop
+  // silently - no scroll event - so the virtualiser went on rendering rows
+  // from an offset that no longer exists and the grid came up blank until the
+  // user scrolled. Resync from the element whenever the height changes.
+  useLayoutEffect(() => {
+    const el = scrollerRef.current
+    if (el && el.scrollTop !== scrollTop) setScrollTop(el.scrollTop)
+  }, [layout.height, scrollTop])
+
   // ── Pinch / ctrl+wheel zoom ──
   const gesture = useRef({ active: false, raw: 1, endTimer: 0 as number | undefined, lastStep: 0, startedAtDensest: false, startedAtLargest: false, edgeNotches: 0, edgeNotchesIn: 0 })
 
