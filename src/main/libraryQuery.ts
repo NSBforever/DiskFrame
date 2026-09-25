@@ -51,6 +51,33 @@ function inList(column: string, values: string[]): { sql: string; params: string
 }
 
 /**
+ * Extensions with no visual preview. The grid packs four of these into the
+ * space of one normal tile, because a screen of identical generic icons at
+ * full size is a screen that shows almost nothing.
+ *
+ * This is classified by extension, never by whether a thumbnail happens to be
+ * present: a photo whose thumbnail is still generating, or whose drive is
+ * disconnected, is still a photo and keeps its full tile.
+ */
+export const COMPACT_EXTS = DOC_EXTS
+
+// These are module constants, never user input, so they are written into the
+// SQL rather than bound - the alternative is threading four more positional
+// parameters through every builder in a specific order. Asserted at load so a
+// future edit cannot smuggle anything else in.
+const COMPACT_EXT_LIST = (() => {
+  for (const e of COMPACT_EXTS) {
+    if (!/^\.[a-z0-9]{1,8}$/.test(e)) throw new Error(`unsafe compact extension: ${e}`)
+  }
+  return COMPACT_EXTS.map((e) => `'${e}'`).join(',')
+})()
+
+/** 1 for a file the grid draws compactly, 0 otherwise. */
+export function compactExpr(): string {
+  return `(CASE WHEN ext IN (${COMPACT_EXT_LIST}) THEN 1 ELSE 0 END)`
+}
+
+/**
  * WHERE clause for a query, as SQL plus positional parameters.
  * Every value is bound, never interpolated.
  */
@@ -160,7 +187,9 @@ export function summarySql(q: LibraryQuery): { sql: string; params: unknown[] } 
   const key = groupKeyExpr(q.groupBy)
   const dir = q.order === 'reverse' ? 'ASC' : 'DESC'
   return {
-    sql: `SELECT ${key} AS gkey, COUNT(*) AS n, MIN(date) AS min_date, MAX(date) AS max_date
+    sql: `SELECT ${key} AS gkey, COUNT(*) AS n,
+                 SUM(${compactExpr()}) AS n_compact,
+                 MIN(date) AS min_date, MAX(date) AS max_date
           FROM files WHERE ${where.sql}
           GROUP BY gkey
           ORDER BY ${q.order === 'reverse' ? 'MIN(date)' : 'MAX(date)'} ${dir}, gkey ${dir}`,
@@ -198,26 +227,32 @@ export function groupIsDateDerived(groupBy: GroupBy): boolean {
 export function pageSql(q: LibraryQuery): { sql: string; params: unknown[] } {
   const where = buildWhere(q)
   const rowOrder = orderExpr(q.order)
+  const key = groupKeyExpr(q.groupBy)
+  const dir = q.order === 'reverse' ? 'ASC' : 'DESC'
 
+  // Files that get a compact cell are placed after the previewable ones inside
+  // their own group. The grid needs that: it reserves one cell per previewable
+  // file and one per four compact files, so a page has to hand it back in that
+  // arrangement for cell N to mean the same rows on both sides. Grouping is
+  // unaffected - nothing crosses a group boundary.
   if (groupIsDateDerived(q.groupBy)) {
     return {
       sql: `SELECT ${PAGE_COLUMNS} FROM files WHERE ${where.sql}
-          ORDER BY ${rowOrder} LIMIT ? OFFSET ?`,
+          ORDER BY ${key} ${dir}, ${compactExpr()} ASC, ${rowOrder} LIMIT ? OFFSET ?`,
       params: where.params
     }
   }
 
-  const key = groupKeyExpr(q.groupBy)
-  const dir = q.order === 'reverse' ? 'ASC' : 'DESC'
   const agg = q.order === 'reverse' ? 'MIN' : 'MAX'
   return {
     sql: `SELECT ${PAGE_COLUMNS} FROM (
             SELECT ${PAGE_COLUMNS},
                    ${key} AS gkey,
+                   ${compactExpr()} AS is_compact,
                    ${agg}(date) OVER (PARTITION BY ${key}) AS gsort
             FROM files WHERE ${where.sql}
           )
-          ORDER BY gsort ${dir}, gkey ${dir}, ${rowOrder} LIMIT ? OFFSET ?`,
+          ORDER BY gsort ${dir}, gkey ${dir}, is_compact ASC, ${rowOrder} LIMIT ? OFFSET ?`,
     params: where.params
   }
 }

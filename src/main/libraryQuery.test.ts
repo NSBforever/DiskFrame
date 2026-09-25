@@ -8,6 +8,11 @@ import {
   pageSql,
   countSql,
   groupOffsets,
+  compactExpr,
+  COMPACT_EXTS,
+  DOC_EXTS,
+  PHOTO_EXTS,
+  VIDEO_EXTS,
   clusterCellSize,
   mapClustersSql,
   clusterThumbsSql,
@@ -84,7 +89,9 @@ test('page and summary agree on direction', () => {
 test('page query is bounded by LIMIT and OFFSET placeholders', () => {
   const p = pageSql(base)
   assert.match(p.sql, /LIMIT \? OFFSET \?$/)
-  assert.match(p.sql, /ORDER BY date DESC, path ASC/)
+  // date DESC, path ASC still decides the order inside a cell run; the keys
+  // before it group the rows and float the previewless files to the end.
+  assert.match(p.sql, /date DESC, path ASC LIMIT/)
 })
 
 test('count query selects only a count', () => {
@@ -107,10 +114,11 @@ test('group offsets handle an empty library', () => {
   assert.equal(groupOffsets([]).size, 0)
 })
 
-test('date-derived groupings keep the fast index-friendly page order', () => {
+test('date-derived groupings order by their own key, without a window function', () => {
   for (const g of ['day', 'month', 'year'] as const) {
     const sql = pageSql({ ...base, groupBy: g }).sql
-    assert.match(sql, /ORDER BY date DESC, path ASC LIMIT \? OFFSET \?/)
+    assert.ok(sql.includes('ORDER BY ' + groupKeyExpr(g) + ' DESC'), g + ' groups first')
+    assert.match(sql, /date DESC, path ASC LIMIT \? OFFSET \?/)
     assert.ok(!sql.includes('OVER (PARTITION BY'), g + ' should not need a window function')
   }
 })
@@ -121,14 +129,14 @@ test('location and favourites pages are ordered by group, not date alone', () =>
   for (const g of ['location', 'favorites'] as const) {
     const sql = pageSql({ ...base, groupBy: g }).sql
     assert.match(sql, /MAX\(date\) OVER \(PARTITION BY/)
-    assert.match(sql, /ORDER BY gsort DESC, gkey DESC, date DESC, path ASC/)
+    assert.match(sql, /ORDER BY gsort DESC, gkey DESC, is_compact ASC, date DESC, path ASC/)
   }
 })
 
 test('reversed order flips both the group ranking and the rows', () => {
   const sql = pageSql({ ...base, groupBy: 'favorites', order: 'reverse' }).sql
   assert.match(sql, /MIN\(date\) OVER \(PARTITION BY/)
-  assert.match(sql, /ORDER BY gsort ASC, gkey ASC, date ASC, path ASC/)
+  assert.match(sql, /ORDER BY gsort ASC, gkey ASC, is_compact ASC, date ASC, path ASC/)
   // and the summary it must agree with
   const sum = summarySql({ ...base, groupBy: 'favorites', order: 'reverse' }).sql
   assert.match(sum, /ORDER BY MIN\(date\) ASC, gkey ASC/)
@@ -249,4 +257,42 @@ test('a box combines with the nav filter rather than replacing it', () => {
   assert.ok(w.sql.includes('ext IN ('))
   assert.ok(w.sql.includes('lat BETWEEN ? AND ?'))
   assert.ok(w.params.includes('.mp4'))
+})
+
+
+// ─── compact cells ───────────────────────────────────────────────────────
+
+test('previewless files sort after previewable ones inside a group', () => {
+  for (const g of ['day', 'month', 'year', 'location', 'favorites'] as const) {
+    for (const order of ['default', 'reverse'] as const) {
+      const sql = pageSql({ ...base, groupBy: g, order }).sql
+      const rowKey = order === 'reverse' ? 'date ASC, path ASC' : 'date DESC, path ASC'
+      const compactAt = sql.indexOf('is_compact ASC') >= 0
+        ? sql.indexOf('is_compact ASC')
+        : sql.lastIndexOf(compactExpr() + ' ASC')
+      assert.ok(compactAt > 0, `${g}/${order} must order by the compact flag`)
+      assert.ok(
+        compactAt < sql.lastIndexOf(rowKey),
+        `${g}/${order} must apply it before the row tie-break`
+      )
+    }
+  }
+})
+
+test('the compact flag only ever matches document extensions', () => {
+  const e = compactExpr()
+  for (const ext of DOC_EXTS) assert.ok(e.includes(`'${ext}'`), ext)
+  for (const ext of [...PHOTO_EXTS, ...VIDEO_EXTS]) {
+    assert.ok(!e.includes(`'${ext}'`), `${ext} must keep its own tile`)
+  }
+})
+
+test('the compact flag is built from literals that cannot carry SQL', () => {
+  // It is interpolated rather than bound, so this is the guard that matters.
+  for (const ext of COMPACT_EXTS) assert.match(ext, /^\.[a-z0-9]{1,8}$/)
+})
+
+test('the summary reports how many files in each group are previewless', () => {
+  const sql = summarySql(base).sql
+  assert.ok(sql.includes('SUM(' + compactExpr() + ') AS n_compact'))
 })

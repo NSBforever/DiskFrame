@@ -319,3 +319,117 @@
   color: var(--pg-offline-fg, #6f7d92);
   background: var(--pg-offline-bg, rgba(111, 125, 146, 0.12));
 }
+
+/* ── compact cells for files with no preview ─────────────────────────── */
+
+/* Four previewless files in the space of one tile. A screen of identical
+   generic icons at full size shows almost nothing; this keeps the same grid
+   geometry while giving each file back its name and type. */
+.pg-doc-cell {
+  position: absolute;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 2px;
+}
+
+.pg-doc {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  background: var(--app-surface-2, #161619);
+  color: var(--app-fg-dim, #8a8a8f);
+  cursor: pointer;
+  overflow: hidden;
+  text-align: center;
+  font: inherit;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.pg-doc:hover {
+  background: var(--app-item-hover, rgba(255, 255, 255, 0.06));
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+.pg-doc:focus-visible {
+  outline: 2px solid var(--app-accent, #e11d2e);
+  outline-offset: -2px;
+}
+
+.pg-doc.is-selected {
+  border-color: var(--app-accent, #e11d2e);
+  background: rgba(225, 29, 46, 0.12);
+}
+
+.pg-doc.is-deleting {
+  opacity: 0.4;
+}
+
+.pg-doc-ext {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--app-fg, #f2f2f0);
+  line-height: 1.1;
+}
+
+.pg-doc-name {
+  max-width: 100%;
+  font-size: 8px;
+  line-height: 1.15;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 2px;
+}
+
+/* Below a readable size the cell shows the type only. Flagged by the grid
+   rather than matched on the inline width, which would also catch 400px. */
+.pg-doc-cell[data-small='1'] .pg-doc-name {
+  display: none;
+}
+
+.pg-doc-fav {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--app-accent, #e11d2e);
+}
+
+/* A cell holding fewer than four files fills the space rather than leaving
+   empty quadrants: one file takes the whole cell, two split it, three put two
+   on top and one across the bottom. */
+.pg-doc-cell[data-n="1"] .pg-doc {
+  grid-column: span 2;
+  grid-row: span 2;
+}
+
+.pg-doc-cell[data-n="2"] .pg-doc {
+  grid-row: span 2;
+}
+
+.pg-doc-cell[data-n="3"] .pg-doc:nth-child(3) {
+  grid-column: span 2;
+}
+
+/* With more room, a lone document can afford a larger label. */
+.pg-doc-cell[data-n="1"] .pg-doc-ext,
+.pg-doc-cell[data-n="2"] .pg-doc-ext {
+  font-size: 11px;
+}
+
+.pg-doc-cell[data-n="1"] .pg-doc-name,
+.pg-doc-cell[data-n="2"] .pg-doc-name {
+  font-size: 9px;
+}

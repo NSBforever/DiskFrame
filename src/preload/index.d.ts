@@ -60,7 +60,14 @@ declare global {
       getFiles: (drivePath: string) => void
       librarySummary: (query: LibraryQueryLike) => Promise<{
         total: number
-        groups: { key: string; count: number; minDate: string; maxDate: string; offset: number }[]
+        groups: {
+          key: string
+          count: number
+          compactCount: number
+          minDate: string
+          maxDate: string
+          offset: number
+        }[]
       }>
       libraryPage: (
         query: LibraryQueryLike,

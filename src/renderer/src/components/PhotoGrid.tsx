@@ -14,6 +14,7 @@ import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, 
 import { AlertTriangle, Check, FileText, Film, Heart, Image as ImageIcon, Play, Unplug } from 'lucide-react'
 import { THUMB_UNAVAILABLE, THUMB_VOLUME_OFFLINE } from '../../../main/validation'
 import type { ScannedFile } from '../App'
+import { cellCountOf, cellSpan, mediaCountOf } from '../../../main/compactCells'
 import type { LibraryGroup } from '../hooks/useLibrary'
 import { useReducedMotionPref } from '../hooks/useReducedMotionPref'
 import './PhotoGrid.css'
@@ -51,12 +52,24 @@ function levelsFor(width: number): number[] {
 interface Section {
   key: string
   count: number
+  /** Files in this section that get a full tile of their own. */
+  mediaCount: number
+  /** Files with no preview, four to a cell. */
+  compactCount: number
+  /** Laid-out cells: one per previewable file, one per four compact files. */
+  cells: number
   /** Index of this section's first row in the overall ordering. */
   offset: number
   top: number
   rowsTop: number
   rows: number
   bottom: number
+}
+
+/** Which rows a laid-out cell stands for, in absolute row indices. */
+function cellRows(s: Section, cell: number): { start: number; count: number } {
+  const span = cellSpan({ count: s.count, compactCount: s.compactCount }, cell)
+  return { start: s.offset + span.start, count: span.count }
 }
 
 interface Layout {
@@ -74,10 +87,25 @@ function buildLayout(groups: LibraryGroup[], width: number, cols: number): Layou
   let y = PAD_TOP
   for (const g of groups) {
     if (g.count <= 0) continue
-    const rows = Math.ceil(g.count / cols)
+    const shape = { count: g.count, compactCount: g.compactCount ?? 0 }
+    const mediaCount = mediaCountOf(shape)
+    const compactCount = g.count - mediaCount
+    const cells = cellCountOf(shape)
+    const rows = Math.ceil(cells / cols)
     const rowsTop = y + HEADER_H
     const bottom = rowsTop + rows * pitch - GAP + SECTION_GAP
-    sections.push({ key: g.key, count: g.count, offset: g.offset, top: y, rowsTop, rows, bottom })
+    sections.push({
+      key: g.key,
+      count: g.count,
+      mediaCount,
+      compactCount,
+      cells,
+      offset: g.offset,
+      top: y,
+      rowsTop,
+      rows,
+      bottom
+    })
     y = bottom
   }
   return { cols, tile, pitch, sections, height: y + PAD_BOTTOM }
@@ -178,6 +206,88 @@ const PREVIEW_MAX_SECONDS = 5
  * survives all of it, and there is only ever one gallery.
  */
 let lastGalleryScrollTop = 0
+
+/** "Financial Report 2026 final.pdf" -> "Financial R….pdf", keeping the type. */
+function shortName(name: string): string {
+  const dot = name.lastIndexOf('.')
+  const stem = dot > 0 ? name.slice(0, dot) : name
+  const ext = dot > 0 ? name.slice(dot) : ''
+  if (stem.length <= 11) return stem + ext
+  return stem.slice(0, 10) + '\u2026' + ext
+}
+
+/**
+ * Up to four previewless files sharing one gallery cell.
+ *
+ * A PDF or a spreadsheet has nothing to show, so at full tile size a folder of
+ * documents fills the screen with identical icons. Each mini-tile is still its
+ * own control: it opens, selects, favourites and takes a context menu exactly
+ * as a full tile does, and carries its full name for hover and screen readers.
+ */
+const CompactCell = memo(function CompactCell({
+  files,
+  firstIndex,
+  x,
+  y,
+  size,
+  selected,
+  favourites,
+  deletingPaths,
+  actions
+}: {
+  files: ScannedFile[]
+  firstIndex: number
+  x: number
+  y: number
+  size: number
+  selected: Set<string>
+  favourites: Set<string>
+  deletingPaths: Set<string>
+  actions: GridActions
+}): React.JSX.Element {
+  return (
+    <div
+      className="pg-doc-cell"
+      data-n={files.length}
+      // A quarter of a small tile has no room for a filename; the type still
+      // fits, and the full name stays on the title attribute either way.
+      data-small={size < 104 ? '1' : '0'}
+      style={{ left: x, top: y, width: size, height: size }}
+    >
+      {files.map((f, k) => {
+        const isSel = selected.has(f.path)
+        return (
+          <button
+            key={f.path}
+            type="button"
+            data-tile={f.path}
+            className={
+              'pg-doc' +
+              (isSel ? ' is-selected' : '') +
+              (deletingPaths.has(f.path) ? ' is-deleting' : '')
+            }
+            title={f.name}
+            aria-label={f.name}
+            aria-pressed={isSel}
+            onClick={(e) => {
+              // Same modifier rules as a full tile: plain click opens, a
+              // modified click extends the selection.
+              if (e.ctrlKey || e.metaKey || e.shiftKey) actions.select(f, e)
+              else actions.open(f, firstIndex + k, e)
+            }}
+            onContextMenu={(e) => actions.context(f, e)}
+            onDragStart={() => window.api.startNativeDrag(actions.dragPaths(f))}
+            draggable
+          >
+            <span className="pg-doc-ext">{(f.ext || '').replace('.', '') || 'file'}</span>
+            <span className="pg-doc-name">{shortName(f.name)}</span>
+            {favourites.has(f.path) && <span className="pg-doc-fav" aria-hidden="true" />}
+          </button>
+        )
+      })}
+    </div>
+  )
+})
 
 const GridTile = memo(function GridTile({
   file,
@@ -994,15 +1104,55 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
       }
       const r0 = clamp(Math.floor((y0 - s.rowsTop) / layout.pitch), 0, s.rows)
       const r1 = clamp(Math.floor((y1 - s.rowsTop) / layout.pitch), -1, s.rows - 1)
-      const end = Math.min(s.count, (r1 + 1) * layout.cols)
+      const end = Math.min(s.cells, (r1 + 1) * layout.cols)
       const from = r0 * layout.cols
       if (end > from) {
-        rangeStart = Math.min(rangeStart, s.offset + from)
-        rangeEnd = Math.max(rangeEnd, s.offset + end - 1)
+        // A compact cell stands for up to four rows, so the range the pages
+        // must cover is wider than the cell indices.
+        const first = cellRows(s, from)
+        const last = cellRows(s, end - 1)
+        rangeStart = Math.min(rangeStart, first.start)
+        rangeEnd = Math.max(rangeEnd, last.start + Math.max(0, last.count - 1))
       }
       for (let i = from; i < end; i++) {
-        const globalIndex = s.offset + i
         const p = tilePos(layout, s, i)
+        const span = cellRows(s, i)
+
+        if (i >= s.mediaCount) {
+          const cellFiles: ScannedFile[] = []
+          for (let k = 0; k < span.count; k++) {
+            const row = getRow(span.start + k)
+            if (row) cellFiles.push(row)
+          }
+          if (cellFiles.length === 0) {
+            tiles.push(
+              <div
+                key={'skel:' + span.start}
+                className="pg-tile is-skeleton"
+                style={{ left: p.x, top: p.y, width: layout.tile, height: layout.tile }}
+              />
+            )
+            continue
+          }
+          for (const f of cellFiles) visiblePaths.push(f.path)
+          tiles.push(
+            <CompactCell
+              key={'doc:' + cellFiles[0].path}
+              files={cellFiles}
+              firstIndex={span.start}
+              x={p.x}
+              y={p.y}
+              size={layout.tile}
+              selected={selected}
+              favourites={favourites}
+              deletingPaths={deletingPaths}
+              actions={actions}
+            />
+          )
+          continue
+        }
+
+        const globalIndex = span.start
         const f = getRow(globalIndex)
         if (!f) {
           // The page covering this index has not arrived yet. A sized, inert

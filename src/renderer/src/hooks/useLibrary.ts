@@ -22,6 +22,8 @@ export interface LibraryQuery {
 export interface LibraryGroup {
   key: string
   count: number
+  /** How many of those files have no preview and share compact cells. */
+  compactCount: number
   minDate: string
   maxDate: string
   /** Index of this group's first row in the overall ordering. */

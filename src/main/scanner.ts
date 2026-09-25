@@ -1321,12 +1321,20 @@ export const MAX_PAGE_SIZE = 500
 
 export function getLibrarySummary(q: LibraryQuery): {
   total: number
-  groups: { key: string; count: number; minDate: string; maxDate: string; offset: number }[]
+  groups: {
+    key: string
+    count: number
+    compactCount: number
+    minDate: string
+    maxDate: string
+    offset: number
+  }[]
 } {
   const s = summarySql(q)
   const rows = db.prepare(s.sql).all(...(s.params as never[])) as {
     gkey: string
     n: number
+    n_compact: number
     min_date: string
     max_date: string
   }[]
@@ -1338,6 +1346,7 @@ export function getLibrarySummary(q: LibraryQuery): {
     groups: rows.map((r) => ({
       key: r.gkey,
       count: r.n,
+      compactCount: r.n_compact ?? 0,
       minDate: r.min_date,
       maxDate: r.max_date,
       offset: offsets.get(r.gkey) ?? 0
