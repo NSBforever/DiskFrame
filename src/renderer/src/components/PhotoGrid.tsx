@@ -481,6 +481,8 @@ export interface PhotoGridProps {
   onContextMenu: (file: ScannedFile, list: ScannedFile[], e: React.MouseEvent) => void
   onGroupCheckboxClick: (key: string, e: React.MouseEvent) => void
   scrollRequest: { key: string; nonce: number } | null
+  /** Bumped by the caller to send the grid back to the top. */
+  scrollToTopNonce?: number
   /** Bumped when thumbnails are patched into file objects in place. */
   thumbVersion: number
   hoverPreviewsEnabled: boolean
@@ -708,8 +710,9 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
       restoredRef.current = true
       return
     }
-    // The content needs its height before a scrollTop can stick.
-    if (el.scrollHeight <= el.clientHeight) return
+    // The layout has to be tall enough to actually hold the target, not just
+    // scrollable - restoring into a half-built layout gets clamped back to 0.
+    if (el.scrollHeight - el.clientHeight < want) return
     el.scrollTop = want
     setScrollTop(want)
     restoredRef.current = true
@@ -721,9 +724,27 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
   // from an offset that no longer exists and the grid came up blank until the
   // user scrolled. Resync from the element whenever the height changes.
   useLayoutEffect(() => {
+    // Not while the restore above is still waiting for a tall enough layout,
+    // or this would sync the state to the 0 it is trying to move away from.
+    if (!restoredRef.current) return
     const el = scrollerRef.current
     if (el && el.scrollTop !== scrollTop) setScrollTop(el.scrollTop)
   }, [layout.height, scrollTop])
+
+  // A grouping or order change rebuilds the list from scratch, so the old
+  // offset means nothing in the new one. Skips the first run: mounting is not
+  // a change, and it must not fight the position restore above.
+  const lastTopNonce = useRef(props.scrollToTopNonce ?? 0)
+  useLayoutEffect(() => {
+    const n = props.scrollToTopNonce ?? 0
+    if (n === lastTopNonce.current) return
+    lastTopNonce.current = n
+    const el = scrollerRef.current
+    if (!el) return
+    el.scrollTop = 0
+    setScrollTop(0)
+    lastGalleryScrollTop = 0
+  }, [props.scrollToTopNonce])
 
   // ── Pinch / ctrl+wheel zoom ──
   const gesture = useRef({ active: false, raw: 1, endTimer: 0 as number | undefined, lastStep: 0, startedAtDensest: false, startedAtLargest: false, edgeNotches: 0, edgeNotchesIn: 0 })

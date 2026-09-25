@@ -569,6 +569,8 @@ const MainContentArea: React.FC<{
   groupBy: string
   onDragStart: (file: ScannedFile, e: React.DragEvent) => void
   setActiveView: (view: string) => void
+  /** Bumped to send the grid back to the top after a grouping/order change. */
+  scrollToTopNonce: number
   onGridZoomOutBeyond: () => void
   onGridZoomInBeyond: () => void
   visibleKeyRefProp: React.MutableRefObject<string | null>
@@ -618,6 +620,7 @@ const MainContentArea: React.FC<{
   groupBy,
   onDragStart,
   setActiveView,
+  scrollToTopNonce,
   onGridZoomOutBeyond,
   onGridZoomInBeyond,
   visibleKeyRefProp,
@@ -1136,6 +1139,7 @@ const MainContentArea: React.FC<{
           onContextMenu={handleTileContextMenu}
           onGroupCheckboxClick={handleGroupCheckboxClick}
           scrollRequest={gridScrollRequest}
+          scrollToTopNonce={scrollToTopNonce}
           thumbVersion={thumbVersion}
           hoverPreviewsEnabled={hoverPreviewsEnabled}
           onVisibleKeyChange={onVisibleKeyChange}
@@ -1447,6 +1451,12 @@ export default function App(): React.JSX.Element {
   // Redesign / Trash / AI State
   const [groupBy, setGroupBy] = useState<'day' | 'month' | 'year' | 'location' | 'favorites'>('day')
   const [viewOrder, setViewOrder] = useState<'default' | 'reverse'>('default')
+  // Bumped when the user picks a different grouping or order from the menus.
+  // The list they were looking at no longer exists, so staying at the same
+  // pixel offset drops them somewhere arbitrary in the new one - which reads
+  // as "the sort did nothing". Zoom-driven grouping changes do NOT bump this:
+  // they keep their own anchor so the zoom animation stays continuous.
+  const [scrollToTopNonce, setScrollToTopNonce] = useState(0)
   const [hoverPreviewsEnabled, setHoverPreviewsEnabled] = useState(
     () => localStorage.getItem('diskframe-hover-previews') !== 'off'
   )
@@ -1815,6 +1825,7 @@ export default function App(): React.JSX.Element {
 
   const handleViewOrderChange = (order: 'default' | 'reverse') => {
     setViewOrder(order)
+    setScrollToTopNonce((n) => n + 1)
     window.api.setViewOrder(order).catch((err) => console.error(err))
   }
 
@@ -2621,7 +2632,7 @@ export default function App(): React.JSX.Element {
               <GlassSelect
                 label="Grouping"
                 value={groupBy}
-                onChange={(v) => setGroupBy(v as never)}
+                onChange={(v) => { setGroupBy(v as never); setScrollToTopNonce((n) => n + 1) }}
                 options={[
                   { value: 'day', label: 'Group by Day' },
                   { value: 'month', label: 'Group by Month' },
@@ -2701,6 +2712,7 @@ export default function App(): React.JSX.Element {
           onDragStart={handleDragStart}
           setActiveView={setActiveView}
           onTileSizeCommit={handleGridTileSizeCommit}
+          scrollToTopNonce={scrollToTopNonce}
           onGridZoomOutBeyond={handleGridZoomOutBeyond}
           onGridZoomInBeyond={handleGridZoomInBeyond}
           visibleKeyRefProp={visibleKeyRef}
