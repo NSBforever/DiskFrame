@@ -563,6 +563,8 @@ const MainContentArea: React.FC<{
   getRow: (index: number) => ScannedFile | undefined
   pageVersion: number
   ensureRange: (start: number, end: number) => void
+  /** Four thumbnails per year for the Years cards, read outside the page cache. */
+  yearPreviews: Record<string, ScannedFile[]>
   formatGroupKey: (key: string) => string
   handleWheel: (e: React.WheelEvent) => void
   handleGroupCheckboxClick: (groupKey: string, e: React.MouseEvent) => void
@@ -614,6 +616,7 @@ const MainContentArea: React.FC<{
   getRow,
   pageVersion,
   ensureRange,
+  yearPreviews,
   formatGroupKey,
   handleWheel,
   handleGroupCheckboxClick,
@@ -637,6 +640,26 @@ const MainContentArea: React.FC<{
   const [windowWidth, setWindowWidth] = useState(window.innerWidth)
 
   const virtuosoRef = useRef<any>(null)
+  // Timeline preview strips are sized to the row they sit in. They used to be
+  // a fixed twelve thumbnails, which on a wide window filled about a third of
+  // the width and left the rest empty - the large blank region in the gallery.
+  const listWrapRef = useRef<HTMLDivElement>(null)
+  const [listWidth, setListWidth] = useState(0)
+  useEffect(() => {
+    const el = listWrapRef.current
+    if (!el) return
+    const measure = (): void => setListWidth(el.clientWidth)
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [activeView])
+  // 80px tile + 5px gap. One cell is held back for the "+N more" affordance.
+  const TIMELINE_CELL = 85
+  const timelinePreviewCount = Math.max(
+    6,
+    Math.min(40, Math.floor((listWidth - 90) / TIMELINE_CELL) - 1)
+  )
 
   useEffect(() => {
     const handleResize = () => setWindowWidth(window.innerWidth)
@@ -671,7 +694,7 @@ const MainContentArea: React.FC<{
         label: formatGroupKey(g.key),
         filesCount: g.count
       })
-      const previewCount = Math.min(12, g.count)
+      const previewCount = Math.min(timelinePreviewCount, g.count)
       const rowFiles: ScannedFile[] = []
       for (let i = 0; i < previewCount; i++) {
         const f = getRow(g.offset + i)
@@ -684,20 +707,20 @@ const MainContentArea: React.FC<{
         offset: g.offset,
         previewCount,
         rowFiles,
-        hasMore: g.count > 12,
-        remaining: g.count - 12
+        hasMore: g.count > previewCount,
+        remaining: g.count - previewCount
       })
     }
     return items
-  }, [libraryGroups, formatGroupKey, getRow, activeView])
+  }, [libraryGroups, formatGroupKey, getRow, activeView, timelinePreviewCount])
 
   // Keep the previews for visible timeline groups resident.
   useEffect(() => {
     if (activeView !== 'Timeline' || libraryGroups.length === 0) return
     const first = libraryGroups[0]
     const last = libraryGroups[Math.min(libraryGroups.length - 1, 20)]
-    ensureRange(first.offset, last.offset + Math.min(12, last.count))
-  }, [activeView, libraryGroups, ensureRange])
+    ensureRange(first.offset, last.offset + Math.min(timelinePreviewCount, last.count))
+  }, [activeView, libraryGroups, ensureRange, timelinePreviewCount])
 
   // 3. Years Items construction
   // Year totals come from the summary, so no file rows are needed to build this.
@@ -716,10 +739,10 @@ const MainContentArea: React.FC<{
     const years = Object.keys(yearTotals).sort((a, b) => yearNum(b) - yearNum(a))
     const yearsPerRow = Math.max(1, Math.floor((windowWidth - 260) / (200 + 16)))
     chunkArray(years, yearsPerRow).forEach((rowYears, rowIndex) => {
-      items.push({ type: 'years-row', key: `years-row-${rowIndex}`, rowYears, yearTotals, getRow })
+      items.push({ type: 'years-row', key: `years-row-${rowIndex}`, rowYears, yearTotals, getRow, yearPreviews })
     })
     return items
-  }, [libraryGroups, activeView, windowWidth, getRow])
+  }, [libraryGroups, activeView, windowWidth, getRow, yearPreviews])
 
   // 4. Favourites Items construction
   const favouritesItems = useMemo(() => {
@@ -877,20 +900,21 @@ const MainContentArea: React.FC<{
         // this branch still destructured the old name - so `yearMap[year]`
         // threw on the first render and took the whole app down with it,
         // which is the blank screen on opening Years.
-        const { rowYears, yearTotals, getRow: getYearRow } = item
+        const { rowYears, yearTotals, getRow: getYearRow, yearPreviews: previews } = item
         return (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '16px', marginBottom: '16px' }}>
             {rowYears.map((year: string) => {
               const info = yearTotals?.[year] as { count: number; offset: number } | undefined
-              // Preview tiles come from whatever rows happen to be resident
-              // around that year's first row. Nothing is fetched here: this
-              // view must not pull pages for every year on screen.
-              const previewFiles: ScannedFile[] = []
-              if (info && typeof getYearRow === 'function') {
-                for (let i = 0; i < 40 && previewFiles.length < 4; i++) {
+              // Prefer the four rows fetched for this year. Resident grid
+              // rows are only a fallback for the moment before they land.
+              let previewFiles: ScannedFile[] = previews?.[year] ?? []
+              if (previewFiles.length === 0 && info && typeof getYearRow === 'function') {
+                const fallback: ScannedFile[] = []
+                for (let i = 0; i < 40 && fallback.length < 4; i++) {
                   const f = getYearRow(info.offset + i) as ScannedFile | undefined
-                  if (f && f.thumb) previewFiles.push(f)
+                  if (f && f.thumb) fallback.push(f)
                 }
+                previewFiles = fallback
               }
               return (
                 <div key={year} onClick={() => handleYearClick(year)}
@@ -1157,6 +1181,7 @@ const MainContentArea: React.FC<{
   if (isVirtualized) {
     return (
       <div
+        ref={listWrapRef}
         onWheel={handleWheel}
         className="view-transition-enter"
         style={{
@@ -1862,6 +1887,43 @@ export default function App(): React.JSX.Element {
     [selectedDrive, activeNav, searchQuery, groupBy, viewOrder]
   )
   const library = useLibrary(libraryQuery)
+
+  // Each Years card shows four thumbnails. Those rows are almost never in the
+  // page cache, because the cache follows the grid's viewport, so the cards
+  // fell back to grey camera placeholders and nothing ever filled them in -
+  // a screen of empty blocks that looked like a broken gallery.
+  //
+  // This reads a dozen rows per year directly, outside the page cache, so the
+  // whole view costs about twenty small LIMIT queries however large the
+  // library is. The grid's bounded cache is untouched.
+  const [yearPreviews, setYearPreviews] = useState<Record<string, ScannedFile[]>>({})
+  useEffect(() => {
+    if (activeView !== 'Years' || !libraryQuery || library.groups.length === 0) return
+    const totals: Record<string, { offset: number }> = {}
+    for (const g of library.groups) {
+      const y = (g.maxDate || g.key).slice(0, 4) || 'Unknown'
+      if (!totals[y]) totals[y] = { offset: g.offset }
+    }
+    let cancelled = false
+    const q = libraryQuery
+    void (async () => {
+      const next: Record<string, ScannedFile[]> = {}
+      for (const [year, info] of Object.entries(totals)) {
+        if (cancelled) return
+        try {
+          const res = await window.api.libraryPage(q, info.offset, 12)
+          const rows = (res.rows as ScannedFile[]).filter((r) => r.thumb).slice(0, 4)
+          if (rows.length) next[year] = rows
+        } catch {
+          // Leave that one card on its placeholder rather than failing the view.
+        }
+      }
+      if (!cancelled) setYearPreviews(next)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [activeView, libraryQuery, library.groups])
   libraryRef.current = library
   // Settings is its own page: grouping, sorting, the view tabs, gallery
   // search, Index Folder, the date ruler, the action circle and the
@@ -2705,6 +2767,7 @@ export default function App(): React.JSX.Element {
           getRow={library.getRow}
           pageVersion={library.pageVersion}
           ensureRange={library.ensureRange}
+          yearPreviews={yearPreviews}
           formatGroupKey={formatGroupKey}
           handleWheel={handleWheel}
           handleGroupCheckboxClick={handleGroupCheckboxClick}
