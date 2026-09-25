@@ -8,6 +8,10 @@ import {
   pageSql,
   countSql,
   groupOffsets,
+  clusterCellSize,
+  mapClustersSql,
+  clusterThumbsSql,
+  MAX_CLUSTERS,
   type LibraryQuery
 } from './libraryQuery.ts'
 
@@ -158,4 +162,91 @@ test('favourites grouping separates favourited from the rest', () => {
   assert.match(key, /favourited = 1/)
   assert.match(key, /'fav'/)
   assert.match(key, /'other'/)
+})
+
+
+// ─── map clustering ──────────────────────────────────────────────────────
+
+const mapQ = (over: Partial<LibraryQuery> = {}): LibraryQuery => ({
+  drive: 'C:',
+  nav: 'all',
+  search: '',
+  groupBy: 'day',
+  order: 'default',
+  ...over
+})
+
+test('cluster cells shrink as the zoom goes in', () => {
+  const wide = clusterCellSize(2)
+  const close = clusterCellSize(12)
+  assert.ok(close < wide, 'zooming in must split cells')
+  // One zoom level is one halving, so ten levels is a factor of 1024.
+  assert.ok(Math.abs(wide / close - 1024) < 1, `${wide} / ${close}`)
+})
+
+test('cluster cell size is clamped for absurd zooms', () => {
+  assert.ok(clusterCellSize(-5) === clusterCellSize(0))
+  assert.ok(clusterCellSize(99) === clusterCellSize(22))
+  assert.ok(clusterCellSize(Number.NaN) > 0)
+})
+
+test('a bounding box narrows the query and binds all four edges', () => {
+  const w = buildWhere(mapQ({ bbox: { minLat: 10, maxLat: 20, minLng: 70, maxLng: 80 } }))
+  assert.ok(w.sql.includes('lat BETWEEN ? AND ?'))
+  assert.ok(w.sql.includes('lng BETWEEN ? AND ?'))
+  assert.deepEqual(w.params.slice(-4), [10, 20, 70, 80])
+})
+
+test('a reversed box is normalised rather than matching nothing', () => {
+  const w = buildWhere(mapQ({ bbox: { minLat: 20, maxLat: 10, minLng: 80, maxLng: 70 } }))
+  assert.deepEqual(w.params.slice(-4), [10, 20, 70, 80])
+})
+
+test('no box leaves the query untouched', () => {
+  const plain = buildWhere(mapQ())
+  const nulled = buildWhere(mapQ({ bbox: null }))
+  assert.equal(plain.sql, nulled.sql)
+  assert.ok(!plain.sql.includes('BETWEEN'))
+})
+
+test('clusters never include rows without coordinates', () => {
+  const c = mapClustersSql(mapQ(), 0.5)
+  assert.ok(c.sql.includes('lat IS NOT NULL AND lng IS NOT NULL'))
+  const t = clusterThumbsSql(mapQ(), 0.5)
+  assert.ok(t.sql.includes('lat IS NOT NULL AND lng IS NOT NULL'))
+})
+
+test('the cell size binds before the where-clause parameters', () => {
+  // SQLite binds by position in the SQL text, and the cell divisor appears in
+  // the SELECT list, which comes before WHERE. Getting this order wrong would
+  // silently cluster by the drive letter.
+  const c = mapClustersSql(mapQ(), 0.25)
+  assert.equal(c.params[0], 0.25)
+  assert.equal(c.params[1], 0.25)
+  assert.equal(c.params[2], 'C:')
+
+  const t = clusterThumbsSql(mapQ(), 0.25)
+  assert.deepEqual(t.params.slice(0, 4), [0.25, 0.25, 0.25, 0.25])
+  assert.equal(t.params[4], 'C:')
+})
+
+test('clusters are capped and ordered by size', () => {
+  const c = mapClustersSql(mapQ(), 0.5)
+  assert.ok(c.sql.includes('ORDER BY n DESC'))
+  assert.ok(c.sql.includes('LIMIT ?'))
+  assert.ok(MAX_CLUSTERS > 0 && MAX_CLUSTERS <= 500)
+})
+
+test('each cluster gets one representative row, preferring a thumbnail', () => {
+  const t = clusterThumbsSql(mapQ(), 0.5)
+  assert.ok(t.sql.includes('ROW_NUMBER() OVER'))
+  assert.ok(t.sql.includes('(thumb IS NULL) ASC'))
+  assert.ok(t.sql.trimEnd().endsWith('WHERE rn = 1'))
+})
+
+test('a box combines with the nav filter rather than replacing it', () => {
+  const w = buildWhere(mapQ({ nav: 'videos', bbox: { minLat: 0, maxLat: 1, minLng: 0, maxLng: 1 } }))
+  assert.ok(w.sql.includes('ext IN ('))
+  assert.ok(w.sql.includes('lat BETWEEN ? AND ?'))
+  assert.ok(w.params.includes('.mp4'))
 })

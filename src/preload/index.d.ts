@@ -23,6 +23,20 @@ interface ScannedFile {
   thumb: string | null
 }
 
+/**
+ * The library query as it crosses the bridge. Loose on purpose: the renderer
+ * assembles it from state, and the main process re-validates every field.
+ */
+type LibraryQueryLike = {
+  drive: string
+  nav: string
+  search: string
+  groupBy: string
+  order: string
+  /** Optional geographic box, used by the map and the place panel. */
+  bbox?: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null
+}
+
 declare global {
   interface Window {
     electron: ElectronAPI
@@ -44,17 +58,35 @@ declare global {
         callback: (data: { drive: string; indexed: number; needsInitialScan: boolean }) => void
       ) => () => void
       getFiles: (drivePath: string) => void
-      librarySummary: (query: {
-        drive: string; nav: string; search: string; groupBy: string; order: string
-      }) => Promise<{
+      librarySummary: (query: LibraryQueryLike) => Promise<{
         total: number
         groups: { key: string; count: number; minDate: string; maxDate: string; offset: number }[]
       }>
       libraryPage: (
-        query: { drive: string; nav: string; search: string; groupBy: string; order: string },
+        query: LibraryQueryLike,
         offset: number,
         limit: number
       ) => Promise<{ offset: number; rows: ScannedFile[] }>
+      /** Counts and bounds per cluster cell for one map viewport and zoom. */
+      mapClusters: (
+        query: LibraryQueryLike,
+        zoom: number,
+        bounds: { minLat: number; maxLat: number; minLng: number; maxLng: number }
+      ) => Promise<{
+        clusters: {
+          cx: number
+          cy: number
+          count: number
+          lat: number
+          lng: number
+          minLat: number
+          maxLat: number
+          minLng: number
+          maxLng: number
+          thumb: string | null
+          path: string | null
+        }[]
+      }>
       onScanProgress: (callback: (data: { count: number; drive: string }) => void) => () => void
       onScanComplete: (callback: (data: { count: number; drive: string }) => void) => () => void
       onFilesUpdated: (

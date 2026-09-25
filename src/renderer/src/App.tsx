@@ -116,6 +116,7 @@ import SearchAgent from './components/SearchAgent'
 import DriveSelectionView from './components/DriveSelectionView'
 import PhotoGrid from './components/PhotoGrid'
 import MagneticDock from './components/MagneticDock'
+import MapPage from './components/MapPage'
 import AppearanceSetting from './components/AppearanceSetting'
 import GlassSelect from './components/GlassSelect'
 import DateScrubber from './components/DateScrubber'
@@ -565,6 +566,8 @@ const MainContentArea: React.FC<{
   ensureRange: (start: number, end: number) => void
   /** Four thumbnails per year for the Years cards, read outside the page cache. */
   yearPreviews: Record<string, ScannedFile[]>
+  /** The gallery's query, so the Map page honours the same filter and search. */
+  libraryQuery: LibraryQuery | null
   formatGroupKey: (key: string) => string
   handleWheel: (e: React.WheelEvent) => void
   handleGroupCheckboxClick: (groupKey: string, e: React.MouseEvent) => void
@@ -617,6 +620,7 @@ const MainContentArea: React.FC<{
   pageVersion,
   ensureRange,
   yearPreviews,
+  libraryQuery,
   formatGroupKey,
   handleWheel,
   handleGroupCheckboxClick,
@@ -1082,6 +1086,22 @@ const MainContentArea: React.FC<{
   // A gallery with nothing in it has several very different causes, and showing
   // the same blank grid for all of them is what made a diagnostic session look
   // like a lost library. Each one now says which it is.
+  // Map is a destination of its own, like Settings: a full-height page with
+  // none of the gallery chrome. The bottom inset keeps the floating dock clear
+  // of the map's own controls at every window size.
+  // Not gated on `scanning`: the map reads the index, so a background scan is
+  // no reason to drop the user back into the gallery when they ask for Map.
+  if (activeNav === 'map') {
+    return (
+      <div
+        className="view-transition-enter"
+        style={{ flex: 1, minHeight: 0, padding: '16px 20px 104px', display: 'flex' }}
+      >
+        <MapPage query={libraryQuery} onOpenFile={handleTileOpen} />
+      </div>
+    )
+  }
+
   if (selectedDrive && !hasFiles && activeNav !== 'archive' && activeNav !== 'trash' && activeNav !== 'settings' && activeNav !== 'places') {
     const loading = libraryState !== 'ready' || scanning
     const diagnostic = !!runtimeMode?.safeMode
@@ -1482,6 +1502,14 @@ export default function App(): React.JSX.Element {
   // as "the sort did nothing". Zoom-driven grouping changes do NOT bump this:
   // they keep their own anchor so the zoom animation stays continuous.
   const [scrollToTopNonce, setScrollToTopNonce] = useState(0)
+
+  // Settings and Map are destinations, not library filters. Keeping the query
+  // on the last gallery filter means visiting one neither re-runs the library
+  // query nor loses which filter the user was browsing.
+  const [galleryNav, setGalleryNav] = useState('all')
+  useEffect(() => {
+    if (activeNav !== 'settings' && activeNav !== 'map') setGalleryNav(activeNav)
+  }, [activeNav])
   const [hoverPreviewsEnabled, setHoverPreviewsEnabled] = useState(
     () => localStorage.getItem('diskframe-hover-previews') !== 'off'
   )
@@ -1882,9 +1910,9 @@ export default function App(): React.JSX.Element {
   const libraryQuery = useMemo<LibraryQuery | null>(
     () =>
       selectedDrive
-        ? { drive: selectedDrive, nav: activeNav, search: searchQuery, groupBy, order: viewOrder }
+        ? { drive: selectedDrive, nav: galleryNav, search: searchQuery, groupBy, order: viewOrder }
         : null,
-    [selectedDrive, activeNav, searchQuery, groupBy, viewOrder]
+    [selectedDrive, galleryNav, searchQuery, groupBy, viewOrder]
   )
   const library = useLibrary(libraryQuery)
 
@@ -1928,7 +1956,7 @@ export default function App(): React.JSX.Element {
   // Settings is its own page: grouping, sorting, the view tabs, gallery
   // search, Index Folder, the date ruler, the action circle and the
   // gallery footer all belong to the library, not to it.
-  const isGalleryPage = activeNav !== 'settings'
+  const isGalleryPage = activeNav !== 'settings' && activeNav !== 'map'
   const formatGroupKey = useMemo(() => makeGroupFormatter(groupBy), [groupBy])
   patchLibraryThumbRef.current = library.patchThumb
 
@@ -1978,6 +2006,7 @@ export default function App(): React.JSX.Element {
       { id: 'all', label: 'All files', icon: <FolderArchive size={18} />, isActive: activeNav === 'all', onClick: () => setActiveNav('all') },
       { id: 'photos', label: 'Photos', icon: <ImageIcon size={18} />, isActive: activeNav === 'photos', onClick: () => setActiveNav('photos') },
       { id: 'videos', label: 'Videos', icon: <Film size={18} />, isActive: activeNav === 'videos', onClick: () => setActiveNav('videos') },
+      { id: 'map', label: 'Map', icon: <MapIcon size={18} />, isActive: activeNav === 'map', onClick: () => setActiveNav('map') },
       { id: 'favourites', label: 'Favourites', icon: <Star size={18} />, isActive: activeNav === 'favourites', badge: favCount, onClick: () => setActiveNav('favourites') },
       { id: 'trash', label: 'Trash', icon: <Trash2 size={18} />, isActive: activeNav === 'trash', badge: trashCount, onClick: () => setActiveNav('trash') },
       { id: 'settings', label: 'Settings', icon: <Settings size={18} />, isActive: activeNav === 'settings', onClick: () => setActiveNav('settings') }
@@ -2724,7 +2753,7 @@ export default function App(): React.JSX.Element {
             {isGalleryPage && activeNav !== 'trash' && (
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                 <div style={{ display: 'flex', gap: '2px', background: 'var(--app-surface, var(--app-surface, #111113))', borderRadius: '4px', padding: '2px', border: '1px solid rgba(255,255,255,0.04)' }}>
-                  {['Grid', 'Timeline', 'Years', 'Map'].map(v => (
+                  {['Grid', 'Timeline', 'Years'].map(v => (
                     <div key={v} onClick={() => setActiveView(v)} style={{ padding: '3px 10px', borderRadius: '3px', cursor: 'pointer', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', background: activeView === v ? '#1e1e24' : 'transparent', color: activeView === v ? '#ffffff' : 'var(--app-fg-dim, #8a8a8f)', transition: 'all 0.15s ease' }}>{v}</div>
                   ))}
                 </div>
@@ -2768,6 +2797,7 @@ export default function App(): React.JSX.Element {
           pageVersion={library.pageVersion}
           ensureRange={library.ensureRange}
           yearPreviews={yearPreviews}
+          libraryQuery={libraryQuery}
           formatGroupKey={formatGroupKey}
           handleWheel={handleWheel}
           handleGroupCheckboxClick={handleGroupCheckboxClick}

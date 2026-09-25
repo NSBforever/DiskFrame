@@ -59,6 +59,7 @@ import {
   getFavouritePaths
 } from './scanner'
 import type { LibraryQuery } from './libraryQuery'
+import { getMapClusters } from './scanner'
 
 import { initStreamServer, probeMedia, killActiveStream, closeStreamServer, authorizeStreamPath } from './streamServer'
 import { initMpv, sendMpvCommand, updateMpvBounds, closeMpv, refreshMpvBounds, setOverlayInteractive, sendToOverlay } from './mpvManager'
@@ -762,8 +763,27 @@ app.whenReady().then(() => {
       nav: (navs.includes(String(q.nav)) ? q.nav : 'all') as LibraryQuery['nav'],
       search: typeof q.search === 'string' ? q.search.slice(0, 200) : '',
       groupBy: (groups.includes(String(q.groupBy)) ? q.groupBy : 'day') as LibraryQuery['groupBy'],
-      order: q.order === 'reverse' ? 'reverse' : 'default'
+      order: q.order === 'reverse' ? 'reverse' : 'default',
+      bbox: normalizeBounds((q as { bbox?: unknown }).bbox)
     }
+  }
+
+  /** Four finite edges or nothing - a half-specified box must not widen a query. */
+  function normalizeBounds(raw: unknown): {
+    minLat: number
+    maxLat: number
+    minLng: number
+    maxLng: number
+  } | null {
+    const b = raw as Record<string, unknown> | null | undefined
+    if (!b || typeof b !== 'object') return null
+    const n = (v: unknown): number | null => (Number.isFinite(Number(v)) ? Number(v) : null)
+    const minLat = n(b.minLat)
+    const maxLat = n(b.maxLat)
+    const minLng = n(b.minLng)
+    const maxLng = n(b.maxLng)
+    if (minLat === null || maxLat === null || minLng === null || maxLng === null) return null
+    return { minLat, maxLat, minLng, maxLng }
   }
 
   ipcMain.handle('library-summary', (_event, raw) => {
@@ -773,6 +793,32 @@ app.whenReady().then(() => {
     const res = getLibrarySummary(q)
     diag('library', `summary ${q.drive}/${q.nav}/${q.groupBy}: ${res.total} files in ${res.groups.length} groups (${Date.now() - t0}ms)`)
     return res
+  })
+
+  ipcMain.handle('library-map-clusters', (_event, raw) => {
+    const { query, zoom, bounds } = (raw ?? {}) as {
+      query?: unknown
+      zoom?: number
+      bounds?: { minLat: number; maxLat: number; minLng: number; maxLng: number }
+    }
+    const q = normalizeQuery(query)
+    if (!q) return { clusters: [] }
+    const num = (v: unknown): number | null => (Number.isFinite(Number(v)) ? Number(v) : null)
+    const minLat = num(bounds?.minLat)
+    const maxLat = num(bounds?.maxLat)
+    const minLng = num(bounds?.minLng)
+    const maxLng = num(bounds?.maxLng)
+    // A viewport is only applied when all four edges are real numbers -
+    // a partial box would silently widen the query to the whole world.
+    const bbox =
+      minLat !== null && maxLat !== null && minLng !== null && maxLng !== null
+        ? { minLat, maxLat, minLng, maxLng }
+        : null
+    const z = Math.max(0, Math.min(22, Math.floor(Number(zoom) || 2)))
+    const t0 = Date.now()
+    const clusters = getMapClusters({ ...q, bbox }, z)
+    diag('map', `clusters z${z}: ${clusters.length} cells (${Date.now() - t0}ms)`)
+    return { clusters }
   })
 
   ipcMain.handle('library-page', (_event, raw) => {

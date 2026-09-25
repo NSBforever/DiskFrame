@@ -21,12 +21,25 @@ export type NavFilter =
 export type GroupBy = 'day' | 'month' | 'year' | 'location' | 'favorites'
 export type SortOrder = 'default' | 'reverse'
 
+export interface MapBounds {
+  minLat: number
+  maxLat: number
+  minLng: number
+  maxLng: number
+}
+
 export interface LibraryQuery {
   drive: string
   nav: NavFilter
   search: string
   groupBy: GroupBy
   order: SortOrder
+  /**
+   * Restricts the query to one geographic box. Opening a place on the map is
+   * then just an ordinary library query, so it gets the existing grouping,
+   * ordering and pagination for free instead of a parallel code path.
+   */
+  bbox?: MapBounds | null
 }
 
 export const PHOTO_EXTS = ['.jpg', '.jpeg', '.png', '.webp', '.heic']
@@ -95,6 +108,17 @@ export function buildWhere(q: LibraryQuery): { sql: string; params: unknown[] } 
       clauses.push('(instr(lower(name), ?) > 0 OR instr(lower(path), ?) > 0)')
       params.push(raw, raw)
     }
+  }
+
+  if (q.bbox) {
+    const b = q.bbox
+    clauses.push('lat IS NOT NULL AND lng IS NOT NULL AND lat BETWEEN ? AND ? AND lng BETWEEN ? AND ?')
+    params.push(
+      Math.min(b.minLat, b.maxLat),
+      Math.max(b.minLat, b.maxLat),
+      Math.min(b.minLng, b.maxLng),
+      Math.max(b.minLng, b.maxLng)
+    )
   }
 
   return { sql: clauses.join(' AND '), params }
@@ -216,4 +240,77 @@ export function groupOffsets(groups: { gkey: string; n: number }[]): Map<string,
     running += g.n
   }
   return offsets
+}
+
+
+/**
+ * Width of one cluster cell, in degrees, for a map zoom level.
+ *
+ * Web Mercator puts 360 degrees of longitude across 256 * 2^zoom pixels, so
+ * this is the degree span of a roughly 70px square. Clustering on that grid
+ * keeps the number of markers proportional to the size of the viewport rather
+ * than to the size of the library: zooming in splits cells, zooming out merges
+ * them, and neither ever asks for a marker per file.
+ */
+export function clusterCellSize(zoom: number): number {
+  const z = Math.max(0, Math.min(22, Number.isFinite(zoom) ? zoom : 2))
+  return Math.max(0.00005, (360 / (256 * Math.pow(2, z))) * 70)
+}
+
+/** Ceiling on markers returned for one viewport, whatever the zoom. */
+export const MAX_CLUSTERS = 120
+
+/**
+ * Counts and bounds per cluster cell inside the visible box.
+ *
+ * Rows with no coordinates are excluded here rather than plotted at (0, 0):
+ * the map must never invent a location for a file that does not have one.
+ */
+export function mapClustersSql(
+  q: LibraryQuery,
+  cell: number
+): { sql: string; params: unknown[] } {
+  const where = buildWhere(q)
+  return {
+    sql: `SELECT CAST(lat / ? AS INTEGER) AS cy,
+                 CAST(lng / ? AS INTEGER) AS cx,
+                 COUNT(*) AS n,
+                 AVG(lat) AS lat, AVG(lng) AS lng,
+                 MIN(lat) AS min_lat, MAX(lat) AS max_lat,
+                 MIN(lng) AS min_lng, MAX(lng) AS max_lng,
+                 MAX(date) AS max_date
+          FROM files
+          WHERE ${where.sql} AND lat IS NOT NULL AND lng IS NOT NULL
+          GROUP BY cy, cx
+          ORDER BY n DESC
+          LIMIT ?`,
+    // The two cell parameters bind first because they appear first in the SQL.
+    params: [cell, cell, ...where.params]
+  }
+}
+
+/**
+ * One representative row per cluster cell: the newest file that actually has a
+ * thumbnail, so a cluster shows a picture rather than a blank square whenever
+ * any of its files can supply one.
+ */
+export function clusterThumbsSql(
+  q: LibraryQuery,
+  cell: number
+): { sql: string; params: unknown[] } {
+  const where = buildWhere(q)
+  return {
+    sql: `SELECT cy, cx, thumb, path, ext FROM (
+            SELECT CAST(lat / ? AS INTEGER) AS cy,
+                   CAST(lng / ? AS INTEGER) AS cx,
+                   thumb, path, ext,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY CAST(lat / ? AS INTEGER), CAST(lng / ? AS INTEGER)
+                     ORDER BY (thumb IS NULL) ASC, date DESC, path ASC
+                   ) AS rn
+            FROM files
+            WHERE ${where.sql} AND lat IS NOT NULL AND lng IS NOT NULL
+          ) WHERE rn = 1`,
+    params: [cell, cell, cell, cell, ...where.params]
+  }
 }

@@ -11,6 +11,10 @@ import {
   summarySql,
   pageSql,
   countSql,
+  mapClustersSql,
+  clusterThumbsSql,
+  clusterCellSize,
+  MAX_CLUSTERS,
   groupOffsets,
   type LibraryQuery
 } from './libraryQuery'
@@ -1352,6 +1356,74 @@ export function getLibraryCount(q: LibraryQuery): number {
   const c = countSql(q)
   const row = db.prepare(c.sql).get(...(c.params as never[])) as { n: number }
   return row?.n ?? 0
+}
+
+export interface MapCluster {
+  /** Cell coordinates, stable for a given zoom - the renderer keys markers on them. */
+  cx: number
+  cy: number
+  count: number
+  lat: number
+  lng: number
+  minLat: number
+  maxLat: number
+  minLng: number
+  maxLng: number
+  /** Representative thumbnail path, if any file in the cell has one. */
+  thumb: string | null
+  path: string | null
+}
+
+/**
+ * Clusters for one map viewport at one zoom level.
+ *
+ * Two bounded queries whatever the size of the library: one aggregate for the
+ * counts and bounds, one windowed read for a single representative row per
+ * cell. Nothing here returns a row per file, so panning a map over a hundred
+ * thousand photos costs the same as panning over a hundred.
+ */
+export function getMapClusters(q: LibraryQuery, zoom: number): MapCluster[] {
+  const cell = clusterCellSize(zoom)
+  const c = mapClustersSql(q, cell)
+  const cells = db.prepare(c.sql).all(...(c.params as never[]), MAX_CLUSTERS) as {
+    cy: number
+    cx: number
+    n: number
+    lat: number
+    lng: number
+    min_lat: number
+    max_lat: number
+    min_lng: number
+    max_lng: number
+  }[]
+  if (cells.length === 0) return []
+
+  const t = clusterThumbsSql(q, cell)
+  const reps = db.prepare(t.sql).all(...(t.params as never[])) as {
+    cy: number
+    cx: number
+    thumb: string | null
+    path: string | null
+  }[]
+  const byCell = new Map<string, { thumb: string | null; path: string | null }>()
+  for (const r of reps) byCell.set(r.cy + ':' + r.cx, { thumb: r.thumb, path: r.path })
+
+  return cells.map((r) => {
+    const rep = byCell.get(r.cy + ':' + r.cx)
+    return {
+      cx: r.cx,
+      cy: r.cy,
+      count: r.n,
+      lat: r.lat,
+      lng: r.lng,
+      minLat: r.min_lat,
+      maxLat: r.max_lat,
+      minLng: r.min_lng,
+      maxLng: r.max_lng,
+      thumb: rep?.thumb ?? null,
+      path: rep?.path ?? null
+    }
+  })
 }
 
 /** Drive key used for the diagnostic sample folder, kept apart from real drives. */

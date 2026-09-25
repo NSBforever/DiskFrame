@@ -27,6 +27,8 @@ const api = {
   getFiles: (p: string) => ipcRenderer.send('get-files', p),
   /** Group counts + total for a query. Small: one row per group, no file rows. */
   librarySummary: (query: unknown) => ipcRenderer.invoke('library-summary', query),
+  mapClusters: (query: unknown, zoom: number, bounds: unknown) =>
+    ipcRenderer.invoke('library-map-clusters', { query, zoom, bounds }),
   /** One bounded window of rows for a query. */
   libraryPage: (query: unknown, offset: number, limit: number) =>
     ipcRenderer.invoke('library-page', { query, offset, limit }),
