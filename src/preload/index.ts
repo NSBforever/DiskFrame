@@ -27,6 +27,18 @@ const api = {
   getFiles: (p: string) => ipcRenderer.send('get-files', p),
   /** Group counts + total for a query. Small: one row per group, no file rows. */
   librarySummary: (query: unknown) => ipcRenderer.invoke('library-summary', query),
+  listUnresolvedRoots: (drive: string) => ipcRenderer.invoke('list-unresolved-roots', drive),
+  locateFolder: (root: string) => ipcRenderer.invoke('locate-folder', { root }),
+  applyFolderMapping: (root: string, target: string) =>
+    ipcRenderer.invoke('apply-folder-mapping', { root, target }),
+  listFolderMappings: () => ipcRenderer.invoke('list-folder-mappings'),
+  forgetFolderMapping: (fromPrefix: string) =>
+    ipcRenderer.invoke('forget-folder-mapping', fromPrefix),
+  onFolderRelinked: (callback: (p: { root: string; target: string }) => void) => {
+    const h = (_e: unknown, p: { root: string; target: string }): void => callback(p)
+    ipcRenderer.on('folder-relinked', h)
+    return () => ipcRenderer.removeListener('folder-relinked', h)
+  },
   mapClusters: (query: unknown, zoom: number, bounds: unknown) =>
     ipcRenderer.invoke('library-map-clusters', { query, zoom, bounds }),
   /** One bounded window of rows for a query. */

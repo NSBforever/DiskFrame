@@ -117,6 +117,7 @@ import DriveSelectionView from './components/DriveSelectionView'
 import PhotoGrid from './components/PhotoGrid'
 import MagneticDock from './components/MagneticDock'
 import MapPage from './components/MapPage'
+import UnresolvedFolders from './components/UnresolvedFolders'
 import AppearanceSetting from './components/AppearanceSetting'
 import GlassSelect from './components/GlassSelect'
 import DateScrubber from './components/DateScrubber'
@@ -568,6 +569,8 @@ const MainContentArea: React.FC<{
   yearPreviews: Record<string, ScannedFile[]>
   /** The gallery's query, so the Map page honours the same filter and search. */
   libraryQuery: LibraryQuery | null
+  /** Called after a folder relink, to re-read the library with the new paths. */
+  onFoldersRelinked: () => void
   formatGroupKey: (key: string) => string
   handleWheel: (e: React.WheelEvent) => void
   handleGroupCheckboxClick: (groupKey: string, e: React.MouseEvent) => void
@@ -621,6 +624,7 @@ const MainContentArea: React.FC<{
   ensureRange,
   yearPreviews,
   libraryQuery,
+  onFoldersRelinked,
   formatGroupKey,
   handleWheel,
   handleGroupCheckboxClick,
@@ -1164,6 +1168,11 @@ const MainContentArea: React.FC<{
   if (isVirtualized && activeView === 'Grid' && activeNav !== 'favourites' && activeNav !== 'trash') {
     return (
       <div className="view-transition-enter" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, ...animationStyle }}>
+        {/* Above the grid, because it explains why a block of it is unavailable
+            and offers the one action that fixes the whole block. */}
+        <div style={{ padding: '0 20px' }}>
+          <UnresolvedFolders drive={selectedDrive} onRelinked={onFoldersRelinked} />
+        </div>
         <PhotoGrid
           groups={libraryGroups}
           getRow={getRow}
@@ -1213,6 +1222,12 @@ const MainContentArea: React.FC<{
           ...animationStyle
         }}
       >
+        {/* Only in the library itself; Settings and Map have their own pages. */}
+        {activeNav !== 'trash' && (
+          <div style={{ padding: '0 20px' }}>
+            <UnresolvedFolders drive={selectedDrive} onRelinked={onFoldersRelinked} />
+          </div>
+        )}
         <Virtuoso
           style={{ flex: 1 }}
           data={virtualItems}
@@ -1915,6 +1930,21 @@ export default function App(): React.JSX.Element {
     [selectedDrive, galleryNav, searchQuery, groupBy, viewOrder]
   )
   const library = useLibrary(libraryQuery)
+
+  // A relink rewrites where thousands of rows point, so the library is re-read
+  // and any remembered failure for those paths is dropped rather than left to
+  // keep showing the old state.
+  const handleFoldersRelinked = useCallback((): void => {
+    library.reload()
+    setThumbVersion((n) => n + 1)
+  }, [library])
+
+  useEffect(() => {
+    return window.api.onFolderRelinked(() => {
+      library.reload()
+      setThumbVersion((n) => n + 1)
+    })
+  }, [library])
 
   // Each Years card shows four thumbnails. Those rows are almost never in the
   // page cache, because the cache follows the grid's viewport, so the cards
@@ -2798,6 +2828,7 @@ export default function App(): React.JSX.Element {
           ensureRange={library.ensureRange}
           yearPreviews={yearPreviews}
           libraryQuery={libraryQuery}
+          onFoldersRelinked={handleFoldersRelinked}
           formatGroupKey={formatGroupKey}
           handleWheel={handleWheel}
           handleGroupCheckboxClick={handleGroupCheckboxClick}

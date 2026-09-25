@@ -54,6 +54,12 @@ import {
   cancelFolderIndex,
   getDriveAvailability,
   checkPathAvailability,
+  resolveStoredPath,
+  listUnresolvedRoots,
+  saveFolderMapping,
+  removeFolderMapping,
+  getFolderMappings,
+  clearPathStateCache,
   refreshVolumeCache,
 
   getFavouritePaths
@@ -65,7 +71,15 @@ import { initStreamServer, probeMedia, killActiveStream, closeStreamServer, auth
 import { initMpv, sendMpvCommand, updateMpvBounds, closeMpv, refreshMpvBounds, setOverlayInteractive, sendToOverlay } from './mpvManager'
 import { WatcherManager } from './watcher'
 import { IndexingService } from './indexingService'
-import { normalizeDrive, isSafeLocalPath, safePathList, THUMB_UNAVAILABLE, THUMB_VOLUME_OFFLINE } from './validation'
+import {
+  normalizeDrive,
+  isSafeLocalPath,
+  safePathList,
+  THUMB_UNAVAILABLE,
+  THUMB_VOLUME_OFFLINE,
+  THUMB_FOLDER_MISSING,
+  THUMB_NO_ACCESS
+} from './validation'
 import { parseSafeMode, subsystemEnabled } from './runtimeMode'
 
 const safeMode = parseSafeMode(process.argv, process.env)
@@ -563,6 +577,9 @@ app.whenReady().then(() => {
       if (availability.status === 'volume-mismatch') {
         return new Response('Different volume', { status: 409 })
       }
+      // A relinked folder is served from where the user said it is, using the
+      // same resolver the thumbnail and playback paths use.
+      filePath = availability.resolved
     }
 
     const lower = filePath.toLowerCase()
@@ -643,10 +660,87 @@ app.whenReady().then(() => {
     isDefaultUserData: app.getPath('userData').toLowerCase() === join(app.getPath('appData'), 'diskframe').toLowerCase()
   }))
   ipcMain.on('reveal-file', (_event, filePath: string) => {
-    if (isSafeLocalPath(filePath)) shell.showItemInFolder(filePath)
+    if (isSafeLocalPath(filePath)) shell.showItemInFolder(resolveStoredPath(filePath))
   })
   ipcMain.on('open-file', (_event, filePath: string) => {
-    if (isSafeLocalPath(filePath)) shell.openPath(filePath)
+    if (isSafeLocalPath(filePath)) shell.openPath(resolveStoredPath(filePath))
+  })
+
+  // ── relinking a moved folder ──
+  ipcMain.handle('list-unresolved-roots', (_event, drive: unknown) => {
+    const d = normalizeDrive(drive)
+    if (!d) return { roots: [] }
+    try {
+      return { roots: listUnresolvedRoots(d) }
+    } catch (err) {
+      diag('relink', 'listing failed: ' + String(err))
+      return { roots: [] }
+    }
+  })
+
+  ipcMain.handle('list-folder-mappings', () => ({ mappings: getFolderMappings() }))
+
+  /**
+   * Verifies and records a relink for a folder the user has already chosen.
+   *
+   * Separated from the picker so the decision - does this folder actually hold
+   * the files the index expects? - can be exercised without a dialog.
+   */
+  function applyFolderMapping(
+    root: string,
+    target: string
+  ): ReturnType<typeof saveFolderMapping> {
+    const result = saveFolderMapping(root, target)
+    if (result.saved) {
+      // Anything that failed under the old location must be free to retry.
+      thumbFailed.clear()
+      clearPathStateCache()
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('folder-relinked', { root, target })
+      }
+    }
+    diag(
+      'relink',
+      `${root} -> ${target}: ${result.saved ? 'saved' : 'refused'} ` +
+        `(${result.found}/${result.checked} sampled files found)`
+    )
+    return result
+  }
+
+  ipcMain.handle('apply-folder-mapping', (_event, raw) => {
+    const { root, target } = (raw ?? {}) as { root?: unknown; target?: unknown }
+    if (typeof root !== 'string' || typeof target !== 'string' || !root || !target) {
+      return { saved: false, checked: 0, found: 0, sizeMatches: 0, reason: 'missing paths' }
+    }
+    return applyFolderMapping(root, target)
+  })
+
+  ipcMain.handle('forget-folder-mapping', (_event, fromPrefix: unknown) => {
+    if (typeof fromPrefix !== 'string' || !fromPrefix) return { ok: false }
+    removeFolderMapping(fromPrefix)
+    return { ok: true }
+  })
+
+  /**
+   * Asks the user where a folder went, then records it only if the files the
+   * index expects are actually there. The folder is always their explicit
+   * pick - nothing is matched by name or size to find it.
+   */
+  ipcMain.handle('locate-folder', async (_event, raw) => {
+    const { root } = (raw ?? {}) as { root?: unknown }
+    if (typeof root !== 'string' || !root) return { saved: false, reason: 'no folder given' }
+    if (!mainWindow || mainWindow.isDestroyed()) return { saved: false, reason: 'no window' }
+    const picked = await dialog.showOpenDialog(mainWindow, {
+      title: 'Locate ' + root,
+      message: 'Select the folder that used to be at ' + root,
+      properties: ['openDirectory'],
+      buttonLabel: 'Use this folder'
+    })
+    if (picked.canceled || picked.filePaths.length === 0) {
+      return { saved: false, cancelled: true }
+    }
+    const result = applyFolderMapping(root, picked.filePaths[0])
+    return { ...result, target: picked.filePaths[0] }
   })
 
   // Opening the same drive twice (double-click, or a re-open while the first
@@ -1004,20 +1098,36 @@ app.whenReady().then(() => {
             // preview and an action all agree on why a path did not resolve.
             const availability = checkPathAvailability(p)
             if (availability.status !== 'ok') {
-              // An offline or relettered volume may come back, so it is never
-              // remembered as failed - only a real miss on the right volume is.
+              // Anything that can come back on its own - a disconnected drive,
+              // a relettered volume, a folder the user can still point us at -
+              // is never remembered as failed, or it would stay broken after
+              // the situation is fixed. Only a real miss on the right volume
+              // is remembered.
               const recoverable =
-                availability.status === 'drive-offline' || availability.status === 'volume-mismatch'
+                availability.status === 'drive-offline' ||
+                availability.status === 'volume-mismatch' ||
+                availability.status === 'folder-missing'
               if (!recoverable) thumbFailed.add(p)
+              const sentinel =
+                availability.status === 'folder-missing'
+                  ? THUMB_FOLDER_MISSING
+                  : availability.status === 'no-access'
+                    ? THUMB_NO_ACCESS
+                    : recoverable
+                      ? THUMB_VOLUME_OFFLINE
+                      : THUMB_UNAVAILABLE
               if (mainWindow && !mainWindow.isDestroyed()) {
-                mainWindow.webContents.send('thumb-ready', {
-                  filePath: p,
-                  thumbPath: recoverable ? THUMB_VOLUME_OFFLINE : THUMB_UNAVAILABLE
-                })
+                mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath: sentinel })
               }
               continue
             }
-            const thumbPath = await generateThumbForFile(p, extname(p).toLowerCase())
+            // Generated from wherever the original actually is now. A cached
+            // thumbnail that has gone missing is regenerated from a readable
+            // original rather than marking that original unavailable.
+            const thumbPath = await generateThumbForFile(
+              availability.resolved,
+              extname(p).toLowerCase()
+            )
             if (thumbPath) {
               updateThumb(p, thumbPath)
               if (mainWindow && !mainWindow.isDestroyed()) {

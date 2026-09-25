@@ -19,6 +19,13 @@ import {
   type LibraryQuery
 } from './libraryQuery'
 import {
+  applyMappings,
+  missingRootOf,
+  normalisePrefix,
+  scoreMapping,
+  type FolderMapping
+} from './pathMapping'
+import {
   isUsableCaptureDate,
   isMassRemoval,
   isIndexableUserMedia,
@@ -245,6 +252,16 @@ db.exec(`
     drive_letter TEXT,
     label TEXT,
     last_seen TEXT
+  );
+
+  /* Folders the user has explicitly pointed at a new location. Only ever
+     written from a folder the user picked in a dialog - never inferred. */
+  CREATE TABLE IF NOT EXISTS folder_mappings (
+    from_prefix TEXT PRIMARY KEY,
+    to_prefix TEXT NOT NULL,
+    drive TEXT,
+    volume_id TEXT,
+    created_at TEXT
   );
 
   CREATE INDEX IF NOT EXISTS idx_files_drive_hidden_trashed_date ON files (drive, hidden, trashed_at, date DESC);
@@ -1987,7 +2004,18 @@ export function getCachedVolumeId(letter: string): string | null {
   return volumeByLetter.get(letter.slice(0, 2).toUpperCase()) ?? null
 }
 
-export type PathStatus = 'ok' | 'drive-offline' | 'volume-mismatch' | 'missing'
+/**
+ * Why a stored path did not open. Deliberately not collapsed into one
+ * "missing": a disconnected drive, a moved folder, a permission refusal and a
+ * genuinely deleted file each need a different answer from the user.
+ */
+export type PathStatus =
+  | 'ok'
+  | 'drive-offline'
+  | 'volume-mismatch'
+  | 'folder-missing'
+  | 'no-access'
+  | 'missing'
 
 /**
  * Single answer to "can this record's file be used right now", shared by
@@ -2002,10 +2030,76 @@ export type PathStatus = 'ok' | 'drive-offline' | 'volume-mismatch' | 'missing'
  * A record with no recorded volume id is never claimed for whatever volume
  * happens to be mounted - it is reported honestly as unverified.
  */
+/** Explicit relinks, cached because every tile asks. */
+let mappingCache: FolderMapping[] | null = null
+
+export function getFolderMappings(): FolderMapping[] {
+  if (mappingCache) return mappingCache
+  const rows = db
+    .prepare('SELECT from_prefix, to_prefix FROM folder_mappings')
+    .all() as { from_prefix: string; to_prefix: string }[]
+  mappingCache = rows.map((r) => ({ from: r.from_prefix, to: r.to_prefix }))
+  return mappingCache
+}
+
+function invalidateMappings(): void {
+  mappingCache = null
+}
+
+/**
+ * The path a stored row lives at today.
+ *
+ * Everything that touches a file on disk - thumbnails, the media protocol,
+ * playback, reveal - goes through this, so they cannot disagree about where a
+ * relinked file is.
+ */
+export function resolveStoredPath(storedPath: string): string {
+  const maps = getFolderMappings()
+  if (maps.length === 0) return storedPath
+  return applyMappings(storedPath, maps)
+}
+
+/** Cheap memo so classifying a screenful of rows is a handful of stat calls. */
+const dirExistsCache = new Map<string, boolean>()
+let dirCacheStamp = 0
+function dirExists(p: string): boolean {
+  const now = Date.now()
+  // Short-lived: a drive that comes back, or a folder the user just relinked,
+  // must not stay "missing" because of a cached answer.
+  if (now - dirCacheStamp > 5000) {
+    dirExistsCache.clear()
+    dirCacheStamp = now
+  }
+  const key = p.toLowerCase()
+  const hit = dirExistsCache.get(key)
+  if (hit !== undefined) return hit
+  let ok = false
+  try {
+    ok = fs.existsSync(p)
+  } catch {
+    ok = false
+  }
+  dirExistsCache.set(key, ok)
+  return ok
+}
+
+/** Forget cached existence answers, e.g. after a reconnect or a relink. */
+export function clearPathStateCache(): void {
+  dirExistsCache.clear()
+  dirCacheStamp = 0
+}
+
 export function checkPathAvailability(
   filePath: string,
   recordedVolumeId?: string | null
-): { status: PathStatus; volumeKnown: boolean } {
+): {
+  status: PathStatus
+  volumeKnown: boolean
+  /** Where the file was looked for, after any relink. */
+  resolved: string
+  /** For 'folder-missing', the folder the user would be asked to locate. */
+  missingRoot?: string
+} {
   const letter = filePath.slice(0, 2).toUpperCase()
   const isLetterPath = /^[A-Z]:$/.test(letter)
   const recorded =
@@ -2017,19 +2111,141 @@ export function checkPathAvailability(
             | undefined
         )?.volume_id ?? null)
 
+  const resolved = resolveStoredPath(filePath)
+
   if (isLetterPath && !isDriveMounted(letter)) {
-    return { status: 'drive-offline', volumeKnown: !!recorded }
+    return { status: 'drive-offline', volumeKnown: !!recorded, resolved }
   }
   if (recorded) {
     const current = getCachedVolumeId(letter)
     if (current && current !== recorded) {
-      return { status: 'volume-mismatch', volumeKnown: true }
+      return { status: 'volume-mismatch', volumeKnown: true, resolved }
     }
   }
-  if (!fs.existsSync(filePath)) {
-    return { status: 'missing', volumeKnown: !!recorded }
+
+  // Separate "cannot read it" from "it is not there": a permission problem on
+  // a file that exists is not a missing file, and saying so sends the user
+  // looking for the wrong thing.
+  try {
+    fs.accessSync(resolved, fs.constants.R_OK)
+    return { status: 'ok', volumeKnown: !!recorded, resolved }
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'EACCES' || code === 'EPERM') {
+      return { status: 'no-access', volumeKnown: !!recorded, resolved }
+    }
   }
-  return { status: 'ok', volumeKnown: !!recorded }
+
+  const root = missingRootOf(resolved, dirExists)
+  if (root) {
+    return {
+      status: 'folder-missing',
+      volumeKnown: !!recorded,
+      resolved,
+      missingRoot: root.missingRoot
+    }
+  }
+  return { status: 'missing', volumeKnown: !!recorded, resolved }
+}
+
+/**
+ * Folders the index expects that are not on the drive, with how many files
+ * each accounts for.
+ *
+ * Grouped by the folder rather than listed per file, because one answer from
+ * the user fixes thousands of rows. Reads only the index and one existence
+ * check per distinct folder.
+ */
+export function listUnresolvedRoots(
+  drive: string
+): { root: string; count: number; sample: string }[] {
+  const letter = drive.slice(0, 2).toUpperCase()
+  if (!isDriveMounted(letter)) return []
+  const rows = db
+    .prepare(
+      'SELECT path FROM files WHERE drive = ? AND hidden = 0 AND trashed_at IS NULL LIMIT 250000'
+    )
+    .all(drive) as { path: string }[]
+
+  const byRoot = new Map<string, { count: number; sample: string }>()
+  for (const r of rows) {
+    const resolved = resolveStoredPath(r.path)
+    // Only the first absent component matters; dirExists memoises so this is
+    // a few stat calls per distinct folder, not one per file.
+    const root = missingRootOf(resolved, dirExists)
+    if (!root) continue
+    const cur = byRoot.get(root.missingRoot)
+    if (cur) cur.count++
+    else byRoot.set(root.missingRoot, { count: 1, sample: r.path })
+  }
+  return [...byRoot.entries()]
+    .map(([root, v]) => ({ root, count: v.count, sample: v.sample }))
+    .sort((a, b) => b.count - a.count)
+}
+
+/**
+ * Records a relink the user chose, once the files actually under it agree.
+ *
+ * The folder is always the user's pick. This only refuses one that clearly is
+ * not the same folder, so a stray selection cannot silently redirect thousands
+ * of rows at unrelated files.
+ */
+export function saveFolderMapping(
+  fromPrefix: string,
+  toPrefix: string
+): { saved: boolean; checked: number; found: number; sizeMatches: number; reason?: string } {
+  const from = normalisePrefix(fromPrefix)
+  const to = normalisePrefix(toPrefix)
+  if (!from || !to) return { saved: false, checked: 0, found: 0, sizeMatches: 0, reason: 'empty path' }
+  if (from.toLowerCase() === to.toLowerCase()) {
+    return { saved: false, checked: 0, found: 0, sizeMatches: 0, reason: 'same folder' }
+  }
+
+  const samples = db
+    .prepare(
+      'SELECT path, size FROM files WHERE path LIKE ? AND hidden = 0 AND trashed_at IS NULL LIMIT 40'
+    )
+    .all(from + '\\%') as { path: string; size: number }[]
+
+  const score = scoreMapping(
+    samples.map((r) => ({ storedPath: r.path, size: r.size })),
+    { from, to },
+    (p) => {
+      try {
+        const st = fs.statSync(p)
+        return { size: st.size }
+      } catch {
+        return null
+      }
+    }
+  )
+
+  if (score.checked === 0) {
+    return { saved: false, ...score, reason: 'no indexed files under that folder' }
+  }
+  // At least half of a sample must be present at the new location. A genuine
+  // move matches nearly everything; an unrelated folder matches almost none.
+  if (score.ratio < 0.5) {
+    return {
+      saved: false,
+      ...score,
+      reason: `only ${score.found} of ${score.checked} sampled files were found there`
+    }
+  }
+
+  db.prepare(
+    'INSERT OR REPLACE INTO folder_mappings (from_prefix, to_prefix, drive, volume_id, created_at) VALUES (?, ?, ?, ?, ?)'
+  ).run(from, to, from.slice(0, 2).toUpperCase(), getCachedVolumeId(from.slice(0, 2).toUpperCase()), new Date().toISOString())
+  invalidateMappings()
+  clearPathStateCache()
+  return { saved: true, ...score }
+}
+
+/** Drops a relink, e.g. if the user pointed it at the wrong folder. */
+export function removeFolderMapping(fromPrefix: string): void {
+  db.prepare('DELETE FROM folder_mappings WHERE from_prefix = ?').run(normalisePrefix(fromPrefix))
+  invalidateMappings()
+  clearPathStateCache()
 }
 
 /** Rows whose path did not resolve, for the unavailable-files filter. */

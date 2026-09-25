@@ -12,7 +12,12 @@
  */
 import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, Check, FileText, Film, Heart, Image as ImageIcon, Play, Unplug } from 'lucide-react'
-import { THUMB_UNAVAILABLE, THUMB_VOLUME_OFFLINE } from '../../../main/validation'
+import {
+  THUMB_UNAVAILABLE,
+  THUMB_VOLUME_OFFLINE,
+  THUMB_FOLDER_MISSING,
+  THUMB_NO_ACCESS
+} from '../../../main/validation'
 import type { ScannedFile } from '../App'
 import { cellCountOf, cellSpan, mediaCountOf } from '../../../main/compactCells'
 import type { LibraryGroup } from '../hooks/useLibrary'
@@ -344,15 +349,31 @@ const GridTile = memo(function GridTile({
   // The volume is not plugged in. Nothing is known about the file itself, so
   // this must read as "reconnect the drive", never as "missing".
   const volumeOffline = thumb === THUMB_VOLUME_OFFLINE
+  // The drive is connected but the folder is not where it was recorded. That
+  // is a question the user can answer, so it must not read as "not found".
+  const folderMissing = thumb === THUMB_FOLDER_MISSING
+  // Present but unreadable: a permission problem, not a missing file.
+  const noAccess = thumb === THUMB_NO_ACCESS
   const usableThumb =
-    thumb && thumb !== 'NO_FILE' && !reportedUnavailable && !volumeOffline ? thumb : null
+    thumb &&
+    thumb !== 'NO_FILE' &&
+    !reportedUnavailable &&
+    !volumeOffline &&
+    !folderMissing &&
+    !noAccess
+      ? thumb
+      : null
   const src = usableThumb && !thumbFailed ? usableThumb : canUseOriginal && !originalFailed ? file.path : null
   const showImg = !!src
   // Every way of showing this file has been tried and failed. Distinguishing
   // this from "no thumbnail yet" is the difference between a library that
   // looks broken and one that tells you which files are gone.
   const unavailable =
-    !src && !volumeOffline && (reportedUnavailable || thumbFailed || originalFailed)
+    !src &&
+    !volumeOffline &&
+    !folderMissing &&
+    !noAccess &&
+    (reportedUnavailable || thumbFailed || originalFailed)
   const compact = size < 72
   const reducedMotion = useReducedMotionPref()
   const imgRef = useRef<HTMLImageElement>(null)
@@ -453,7 +474,19 @@ const GridTile = memo(function GridTile({
       onMouseEnter={onTileMouseEnter}
       onMouseLeave={() => { press.current = null; onTileMouseLeaveForPreview() }}
       onContextMenu={e => actions.context(file, e)}
-      title={compact ? file.name : undefined}
+      title={
+        folderMissing
+          ? file.path + '\n\nThis file\u2019s folder is not where it was indexed. Use Locate folder to point DiskFrame at it.'
+          : noAccess
+            ? file.path + '\n\nThis file exists but could not be read.'
+            : unavailable
+              ? file.path + '\n\nNot found at this path.'
+              : volumeOffline
+                ? file.path + '\n\nThe drive holding this file is not connected.'
+                : compact
+                  ? file.name
+                  : undefined
+      }
     >
       <div className="pg-tile-inner">
         {showImg ? (
@@ -498,7 +531,7 @@ const GridTile = memo(function GridTile({
           >
             {volumeOffline ? (
               <Unplug size={compact ? 16 : 24} />
-            ) : unavailable ? (
+            ) : folderMissing || noAccess || unavailable ? (
               <AlertTriangle size={compact ? 16 : 24} />
             ) : isVideo ? (
               <Film size={compact ? 16 : 24} />
@@ -508,7 +541,17 @@ const GridTile = memo(function GridTile({
               <ImageIcon size={compact ? 16 : 24} />
             )}
             {!compact && (
-              <span>{volumeOffline ? 'offline' : unavailable ? 'not found' : ext.replace('.', '')}</span>
+              <span>
+                {volumeOffline
+                  ? 'offline'
+                  : folderMissing
+                    ? 'folder moved'
+                    : noAccess
+                      ? 'no access'
+                      : unavailable
+                        ? 'not found'
+                        : ext.replace('.', '')}
+              </span>
             )}
           </div>
         )}

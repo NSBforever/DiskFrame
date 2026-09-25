@@ -69,6 +69,36 @@ declare global {
           offset: number
         }[]
       }>
+      /** Folders the index expects that are not on the drive right now. */
+      listUnresolvedRoots: (drive: string) => Promise<{
+        roots: { root: string; count: number; sample: string }[]
+      }>
+      /** Opens a folder picker for a missing folder and records a verified relink. */
+      locateFolder: (root: string) => Promise<{
+        saved: boolean
+        cancelled?: boolean
+        checked: number
+        found: number
+        sizeMatches: number
+        reason?: string
+        target?: string
+      }>
+      /** Verifies and records a relink for an already-chosen folder. */
+      applyFolderMapping: (
+        root: string,
+        target: string
+      ) => Promise<{
+        saved: boolean
+        checked: number
+        found: number
+        sizeMatches: number
+        reason?: string
+      }>
+      listFolderMappings: () => Promise<{ mappings: { from: string; to: string }[] }>
+      forgetFolderMapping: (fromPrefix: string) => Promise<{ ok: boolean }>
+      onFolderRelinked: (
+        callback: (p: { root: string; target: string }) => void
+      ) => () => void
       libraryPage: (
         query: LibraryQueryLike,
         offset: number,

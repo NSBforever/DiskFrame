@@ -140,3 +140,13 @@ export const THUMB_UNAVAILABLE = '!unavailable'
  * itself, so the UI must offer "reconnect the drive", not "missing".
  */
 export const THUMB_VOLUME_OFFLINE = '!offline'
+
+/**
+ * The file's folder is not where the index recorded it, on a drive that is
+ * connected. The user can point the app at the folder's new location, so this
+ * is a question rather than a failure - quite different from a deleted file.
+ */
+export const THUMB_FOLDER_MISSING = '!folder-missing'
+
+/** The file is there but cannot be read: a permission problem, not a miss. */
+export const THUMB_NO_ACCESS = '!no-access'
