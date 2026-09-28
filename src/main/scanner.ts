@@ -207,7 +207,7 @@ if (!fs.existsSync(vaultDir)) fs.mkdirSync(vaultDir, { recursive: true })
 db.exec(`
   CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    path TEXT UNIQUE,
+    path TEXT NOT NULL,
     name TEXT,
     ext TEXT,
     size INTEGER,
@@ -238,13 +238,17 @@ db.exec(`
     skip_confirm INTEGER DEFAULT 0
   );
 
-  -- Favourites keyed by path, independent of the files row.
+  -- Favourites keyed by (path, volume_id), independent of the files row.
   -- A favourite must survive an unresolved path, an offline volume, and any
   -- future record repair; keeping it only as a column on files ties it to a
-  -- row that reconciliation might legitimately replace.
+  -- row that reconciliation might legitimately replace. volume_id keeps two
+  -- different volumes that share a literal path from fighting over one
+  -- favourite entry, the same reason files.path stopped being unique alone.
   CREATE TABLE IF NOT EXISTS favourite_paths (
-    path TEXT PRIMARY KEY,
-    added_at TEXT
+    path TEXT NOT NULL,
+    volume_id TEXT,
+    added_at TEXT,
+    PRIMARY KEY (path, volume_id)
   );
 
   CREATE TABLE IF NOT EXISTS volume_drives (
@@ -264,17 +268,13 @@ db.exec(`
     created_at TEXT
   );
 
-  CREATE INDEX IF NOT EXISTS idx_files_drive_hidden_trashed_date ON files (drive, hidden, trashed_at, date DESC);
-  CREATE INDEX IF NOT EXISTS idx_files_trashed ON files (trashed_at) WHERE trashed_at IS NOT NULL;
-  CREATE INDEX IF NOT EXISTS idx_files_favourited ON files (favourited) WHERE favourited = 1;
-  -- Covers the exact ORDER BY pagination uses (date, then the unique path
-  -- tie-break). Without the path column SQLite has to re-sort each page, which
-  -- is what makes deep OFFSET queries degrade on a large library.
-  CREATE INDEX IF NOT EXISTS idx_files_page ON files (drive, hidden, trashed_at, date DESC, path ASC);
-  -- Catalogue identity is the volume, not the letter (see the volume_id
-  -- migration note below) - reads are scoped by this, not by drive.
-  CREATE INDEX IF NOT EXISTS idx_files_volume_page ON files (volume_id, hidden, trashed_at, date DESC, path ASC);
 `)
+// Every index `files` needs is created further down, once the volume_id
+// column is guaranteed to exist (a brand new database has only the literal
+// columns declared above at this point).
+// volume_id-dependent indexes are created further down, after the column
+// migration that adds it - a brand new database has no such column yet at
+// this point, only the literal columns declared above.
 
 /**
  * Backs the database up before the first schema change of a new app version.
@@ -382,6 +382,117 @@ try {
   /* index referenced a dropped column - nothing to clean up */
 }
 
+// `path` was the sole identity of a record: UNIQUE on its own, so two
+// volumes could never each keep a row at the same relative path (a second
+// camera's DCIM\...\IMG_0001.JPG would simply fail to record once the first
+// camera's had claimed that path). Identity is now (volume_id, path) - two
+// verified-different volumes can each hold their own row there, while a
+// legacy row (volume_id NULL) still cannot collide with another legacy row
+// at the same path, since SQLite never treats two NULLs as equal in a unique
+// index. Nothing is deleted or reassigned; every existing row keeps its id,
+// its favourites (kept in the separate favourite_paths table, untouched by
+// this rebuild) and every other column exactly as it was.
+//
+// SQLite cannot drop a column-level UNIQUE constraint with ALTER TABLE, so a
+// table that still has one is rebuilt: a fresh table, the same rows copied
+// across by name, the old one dropped, the new one renamed into place - the
+// standard, safe pattern for a constraint change, done inside one
+// transaction after the file backup above.
+const filesTableSql =
+  (
+    db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='files'").get() as
+      | { sql: string }
+      | undefined
+  )?.sql ?? ''
+
+if (/path\s+TEXT\s+UNIQUE\b/i.test(filesTableSql)) {
+  backupBeforeMigration('path-volume-identity')
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE files_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        path TEXT NOT NULL,
+        name TEXT,
+        ext TEXT,
+        size INTEGER,
+        date TEXT,
+        year TEXT,
+        month TEXT,
+        lat REAL,
+        lng REAL,
+        drive TEXT,
+        favourited INTEGER DEFAULT 0,
+        thumb TEXT,
+        locked INTEGER DEFAULT 0,
+        hidden INTEGER DEFAULT 0,
+        vault_path TEXT,
+        trashed_at TEXT,
+        mtime INTEGER,
+        hash TEXT,
+        ino INTEGER,
+        volume_id TEXT,
+        exif_checked INTEGER DEFAULT 0
+      );
+      INSERT INTO files_new
+        (id, path, name, ext, size, date, year, month, lat, lng, drive, favourited, thumb, locked, hidden, vault_path, trashed_at, mtime, hash, ino, volume_id, exif_checked)
+      SELECT
+        id, path, name, ext, size, date, year, month, lat, lng, drive, favourited, thumb, locked, hidden, vault_path, trashed_at, mtime, hash, ino, volume_id, exif_checked
+      FROM files;
+      DROP TABLE files;
+      ALTER TABLE files_new RENAME TO files;
+    `)
+  })()
+  console.log('[migrate] rebuilt files table: identity is now (volume_id, path), not path alone')
+}
+
+// Every index files needs. Rebuilding the table above drops its indexes with
+// it, so these always run after - CREATE INDEX IF NOT EXISTS is a no-op when
+// the table was not touched, and recreates everything when it was.
+db.exec(`
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_files_identity ON files (volume_id, path);
+  CREATE INDEX IF NOT EXISTS idx_files_drive_hidden_trashed_date ON files (drive, hidden, trashed_at, date DESC);
+  CREATE INDEX IF NOT EXISTS idx_files_trashed ON files (trashed_at) WHERE trashed_at IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_files_favourited ON files (favourited) WHERE favourited = 1;
+  -- Covers the exact ORDER BY pagination uses (date, then the unique path
+  -- tie-break). Without the path column SQLite has to re-sort each page, which
+  -- is what makes deep OFFSET queries degrade on a large library.
+  CREATE INDEX IF NOT EXISTS idx_files_page ON files (drive, hidden, trashed_at, date DESC, path ASC);
+  CREATE INDEX IF NOT EXISTS idx_files_volume_page ON files (volume_id, hidden, trashed_at, date DESC, path ASC);
+`)
+
+// favourite_paths needs the same (path, volume_id) identity as files, for the
+// same reason: two different volumes can now share a literal path, and a
+// favourite keyed on path alone could not tell them apart. Existing rows are
+// backfilled from the current files.volume_id for that exact path - safe and
+// unambiguous, since before this migration files.path was itself unique, so
+// there is at most one candidate per row.
+const favouritePathsSql =
+  (
+    db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='favourite_paths'").get() as
+      | { sql: string }
+      | undefined
+  )?.sql ?? ''
+
+if (favouritePathsSql && !/volume_id/i.test(favouritePathsSql)) {
+  backupBeforeMigration('favourite-paths-volume-identity')
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE favourite_paths_new (
+        path TEXT NOT NULL,
+        volume_id TEXT,
+        added_at TEXT,
+        PRIMARY KEY (path, volume_id)
+      );
+      INSERT INTO favourite_paths_new (path, volume_id, added_at)
+      SELECT fp.path, f.volume_id, fp.added_at
+      FROM favourite_paths fp
+      LEFT JOIN files f ON f.path = fp.path;
+      DROP TABLE favourite_paths;
+      ALTER TABLE favourite_paths_new RENAME TO favourite_paths;
+    `)
+  })()
+  console.log('[migrate] rebuilt favourite_paths: identity is now (path, volume_id)')
+}
 
 const deletePrefsCols = (db.prepare('PRAGMA table_info(delete_prefs)').all() as { name: string }[]).map((c) => c.name)
 if (!deletePrefsCols.includes('tile_size')) {
@@ -581,22 +692,37 @@ export function getTrashCount(): number {
   return row?.count ?? 0
 }
 
-export function softDeleteFiles(filePaths: string[]): void {
+/** A path, or a path plus the volume it must belong to (see toggleFavourite). */
+export type PathRef = string | { path: string; volumeId?: string | null }
+function refPath(r: PathRef): string {
+  return typeof r === 'string' ? r : r.path
+}
+function refVolumeId(r: PathRef): string | null | undefined {
+  return typeof r === 'string' ? undefined : r.volumeId
+}
+
+export function softDeleteFiles(refs: PathRef[]): void {
   const stmt = db.prepare('UPDATE files SET trashed_at = ? WHERE path = ?')
+  const stmtScoped = db.prepare('UPDATE files SET trashed_at = ? WHERE path = ? AND volume_id IS ?')
   const now = new Date().toISOString()
   const tx = db.transaction(() => {
-    for (const p of filePaths) {
-      stmt.run(now, p)
+    for (const r of refs) {
+      const volumeId = refVolumeId(r)
+      if (volumeId !== undefined) stmtScoped.run(now, refPath(r), volumeId)
+      else stmt.run(now, refPath(r))
     }
   })
   tx()
 }
 
-export function restoreFiles(filePaths: string[]): void {
+export function restoreFiles(refs: PathRef[]): void {
   const stmt = db.prepare('UPDATE files SET trashed_at = NULL WHERE path = ?')
+  const stmtScoped = db.prepare('UPDATE files SET trashed_at = NULL WHERE path = ? AND volume_id IS ?')
   const tx = db.transaction(() => {
-    for (const p of filePaths) {
-      stmt.run(p)
+    for (const r of refs) {
+      const volumeId = refVolumeId(r)
+      if (volumeId !== undefined) stmtScoped.run(refPath(r), volumeId)
+      else stmt.run(refPath(r))
     }
   })
   tx()
@@ -618,12 +744,40 @@ async function safeDelete(filePath: string): Promise<void> {
   }
 }
 
-export async function deleteFilesPermanently(filePaths: string[]): Promise<{ success: string[]; failed: string[] }> {
+export async function deleteFilesPermanently(refs: PathRef[]): Promise<{ success: string[]; failed: string[] }> {
   const success: string[] = []
   const failed: string[] = []
-  for (const p of filePaths) {
+  const selectAll = db.prepare('SELECT * FROM files WHERE path = ?')
+  const selectScoped = db.prepare('SELECT * FROM files WHERE path = ? AND volume_id IS ?')
+  const deletePlain = db.prepare('DELETE FROM files WHERE path = ?')
+  const deleteScoped = db.prepare('DELETE FROM files WHERE path = ? AND volume_id IS ?')
+  for (const r of refs) {
+    const p = refPath(r)
+    const requestedVolumeId = refVolumeId(r)
     try {
-      const file = db.prepare('SELECT * FROM files WHERE path = ?').get(p) as ScannedFile | undefined
+      // Row identity is now (volume_id, path): when the caller told us which
+      // volume, look up exactly that row. If it no longer matches (the row
+      // was backfilled with a real identity since the caller last read it),
+      // fall back to path alone only when that is unambiguous - exactly one
+      // row still at this path. Two or more candidates with no exact match
+      // is a genuine collision: refuse rather than guess which one to
+      // delete. A caller with no volume context at all (a legacy batch
+      // action) keeps the old plain-path behaviour outright.
+      let file: ScannedFile | undefined
+      if (requestedVolumeId !== undefined) {
+        file = selectScoped.get(p, requestedVolumeId) as ScannedFile | undefined
+        if (!file) {
+          const candidates = selectAll.all(p) as ScannedFile[]
+          if (candidates.length === 1) file = candidates[0]
+          else if (candidates.length > 1) {
+            console.error(`[deletePermanent] ${p}: ${candidates.length} rows collide with no exact identity match - refusing to guess`)
+            failed.push(p)
+            continue
+          }
+        }
+      } else {
+        file = selectAll.get(p) as ScannedFile | undefined
+      }
       if (file) {
         // A path can exist and still be the wrong file - a legacy row and an
         // unrelated device can share a common camera path (DCIM\...\IMG_0001.JPG).
@@ -647,8 +801,13 @@ export async function deleteFilesPermanently(filePaths: string[]): Promise<{ suc
         if (file.thumb && fs.existsSync(file.thumb)) {
           fs.unlinkSync(file.thumb)
         }
+        // Deletes exactly the row just inspected above, by its own identity -
+        // not a fresh path-only DELETE, which would remove every row at a
+        // colliding path instead of only this one.
+        deleteScoped.run(p, file.volume_id ?? null)
+      } else {
+        deletePlain.run(p)
       }
-      db.prepare('DELETE FROM files WHERE path = ?').run(p)
       success.push(p)
     } catch (e) {
       console.error('[deletePermanent] failed for', p, e)
@@ -680,7 +839,9 @@ export async function emptyTrash(): Promise<{ success: boolean; count: number }>
       if (file.thumb && fs.existsSync(file.thumb)) {
         fs.unlinkSync(file.thumb)
       }
-      db.prepare('DELETE FROM files WHERE path = ?').run(file.path)
+      // Scoped to this exact row's identity - a bare path DELETE would remove
+      // every row at a colliding path, not only the one just inspected above.
+      db.prepare('DELETE FROM files WHERE path = ? AND volume_id IS ?').run(file.path, file.volume_id ?? null)
       count++
     } catch (err) {
       console.error(`[emptyTrash] Failed to permanently delete ${file.path}:`, err)
@@ -711,7 +872,7 @@ export async function autoPurgeTrash(): Promise<void> {
         if (file.thumb && fs.existsSync(file.thumb)) {
           fs.unlinkSync(file.thumb)
         }
-        db.prepare('DELETE FROM files WHERE path = ?').run(file.path)
+        db.prepare('DELETE FROM files WHERE path = ? AND volume_id IS ?').run(file.path, file.volume_id ?? null)
         count++
       } catch (err) {
         console.error(`[auto-purge] Failed to permanently delete ${file.path}:`, err)
@@ -730,7 +891,7 @@ export async function autoPurgeTrash(): Promise<void> {
 // in the renderer heap for the whole session (measured: ~17MB of JSON for a
 // 40k-file drive before this).
 const GROUPED_COLS =
-  'path, name, ext, size, date, year, month, lat, lng, drive, favourited, thumb'
+  'path, name, ext, size, date, year, month, lat, lng, drive, favourited, thumb, volume_id'
 
 /**
  * Files for one open drive, or the whole library when no drive is given.
@@ -785,34 +946,68 @@ export function getFavourites(): ScannedFile[] {
 /**
  * Keeps path-keyed side tables in step when a record's path changes.
  *
- * favourite_paths is keyed by path so it can outlive the files row, which also
- * means a relink would orphan it - the favourite would silently point at a
- * location that no longer holds the file. Every place that rewrites files.path
- * must call this.
+ * favourite_paths is keyed by (path, volume_id) so it can outlive the files
+ * row, which also means a relink would orphan it - the favourite would
+ * silently point at a location that no longer holds the file. Every place
+ * that rewrites files.path must call this. `volumeId` scopes the move to the
+ * one row actually being renamed; passed as `undefined` it falls back to
+ * moving every favourite at `oldPath`, which is only safe when the caller
+ * cannot know which volume it belongs to.
  */
-function repointPath(oldPath: string, newPath: string): void {
+function repointPath(oldPath: string, newPath: string, volumeId?: string | null): void {
   if (!oldPath || !newPath || oldPath === newPath) return
-  db.prepare('UPDATE OR REPLACE favourite_paths SET path = ? WHERE path = ?').run(newPath, oldPath)
+  if (volumeId !== undefined) {
+    db.prepare('UPDATE OR REPLACE favourite_paths SET path = ? WHERE path = ? AND volume_id IS ?').run(
+      newPath,
+      oldPath,
+      volumeId
+    )
+  } else {
+    db.prepare('UPDATE OR REPLACE favourite_paths SET path = ? WHERE path = ?').run(newPath, oldPath)
+  }
 }
 
-/** Returns the resulting state, so callers don't need a second read. */
-export function toggleFavourite(filePath: string): boolean {
-  db.prepare(
-    'UPDATE files SET favourited = CASE WHEN favourited = 1 THEN 0 ELSE 1 END WHERE path = ?'
-  ).run(filePath)
-  const row = db.prepare('SELECT favourited FROM files WHERE path = ?').get(filePath) as
-    | { favourited: number }
-    | undefined
+/**
+ * Returns the resulting state, so callers don't need a second read.
+ *
+ * `volumeId` disambiguates when two different, verified volumes each hold a
+ * row at the same path (possible since identity became (volume_id, path) -
+ * see the migration note by the files table). Passed as `undefined` (not
+ * supplied) this matches on path alone, same as before; passed `null` or a
+ * real id, it only ever touches the one row that actually has that identity,
+ * so a batch action working from paths alone never toggles a stranger's file
+ * that happens to share one.
+ */
+export function toggleFavourite(filePath: string, volumeId?: string | null): boolean {
+  if (volumeId !== undefined) {
+    db.prepare(
+      'UPDATE files SET favourited = CASE WHEN favourited = 1 THEN 0 ELSE 1 END WHERE path = ? AND volume_id IS ?'
+    ).run(filePath, volumeId)
+  } else {
+    db.prepare(
+      'UPDATE files SET favourited = CASE WHEN favourited = 1 THEN 0 ELSE 1 END WHERE path = ?'
+    ).run(filePath)
+  }
+  const row = (
+    volumeId !== undefined
+      ? db.prepare('SELECT favourited, volume_id FROM files WHERE path = ? AND volume_id IS ?').get(filePath, volumeId)
+      : db.prepare('SELECT favourited, volume_id FROM files WHERE path = ?').get(filePath)
+  ) as { favourited: number; volume_id: string | null } | undefined
   const on = (row?.favourited ?? 0) === 1
   // Mirror into the standalone table. The files row stays authoritative for
   // the UI; this copy is what survives if the record is ever replaced.
+  // volume_id is stored even when the caller didn't supply one, read back
+  // from the row just toggled - so this table stays as identity-scoped as
+  // files itself, regardless of which callers know their volume up front.
+  const rowVolumeId = volumeId !== undefined ? volumeId : (row?.volume_id ?? null)
   if (on) {
-    db.prepare('INSERT OR IGNORE INTO favourite_paths (path, added_at) VALUES (?, ?)').run(
+    db.prepare('INSERT OR REPLACE INTO favourite_paths (path, volume_id, added_at) VALUES (?, ?, ?)').run(
       filePath,
+      rowVolumeId,
       new Date().toISOString()
     )
   } else {
-    db.prepare('DELETE FROM favourite_paths WHERE path = ?').run(filePath)
+    db.prepare('DELETE FROM favourite_paths WHERE path = ? AND volume_id IS ?').run(filePath, rowVolumeId)
   }
   return on
 }
@@ -1054,8 +1249,12 @@ const EXIF_EXTS = new Set([
   '.mov'
 ])
 
+// Scoped to (path, volume_id): the file actually read from disk belongs to
+// whichever volume is mounted right now, and a bare path WHERE would write
+// its EXIF onto every row at a colliding path, including another volume's
+// that is not even connected.
 const updateExifStmt = db.prepare(
-  `UPDATE files SET date=?, year=?, month=?, lat=?, lng=? WHERE path=? AND lat IS NULL`
+  `UPDATE files SET date=?, year=?, month=?, lat=?, lng=? WHERE path=? AND volume_id IS ? AND lat IS NULL`
 )
 
 // A file with GPS but no capture date must keep whatever date it already has
@@ -1063,10 +1262,10 @@ const updateExifStmt = db.prepare(
 // with "today", which is why a large share of the library collapsed into the
 // current month and sorted above genuinely recent photos.
 const updateGpsOnlyStmt = db.prepare(
-  `UPDATE files SET lat=?, lng=? WHERE path=? AND lat IS NULL`
+  `UPDATE files SET lat=?, lng=? WHERE path=? AND volume_id IS ? AND lat IS NULL`
 )
 
-const markExifCheckedStmt = db.prepare('UPDATE files SET exif_checked = 1 WHERE path = ?')
+const markExifCheckedStmt = db.prepare('UPDATE files SET exif_checked = 1 WHERE path = ? AND volume_id IS ?')
 
 let exifBackfillRunning = false
 
@@ -1090,11 +1289,11 @@ export async function enrichExifBackfill(shouldStop?: () => boolean): Promise<nu
     const placeholders = extList.map(() => '?').join(',')
     const pending = db
       .prepare(
-        `SELECT path, ext FROM files
+        `SELECT path, ext, volume_id FROM files
          WHERE exif_checked = 0 AND trashed_at IS NULL AND ext IN (${placeholders})
          ORDER BY date DESC`
       )
-      .all(...extList) as { path: string; ext: string }[]
+      .all(...extList) as { path: string; ext: string; volume_id: string | null }[]
 
     const total = pending.length
     if (total === 0) return 0
@@ -1110,7 +1309,7 @@ export async function enrichExifBackfill(shouldStop?: () => boolean): Promise<nu
     async function worker(): Promise<void> {
       while (cursor < pending.length) {
         if (shouldStop?.()) return
-        const { path: fullPath, ext } = pending[cursor++]
+        const { path: fullPath, ext, volume_id: rowVolumeId } = pending[cursor++]
         const lowerExt = ext.toLowerCase()
         try {
           let date: Date | null = null
@@ -1144,18 +1343,19 @@ export async function enrichExifBackfill(shouldStop?: () => boolean): Promise<nu
               d.toLocaleString('default', { month: 'long' }),
               lat,
               lng,
-              fullPath
+              fullPath,
+              rowVolumeId
             )
             corrected++
           } else if (lat !== null) {
-            updateGpsOnlyStmt.run(lat, lng, fullPath)
+            updateGpsOnlyStmt.run(lat, lng, fullPath, rowVolumeId)
           }
         } catch {
           /* unreadable, or simply has no metadata - the mtime date stands */
         }
         // Marked either way, so a file that genuinely has no EXIF is not
         // re-parsed on every launch for the rest of the library's life.
-        markExifCheckedStmt.run(fullPath)
+        markExifCheckedStmt.run(fullPath, rowVolumeId)
 
         checked++
         if (checked % 500 === 0) {
@@ -1185,6 +1385,12 @@ export function resolveMediaFile(filePath: string): { path: string; relinked: bo
   console.warn(`[PathResilience] File not found at target path: "${filePath}". Searching index for moved/renamed file...`)
 
   const targetName = basename(filePath)
+  // The specific row this call is about, so a relink below touches exactly
+  // this one - never every row a bare `path = filePath` WHERE would match if
+  // another volume happens to have had the same relative path.
+  const missingRow = db.prepare('SELECT * FROM files WHERE path = ?').get(filePath) as ScannedFile | undefined
+  const missingVolumeId = missingRow?.volume_id ?? null
+  const relinkStmt = db.prepare('UPDATE files SET path = ?, name = ? WHERE path = ? AND volume_id IS ?')
 
   // 2. Search database for files matching exact filename or path
   const candidates = db
@@ -1195,8 +1401,8 @@ export function resolveMediaFile(filePath: string): { path: string; relinked: bo
   for (const candidate of candidates) {
     if (fs.existsSync(candidate.path)) {
       console.log(`[PathResilience] Found moved file at indexed path: "${candidate.path}"`)
-      db.prepare('UPDATE files SET path = ?, name = ? WHERE path = ?').run(candidate.path, basename(candidate.path), filePath)
-      repointPath(filePath, candidate.path)
+      relinkStmt.run(candidate.path, basename(candidate.path), filePath, missingVolumeId)
+      repointPath(filePath, candidate.path, missingVolumeId)
       return { path: candidate.path, relinked: true, exists: true }
     }
   }
@@ -1213,8 +1419,8 @@ export function resolveMediaFile(filePath: string): { path: string; relinked: bo
           const candidatePath = join(parentDirPath, sub.name, targetName)
           if (fs.existsSync(candidatePath)) {
             console.log(`[PathResilience] Located moved file in renamed parent folder: "${candidatePath}"`)
-            db.prepare('UPDATE files SET path = ?, name = ? WHERE path = ?').run(candidatePath, targetName, filePath)
-            repointPath(filePath, candidatePath)
+            relinkStmt.run(candidatePath, targetName, filePath, missingVolumeId)
+            repointPath(filePath, candidatePath, missingVolumeId)
             return { path: candidatePath, relinked: true, exists: true }
           }
         }
@@ -1225,14 +1431,32 @@ export function resolveMediaFile(filePath: string): { path: string; relinked: bo
   return { path: filePath, relinked: false, exists: false }
 }
 
-export function removeFileRecord(filePath: string): void {
-  const row = db.prepare('SELECT thumb FROM files WHERE path = ?').get(filePath) as { thumb: string | null } | undefined
+/** `volumeId` disambiguates a colliding path the same way toggleFavourite does. */
+export function removeFileRecord(filePath: string, volumeId?: string | null): void {
+  // Matches the live volume's own row OR a still-legacy one at this path -
+  // never a different, already-identified volume's row. A confirmed-gone
+  // file might not have been backfilled with an identity yet (only a scan
+  // walk does that), and an exact-only match would silently leave that row
+  // behind forever as a ghost, believing nothing needed deleting.
+  const row = (
+    volumeId !== undefined
+      ? db
+          .prepare(
+            'SELECT thumb FROM files WHERE path = ? AND (volume_id IS ? OR volume_id IS NULL) ORDER BY (volume_id IS NULL) LIMIT 1'
+          )
+          .get(filePath, volumeId)
+      : db.prepare('SELECT thumb FROM files WHERE path = ?').get(filePath)
+  ) as { thumb: string | null } | undefined
   if (row?.thumb && fs.existsSync(row.thumb)) {
     try {
       fs.unlinkSync(row.thumb)
     } catch {}
   }
-  db.prepare('DELETE FROM files WHERE path = ?').run(filePath)
+  if (volumeId !== undefined) {
+    db.prepare('DELETE FROM files WHERE path = ? AND (volume_id IS ? OR volume_id IS NULL)').run(filePath, volumeId)
+  } else {
+    db.prepare('DELETE FROM files WHERE path = ?').run(filePath)
+  }
 }
 
 export async function updateFileInPlace(filePath: string, statInput?: fs.Stats): Promise<ScannedFile | null> {
@@ -1250,7 +1474,7 @@ export async function updateFileInPlace(filePath: string, statInput?: fs.Stats):
   if (!stat) {
     try {
       if (!fs.existsSync(filePath)) {
-        removeFileRecord(filePath)
+        removeFileRecord(filePath, getCachedVolumeId(filePath.slice(0, 2)))
         return null
       }
       stat = fs.statSync(filePath)
@@ -1259,14 +1483,24 @@ export async function updateFileInPlace(filePath: string, statInput?: fs.Stats):
     }
   }
 
-  const existing = db.prepare('SELECT * FROM files WHERE path = ?').get(filePath) as ScannedFile | undefined
-
-  const mtimeMs = Math.round(stat.mtimeMs)
-  const date = new Date(stat.mtime)
-  const year = date.getFullYear().toString()
-  const month = date.toLocaleString('default', { month: 'long' })
   const ext = extname(filePath).toLowerCase()
   const drive = filePath.slice(0, 2).toUpperCase()
+  // Whatever is currently live at this letter, verified by the watcher
+  // actually seeing this file appear/change there just now - never inferred
+  // from the letter alone for a row that already has a different identity.
+  const volumeId = getCachedVolumeId(drive)
+
+  // Prefers the row that already carries this exact identity; failing that,
+  // a legacy row at the path with no recorded identity is the backfill
+  // candidate. Never a row that already belongs to a DIFFERENT verified
+  // volume - two devices can share a relative path, and this is exactly the
+  // case identity now keeps apart (see the files-table migration note).
+  const existing = db
+    .prepare(
+      `SELECT * FROM files WHERE path = ? AND (volume_id IS ? OR volume_id IS NULL)
+       ORDER BY (volume_id IS NULL) LIMIT 1`
+    )
+    .get(filePath, volumeId) as ScannedFile | undefined
 
   // Invalidate old thumb if exists
   if (existing?.thumb && fs.existsSync(existing.thumb)) {
@@ -1282,17 +1516,32 @@ export async function updateFileInPlace(filePath: string, statInput?: fs.Stats):
     console.error(`[updateFileInPlace] Thumb generation failed for ${filePath}:`, e)
   }
 
-  // Whatever is currently live at this letter, verified by the watcher
-  // actually seeing this file appear/change there just now - never inferred
-  // from the letter alone for a row that already has a different identity.
-  const volumeId = getCachedVolumeId(drive)
+  const mtimeMs = Math.round(stat.mtimeMs)
+  const date = new Date(stat.mtime)
+  const year = date.getFullYear().toString()
+  const month = date.toLocaleString('default', { month: 'long' })
+
   if (existing) {
+    // Scoped to the exact row resolved above, by its own (possibly still
+    // legacy-null) identity - never a bare path WHERE, which would touch
+    // every row at a colliding path instead of only this one.
     db.prepare(`
       UPDATE files
       SET size = ?, date = ?, year = ?, month = ?, thumb = ?, mtime = ?, ino = ?,
           volume_id = COALESCE(volume_id, ?)
-      WHERE path = ?
-    `).run(stat.size, date.toISOString(), year, month, newThumb, mtimeMs, stat.ino ? Number(stat.ino) : null, volumeId, filePath)
+      WHERE path = ? AND volume_id IS ?
+    `).run(
+      stat.size,
+      date.toISOString(),
+      year,
+      month,
+      newThumb,
+      mtimeMs,
+      stat.ino ? Number(stat.ino) : null,
+      volumeId,
+      filePath,
+      existing.volume_id ?? null
+    )
   } else {
     db.prepare(`
       INSERT OR REPLACE INTO files (path, name, ext, size, date, year, month, lat, lng, drive, thumb, locked, hidden, mtime, ino, volume_id)
@@ -1300,7 +1549,9 @@ export async function updateFileInPlace(filePath: string, statInput?: fs.Stats):
     `).run(filePath, basename(filePath), ext, stat.size, date.toISOString(), year, month, null, null, drive, newThumb, mtimeMs, stat.ino ? Number(stat.ino) : null, volumeId)
   }
 
-  const updated = db.prepare('SELECT * FROM files WHERE path = ?').get(filePath) as ScannedFile | undefined
+  const updated = db
+    .prepare('SELECT * FROM files WHERE path = ? AND (volume_id IS ? OR volume_id IS NULL) ORDER BY (volume_id IS NULL) LIMIT 1')
+    .get(filePath, volumeId) as ScannedFile | undefined
   return updated || null
 }
 
@@ -1655,17 +1906,31 @@ export async function indexFolderBounded(
     reconcileDriveLetterForVolume(volumeId, drive)
   }
 
-  // ON CONFLICT backfills volume_id for a row this exact walk just found on
-  // the live volume, verified by actually being there - never inferred from
-  // the letter alone. Every other column an existing row already has (thumb,
-  // favourited, hash, EXIF) is left untouched, same as the plain IGNORE this
-  // replaces.
-  const insert = db.prepare(
-    `INSERT INTO files
-       (path, name, ext, size, date, year, month, lat, lng, drive, thumb, locked, hidden, mtime, ino, volume_id, exif_checked)
-     VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, 0, 0, ?, ?, ?, 0)
-     ON CONFLICT(path) DO UPDATE SET volume_id = excluded.volume_id WHERE files.volume_id IS NULL`
-  )
+  // Identity is (volume_id, path), not path alone (see the migration note by
+  // the files table), so a legacy row and a fresh insert for the volume this
+  // walk is scanning are different keys and would never collide under ON
+  // CONFLICT - and SQLite's unique index never treats two NULLs as equal, so
+  // with volumeId unresolved (getVolumeId() can fail), a plain INSERT OR
+  // IGNORE would stop deduping against an existing NULL-volume_id row and
+  // duplicate it on every re-index instead. The backfill runs as its own
+  // step first - claiming a legacy row at this exact path, verified by this
+  // walk actually finding the file there - and the insert is conditioned on
+  // an explicit existence check rather than relying on a constraint that no
+  // longer covers the unresolved-identity case.
+  const backfill = db.prepare(`UPDATE files SET volume_id = ? WHERE path = ? AND volume_id IS NULL`)
+  const insert = volumeId
+    ? db.prepare(
+        `INSERT INTO files
+           (path, name, ext, size, date, year, month, lat, lng, drive, thumb, locked, hidden, mtime, ino, volume_id, exif_checked)
+         SELECT ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, 0, 0, ?, ?, ?, 0
+         WHERE NOT EXISTS (SELECT 1 FROM files WHERE path = ? AND volume_id IS ?)`
+      )
+    : db.prepare(
+        `INSERT INTO files
+           (path, name, ext, size, date, year, month, lat, lng, drive, thumb, locked, hidden, mtime, ino, volume_id, exif_checked)
+         SELECT ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, 0, 0, ?, ?, ?, 0
+         WHERE NOT EXISTS (SELECT 1 FROM files WHERE path = ?)`
+      )
 
   const rows: Parameters<typeof insert.run>[] = []
   let skipped = 0
@@ -1734,7 +1999,14 @@ export async function indexFolderBounded(
   // truncated run reports partial progress rather than discarding it.
   let added = 0
   db.transaction(() => {
-    for (const r of rows) added += insert.run(...r).changes
+    for (const r of rows) {
+      if (volumeId) {
+        backfill.run(volumeId, r[0])
+        added += insert.run(...r, r[0], volumeId).changes
+      } else {
+        added += insert.run(...r, r[0]).changes
+      }
+    }
   })()
   cancelIndexRequested = false
   return { added, seen, visited, skipped, drive, volumeId, stoppedBy, complete: stoppedBy === null }
@@ -1756,11 +2028,24 @@ export function relinkMovedFile(oldPath: string, newPath: string, stat: fs.Stats
   db.prepare(`
     UPDATE files
     SET path = ?, name = ?, ext = ?, drive = ?, size = ?, mtime = ?, ino = ?, volume_id = COALESCE(volume_id, ?)
-    WHERE path = ?
-  `).run(newPath, basename(newPath), ext, drive, stat.size, mtimeMs, stat.ino ? Number(stat.ino) : null, getCachedVolumeId(drive), oldPath)
-  repointPath(oldPath, newPath)
+    WHERE path = ? AND volume_id IS ?
+  `).run(
+    newPath,
+    basename(newPath),
+    ext,
+    drive,
+    stat.size,
+    mtimeMs,
+    stat.ino ? Number(stat.ino) : null,
+    getCachedVolumeId(drive),
+    oldPath,
+    existing.volume_id ?? null
+  )
+  repointPath(oldPath, newPath, existing.volume_id ?? null)
 
-  const updated = db.prepare('SELECT * FROM files WHERE path = ?').get(newPath) as ScannedFile | undefined
+  const updated = db
+    .prepare('SELECT * FROM files WHERE path = ? AND (volume_id IS ? OR volume_id IS NULL) ORDER BY (volume_id IS NULL) LIMIT 1')
+    .get(newPath, existing.volume_id ?? null) as ScannedFile | undefined
   return updated || null
 }
 
@@ -1873,7 +2158,7 @@ async function incrementalSyncDriveInner(
     )
   } else {
     for (const path of removed) {
-      removeFileRecord(path)
+      removeFileRecord(path, currentVolId)
     }
   }
 
@@ -2121,11 +2406,15 @@ export function reconcileDriveLetterForVolume(volumeId: string, newLetter: strin
     return
   }
 
-  const updateFile = db.prepare('UPDATE files SET drive = ?, path = ? WHERE path = ?')
+  // Scoped by volume_id as well as path: two different volumes can now share
+  // a literal path (see the files-table migration note), and a bare path
+  // WHERE would move both of them, not only the one actually being
+  // reconciled here.
+  const updateFile = db.prepare('UPDATE files SET drive = ?, path = ? WHERE path = ? AND volume_id = ?')
   // No OR REPLACE: a destination collision here must fail loudly (caught
   // below) rather than silently deleting whatever other file was favourited
   // at that path.
-  const updateFav = db.prepare('UPDATE favourite_paths SET path = ? WHERE path = ?')
+  const updateFav = db.prepare('UPDATE favourite_paths SET path = ? WHERE path = ? AND volume_id IS ?')
   let moved = 0
   let collided = 0
   db.transaction(() => {
@@ -2141,14 +2430,14 @@ export function reconcileDriveLetterForVolume(volumeId: string, newLetter: strin
         // file (two volumes sharing a folder layout, e.g. DCIM\...\IMG_0001.JPG)
         // does not strand every other row on its old, now-wrong letter.
         try {
-          updateFile.run(letter, newPath, path)
+          updateFile.run(letter, newPath, path, volumeId)
         } catch (err) {
           collided++
           console.error(`[reconcile] ${path} -> ${newPath} collided, left on ${old}:`, err)
           continue
         }
         try {
-          updateFav.run(newPath, path)
+          updateFav.run(newPath, path, volumeId)
         } catch (err) {
           console.error(`[reconcile] favourite at ${path} could not follow to ${newPath}:`, err)
         }

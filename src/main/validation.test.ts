@@ -4,6 +4,7 @@ import {
   isSafeLocalPath,
   normalizeDrive,
   safePathList,
+  safePathRefs,
   isUsableCaptureDate,
   isMassRemoval,
   isIndexableMedia,
@@ -49,6 +50,38 @@ test('safePathList filters and caps', () => {
   ])
   assert.deepEqual(safePathList('not an array'), [])
   assert.equal(safePathList(Array(500).fill('C:\\a.jpg'), 200).length, 200)
+})
+
+// A single-file action sends { path, volumeId } so trash/restore/permanent-
+// delete act on exactly the row the user meant, even if another volume has a
+// row at the same path; a batch action built from a selection of paths alone
+// still sends bare strings, and both must survive in one call.
+test('safePathRefs accepts bare paths and volume-scoped refs together', () => {
+  const refs = safePathRefs([
+    'C:\\a.jpg',
+    { path: 'D:\\b.jpg', volumeId: 'VOL-1' },
+    { path: 'E:\\c.jpg', volumeId: null },
+    { path: 'F:\\legacy.jpg' }
+  ])
+  assert.deepEqual(refs, [
+    'C:\\a.jpg',
+    { path: 'D:\\b.jpg', volumeId: 'VOL-1' },
+    { path: 'E:\\c.jpg', volumeId: null },
+    { path: 'F:\\legacy.jpg', volumeId: undefined }
+  ])
+})
+
+test('safePathRefs drops unsafe paths in either shape, and non-array input', () => {
+  assert.deepEqual(
+    safePathRefs(['../etc/passwd', { path: '\\\\server\\share\\x.jpg', volumeId: 'V' }, { path: 'C:\\ok.jpg' }]),
+    [{ path: 'C:\\ok.jpg', volumeId: undefined }]
+  )
+  assert.deepEqual(safePathRefs('not an array'), [])
+  assert.deepEqual(safePathRefs([{ volumeId: 'V' }, 42, null]), [])
+})
+
+test('safePathRefs caps like safePathList', () => {
+  assert.equal(safePathRefs(Array(500).fill('C:\\a.jpg'), 200).length, 200)
 })
 
 // Regression: files with no readable capture date were being stamped with

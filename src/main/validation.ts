@@ -94,6 +94,38 @@ export function safePathList(value: unknown, limit = 10000): string[] {
 }
 
 /**
+ * Same validation as {@link safePathList}, but accepts either a bare path or
+ * `{ path, volumeId }` - the shape a single-file action sends once it knows
+ * which volume the row belongs to, so trash/restore/permanent-delete act on
+ * exactly that row rather than whatever else shares its path. A batch action
+ * built from paths alone (multi-select) still sends bare strings.
+ */
+export function safePathRefs(
+  value: unknown,
+  limit = 10000
+): (string | { path: string; volumeId?: string | null })[] {
+  if (!Array.isArray(value)) return []
+  const out: (string | { path: string; volumeId?: string | null })[] = []
+  for (const item of value) {
+    if (out.length >= limit) break
+    if (typeof item === 'string') {
+      if (isSafeLocalPath(item)) out.push(item)
+      continue
+    }
+    if (item && typeof item === 'object' && typeof (item as { path?: unknown }).path === 'string') {
+      const path = (item as { path: string }).path
+      if (!isSafeLocalPath(path)) continue
+      const volumeId = (item as { volumeId?: unknown }).volumeId
+      out.push({
+        path,
+        volumeId: typeof volumeId === 'string' ? volumeId : volumeId === null ? null : undefined
+      })
+    }
+  }
+  return out
+}
+
+/**
  * A capture date is only usable if it is real: not missing, not unparseable,
  * not an epoch-ish value (what a zeroed timestamp field decodes to) and not in
  * the future. Anything that fails leaves the existing filesystem date in place,

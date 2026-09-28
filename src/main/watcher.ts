@@ -116,7 +116,7 @@ export class WatcherManager {
       // Verify if file truly does not exist on disk
       if (!fs.existsSync(filePath)) {
         console.log(`[WatcherManager] File genuinely removed from disk after debounce: "${filePath}"`)
-        removeFileRecord(filePath)
+        removeFileRecord(filePath, getCachedVolumeId(driveKey))
         this.notifyFilesUpdated(driveKey)
       } else {
         console.log(`[WatcherManager] File re-appeared during unlink timer (atomic replace): "${filePath}"`)

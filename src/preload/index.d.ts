@@ -21,6 +21,10 @@ interface ScannedFile {
   drive: string
   favourited: number
   thumb: string | null
+  /** The volume this row was verified to come from; null/absent for a
+   *  pre-identity legacy row. Passed back on single-file actions so a path
+   *  shared by two different volumes can never be acted on ambiguously. */
+  volume_id?: string | null
 }
 
 /**
@@ -50,6 +54,7 @@ declare global {
         userDataPath: string
         isDefaultUserData: boolean
         appVersion: string
+        buildCommit: string
       }>
       onDrivesUpdated: (callback: (drives: DriveInfo[]) => void) => () => void
       scanDrive: (drivePath: string) => void
@@ -140,7 +145,7 @@ declare global {
           reason: 'initial' | 'background'
         }) => void
       ) => () => void
-      toggleFavourite: (filePath: string) => void
+      toggleFavourite: (filePath: string, volumeId?: string | null) => void
       getFavourites: () => void
       onFavouritesUpdated: (callback: (files: ScannedFile[]) => void) => () => void
       onFavouriteToggled: (callback: (data: { filePath: string; isFav: boolean }) => void) => () => void

@@ -76,6 +76,7 @@ import {
   normalizeDrive,
   isSafeLocalPath,
   safePathList,
+  safePathRefs,
   THUMB_UNAVAILABLE,
   THUMB_VOLUME_OFFLINE,
   THUMB_FOLDER_MISSING,
@@ -677,7 +678,11 @@ app.whenReady().then(() => {
     isDefaultUserData: app.getPath('userData').toLowerCase() === join(app.getPath('appData'), 'diskframe').toLowerCase(),
     // The actual installed version, not a value baked into the renderer bundle -
     // this reads the packaged app's own version in a built install too.
-    appVersion: app.getVersion()
+    appVersion: app.getVersion(),
+    // Distinguishes two installs that share the same package.json version -
+    // baked in at build time (see electron.vite.config.ts), 'unknown' for a
+    // build made outside a git checkout.
+    buildCommit: __DF_COMMIT__
   }))
   ipcMain.on('reveal-file', (_event, filePath: string) => {
     if (isSafeLocalPath(filePath)) shell.showItemInFolder(resolveStoredPath(filePath))
@@ -1015,12 +1020,12 @@ app.whenReady().then(() => {
     if (drive) sendFilesUpdated(drive, 'initial')
   })
 
-  ipcMain.on('toggle-favourite', (_event, filePath: string) => {
+  ipcMain.on('toggle-favourite', (_event, filePath: string, volumeId?: unknown) => {
     if (!isSafeLocalPath(filePath)) return
     // Reads back through the scanner's existing connection. Opening a second
     // better-sqlite3 handle per toggle meant a fresh WAL attach, page cache and
     // teardown for a single-row read, on the main thread, per click.
-    const isFav = toggleFavourite(filePath)
+    const isFav = toggleFavourite(filePath, typeof volumeId === 'string' ? volumeId : volumeId === null ? null : undefined)
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.webContents.send('favourite-toggled', { filePath, isFav })
     }
@@ -1043,22 +1048,22 @@ app.whenReady().then(() => {
     }
   }
 
-  ipcMain.handle('delete-files', (_event, filePaths: string[]) => {
-    const paths = safePathList(filePaths)
-    softDeleteFiles(paths)
+  ipcMain.handle('delete-files', (_event, filePaths: unknown) => {
+    const refs = safePathRefs(filePaths)
+    softDeleteFiles(refs)
     pushFavourites()
-    return { success: paths, failed: [] }
+    return { success: refs.map((r) => (typeof r === 'string' ? r : r.path)), failed: [] }
   })
 
   // ── TRASH IPC HANDLERS ──
-  ipcMain.handle('restore-files', (_event, filePaths: string[]) => {
-    restoreFiles(safePathList(filePaths))
+  ipcMain.handle('restore-files', (_event, filePaths: unknown) => {
+    restoreFiles(safePathRefs(filePaths))
     pushFavourites()
     return { success: true }
   })
 
-  ipcMain.handle('delete-files-permanently', async (_event, filePaths: string[]) => {
-    const r = await deleteFilesPermanently(safePathList(filePaths))
+  ipcMain.handle('delete-files-permanently', async (_event, filePaths: unknown) => {
+    const r = await deleteFilesPermanently(safePathRefs(filePaths))
     pushFavourites()
     return r
   })

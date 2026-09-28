@@ -188,6 +188,10 @@ export interface ScannedFile {
   favourited: number
   thumb: string | null
   trashed_at?: string | null
+  /** The volume this row was verified to come from; null/absent for a
+   *  pre-identity legacy row. Passed back on single-file actions so a path
+   *  shared by two different volumes can never be acted on ambiguously. */
+  volume_id?: string | null
 }
 
 const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic']
@@ -588,7 +592,13 @@ const MainContentArea: React.FC<{
   hoverPreviewsEnabled: boolean
   onHoverPreviewsChange: (enabled: boolean) => void
   libraryState: 'idle' | 'loading' | 'ready'
-  runtimeMode: { safeMode: boolean; userDataPath: string; isDefaultUserData: boolean; appVersion: string } | null
+  runtimeMode: {
+    safeMode: boolean
+    userDataPath: string
+    isDefaultUserData: boolean
+    appVersion: string
+    buildCommit: string
+  } | null
   driveOpened: { drive: string; indexed: number; needsInitialScan: boolean; identityUnresolved: boolean } | null
   onReconcile: () => void
 }> = React.memo(({
@@ -1322,7 +1332,10 @@ const MainContentArea: React.FC<{
             </div>
           </section>
 
-          <AboutConnect version={runtimeMode?.appVersion ?? null} />
+          <AboutConnect
+            version={runtimeMode?.appVersion ?? null}
+            buildCommit={runtimeMode?.buildCommit ?? null}
+          />
         </div>
       )}
 
@@ -1483,6 +1496,7 @@ export default function App(): React.JSX.Element {
     userDataPath: string
     isDefaultUserData: boolean
     appVersion: string
+    buildCommit: string
   } | null>(null)
   // Distinguishes "still loading" from "genuinely empty" so the status bar
   // never reports a confident 0 for data that simply has not arrived.
@@ -1936,7 +1950,7 @@ export default function App(): React.JSX.Element {
       if (next.has(file.path)) next.delete(file.path); else next.add(file.path)
       return next
     })
-    window.api.toggleFavourite(file.path)
+    window.api.toggleFavourite(file.path, file.volume_id)
   }, [])
 
   const handleReveal = useCallback((file: ScannedFile): void => { window.electron.ipcRenderer.send('reveal-file', file.path) }, [])
@@ -2575,7 +2589,7 @@ export default function App(): React.JSX.Element {
     })
     setTimeout(async () => {
       try {
-        await window.electron.ipcRenderer.invoke('restore-files', [file.path])
+        await window.electron.ipcRenderer.invoke('restore-files', [{ path: file.path, volumeId: file.volume_id }])
         setDeletingPaths(prev => {
           const next = new Set(prev)
           next.delete(file.path)
@@ -3309,7 +3323,7 @@ export default function App(): React.JSX.Element {
               <button
                 onClick={async () => {
                   try {
-                    const result = await window.electron.ipcRenderer.invoke('delete-files', [fileToDelete.path]) as { success?: string[] }
+                    const result = await window.electron.ipcRenderer.invoke('delete-files', [{ path: fileToDelete.path, volumeId: fileToDelete.volume_id }]) as { success?: string[] }
                     if (result && result.success && result.success.length > 0) {
                       handleFileDeleted(fileToDelete.path)
                     }
@@ -3483,7 +3497,7 @@ export default function App(): React.JSX.Element {
               <button
                 onClick={async () => {
                   try {
-                    await window.electron.ipcRenderer.invoke('delete-files-permanently', [fileToDeletePermanently.path])
+                    await window.electron.ipcRenderer.invoke('delete-files-permanently', [{ path: fileToDeletePermanently.path, volumeId: fileToDeletePermanently.volume_id }])
                     refreshTrash()
                   } catch (err) {
                     console.error(err)

@@ -224,7 +224,7 @@ export function summarySql(q: LibraryQuery): { sql: string; params: unknown[] } 
 }
 
 export const PAGE_COLUMNS =
-  'path, name, ext, size, date, year, month, lat, lng, drive, favourited, thumb'
+  'path, name, ext, size, date, year, month, lat, lng, drive, favourited, thumb, volume_id'
 
 /**
  * Whether the group key is a prefix of `date`.

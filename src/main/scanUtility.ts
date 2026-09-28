@@ -91,15 +91,30 @@ async function executeScan(drivePath: string, scanPath: string, dbPath: string, 
   db.pragma('journal_mode = WAL')
   db.pragma('synchronous = NORMAL')
 
-  // ON CONFLICT backfills volume_id for a row this exact walk just found on
-  // the live volume, verified by actually being there - never inferred from
-  // the letter alone. Every other column an existing row already has (thumb,
-  // favourited, hash, EXIF) is left untouched, same as the plain IGNORE this
-  // replaces.
-  const insertStmt = db.prepare(`
+  // Identity is (volume_id, path), not path alone (see the migration note in
+  // scanner.ts), and SQLite's unique index never treats two NULLs as equal -
+  // so with an unresolved volume id (getVolumeId() can and does fail: no
+  // PowerShell, WMI down), INSERT OR IGNORE would no longer dedupe against an
+  // existing NULL-volume_id row at the same path the way plain path
+  // uniqueness used to, and every rescan of that drive would insert a fresh
+  // duplicate. The existence check below is what actually dedupes, in both
+  // directions:
+  //  - identity known: claim any legacy row at this path first (verified by
+  //    this walk finding the file there, never inferred from the letter),
+  //    then only insert if nothing still matches this exact identity.
+  //  - identity unknown: never insert a second row at a path anything is
+  //    already recorded at - the same "one row per path" guarantee the old
+  //    schema gave for free when nothing could be verified either way.
+  const backfillStmt = db.prepare(`UPDATE files SET volume_id = ? WHERE path = ? AND volume_id IS NULL`)
+  const insertKnownStmt = db.prepare(`
     INSERT INTO files (path, name, ext, size, date, year, month, lat, lng, drive, thumb, locked, hidden, mtime, ino, volume_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)
-    ON CONFLICT(path) DO UPDATE SET volume_id = excluded.volume_id WHERE files.volume_id IS NULL
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?
+    WHERE NOT EXISTS (SELECT 1 FROM files WHERE path = ? AND volume_id IS ?)
+  `)
+  const insertUnknownStmt = db.prepare(`
+    INSERT INTO files (path, name, ext, size, date, year, month, lat, lng, drive, thumb, locked, hidden, mtime, ino, volume_id)
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?
+    WHERE NOT EXISTS (SELECT 1 FROM files WHERE path = ?)
   `)
 
   let count = 0
@@ -110,7 +125,16 @@ async function executeScan(drivePath: string, scanPath: string, dbPath: string, 
   function flushBatch(): void {
     if (batch.length === 0) return
     const tx = db.transaction((rows: any[]) => {
-      for (const row of rows) insertStmt.run(...row)
+      for (const row of rows) {
+        const rowPath = row[0]
+        const rowVolumeId = row[row.length - 1]
+        if (rowVolumeId) {
+          backfillStmt.run(rowVolumeId, rowPath)
+          insertKnownStmt.run(...row, rowPath, rowVolumeId)
+        } else {
+          insertUnknownStmt.run(...row, rowPath)
+        }
+      }
     })
     tx(batch)
     batch.length = 0

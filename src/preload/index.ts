@@ -67,7 +67,8 @@ const api = {
       ipcRenderer.removeListener('files-updated', listener)
     }
   },
-  toggleFavourite: (p: string) => ipcRenderer.send('toggle-favourite', p),
+  toggleFavourite: (p: string, volumeId?: string | null) =>
+    ipcRenderer.send('toggle-favourite', p, volumeId),
   getFavourites: () => ipcRenderer.send('get-favourites'),
   onFavouritesUpdated: (cb: (files: unknown[]) => void) => {
     const listener = (_e: unknown, f: any) => cb(f)

@@ -11,11 +11,14 @@ import './AboutConnect.css'
  */
 export interface AboutConnectProps {
   version: string | null
+  /** Short git commit the running build was made from, for telling two installs
+   *  with the same version apart. 'unknown' for a build made outside git. */
+  buildCommit: string | null
 }
 
 const REPO_URL = 'https://github.com/NSBforever/DiskFrame'
 
-export default function AboutConnect({ version }: AboutConnectProps): React.JSX.Element {
+export default function AboutConnect({ version, buildCommit }: AboutConnectProps): React.JSX.Element {
   return (
     <section className="glass-panel settings-card about-card" aria-labelledby="about-heading">
       <h3 id="about-heading" className="settings-heading">
@@ -27,7 +30,12 @@ export default function AboutConnect({ version }: AboutConnectProps): React.JSX.
         <div className="about-identity">
           <div className="about-name">
             DiskFrame
-            {version && <span className="about-version">v{version}</span>}
+            {version && (
+              <span className="about-version">
+                v{version}
+                {buildCommit && buildCommit !== 'unknown' && ` (${buildCommit})`}
+              </span>
+            )}
           </div>
           <p className="about-description">
             Find and browse your photos, videos and documents across your drives.
