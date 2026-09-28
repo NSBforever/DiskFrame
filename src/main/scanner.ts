@@ -271,6 +271,9 @@ db.exec(`
   -- tie-break). Without the path column SQLite has to re-sort each page, which
   -- is what makes deep OFFSET queries degrade on a large library.
   CREATE INDEX IF NOT EXISTS idx_files_page ON files (drive, hidden, trashed_at, date DESC, path ASC);
+  -- Catalogue identity is the volume, not the letter (see the volume_id
+  -- migration note below) - reads are scoped by this, not by drive.
+  CREATE INDEX IF NOT EXISTS idx_files_volume_page ON files (volume_id, hidden, trashed_at, date DESC, path ASC);
 `)
 
 /**
@@ -423,6 +426,7 @@ export interface ScannedFile {
   mtime?: number
   hash?: string
   ino?: number | null
+  volume_id?: string | null
 }
 
 // ─── PIN MANAGEMENT ───────────────────────────────────────────────────────────
@@ -621,7 +625,20 @@ export async function deleteFilesPermanently(filePaths: string[]): Promise<{ suc
     try {
       const file = db.prepare('SELECT * FROM files WHERE path = ?').get(p) as ScannedFile | undefined
       if (file) {
-        if (fs.existsSync(p)) {
+        // A path can exist and still be the wrong file - a legacy row and an
+        // unrelated device can share a common camera path (DCIM\...\IMG_0001.JPG).
+        // Only delete once identity says this really is the recorded file.
+        const availability = checkPathAvailability(p, file.volume_id ?? null).status
+        if (availability !== 'ok' && availability !== 'missing') {
+          // Cannot verify this is the recorded file (offline drive, unresolved
+          // identity, a folder that moved). Forgetting the DB row now would
+          // both leave the real file undeleted forever AND make it reappear,
+          // no longer marked trashed, the next time its real volume is
+          // properly scanned. Leave it queued in trash for a later attempt.
+          failed.push(p)
+          continue
+        }
+        if (availability === 'ok') {
           await safeDelete(p)
         }
         if (file.vault_path && fs.existsSync(file.vault_path)) {
@@ -646,7 +663,15 @@ export async function emptyTrash(): Promise<{ success: boolean; count: number }>
   let count = 0
   for (const file of toPurge) {
     try {
-      if (fs.existsSync(file.path)) {
+      const availability = checkPathAvailability(file.path, file.volume_id ?? null).status
+      if (availability !== 'ok' && availability !== 'missing') {
+        // Can't verify this is the recorded file yet (offline drive, unresolved
+        // identity). Leave it trashed rather than forgetting the row - that
+        // would both skip the real delete and let the file reappear,
+        // un-trashed, the next time its real volume is scanned.
+        continue
+      }
+      if (availability === 'ok') {
         await safeDelete(file.path)
       }
       if (file.vault_path && fs.existsSync(file.vault_path)) {
@@ -673,7 +698,11 @@ export async function autoPurgeTrash(): Promise<void> {
     let count = 0
     for (const file of toPurge) {
       try {
-        if (fs.existsSync(file.path)) {
+        const availability = checkPathAvailability(file.path, file.volume_id ?? null).status
+        if (availability !== 'ok' && availability !== 'missing') {
+          continue
+        }
+        if (availability === 'ok') {
           await safeDelete(file.path)
         }
         if (file.vault_path && fs.existsSync(file.vault_path)) {
@@ -703,12 +732,37 @@ export async function autoPurgeTrash(): Promise<void> {
 const GROUPED_COLS =
   'path, name, ext, size, date, year, month, lat, lng, drive, favourited, thumb'
 
-export function getGroupedFiles(drivePath?: string): Record<string, ScannedFile[]> {
-  const files = drivePath
-    ? (db
-        .prepare(`SELECT ${GROUPED_COLS} FROM files WHERE drive = ? AND hidden = 0 AND trashed_at IS NULL ORDER BY date DESC`)
-        .all(drivePath) as ScannedFile[])
-    : (db.prepare(`SELECT ${GROUPED_COLS} FROM files WHERE hidden = 0 AND trashed_at IS NULL ORDER BY date DESC`).all() as ScannedFile[])
+/**
+ * Files for one open drive, or the whole library when no drive is given.
+ *
+ * A drive letter is a mount point, not an identity - two different volumes can
+ * each be "D:" at different times. Real drives are therefore scoped by
+ * `volumeId`, resolved live by the caller for whatever is mounted at that
+ * letter right now; rows from a volume that is not currently proven to be the
+ * one at that letter (including pre-identity legacy rows with no volume_id at
+ * all) are never included just because the letter matches. When identity
+ * cannot be established (`volumeId` is null/undefined for a real drive) this
+ * returns nothing rather than guessing - an honest empty catalogue, not a
+ * borrowed one. The diagnostic sample bypasses this entirely: it has its own
+ * key and no physical volume to verify.
+ */
+export function getGroupedFiles(drivePath?: string, volumeId?: string | null): Record<string, ScannedFile[]> {
+  let files: ScannedFile[]
+  if (!drivePath) {
+    files = db
+      .prepare(`SELECT ${GROUPED_COLS} FROM files WHERE hidden = 0 AND trashed_at IS NULL ORDER BY date DESC`)
+      .all() as ScannedFile[]
+  } else if (drivePath === SAMPLE_DRIVE_KEY) {
+    files = db
+      .prepare(`SELECT ${GROUPED_COLS} FROM files WHERE drive = ? AND hidden = 0 AND trashed_at IS NULL ORDER BY date DESC`)
+      .all(drivePath) as ScannedFile[]
+  } else if (volumeId) {
+    files = db
+      .prepare(`SELECT ${GROUPED_COLS} FROM files WHERE volume_id = ? AND hidden = 0 AND trashed_at IS NULL ORDER BY date DESC`)
+      .all(volumeId) as ScannedFile[]
+  } else {
+    files = []
+  }
 
   const grouped: Record<string, ScannedFile[]> = {}
   for (const file of files) {
@@ -770,27 +824,26 @@ export function getFavouritePaths(): string[] {
   )
 }
 
-export function getFileCount(drivePath?: string): number {
-  if (drivePath) {
-    const row = db
-      .prepare('SELECT COUNT(*) as count FROM files WHERE drive = ? AND trashed_at IS NULL')
-      .get(drivePath) as { count: number }
+/**
+ * Count for one volume's catalogue, or the whole library with no argument.
+ *
+ * Scoped by `volumeId`, not by letter, for the same reason as
+ * {@link getGroupedFiles}. Pass `null`/`undefined` for a real drive whose
+ * identity could not be verified and this reports 0, never a legacy or
+ * foreign volume's count.
+ */
+export function getFileCount(volumeId?: string | null): number {
+  if (volumeId === undefined) {
+    const row = db.prepare('SELECT COUNT(*) as count FROM files WHERE trashed_at IS NULL').get() as {
+      count: number
+    }
     return row.count
   }
-  const row = db.prepare('SELECT COUNT(*) as count FROM files WHERE trashed_at IS NULL').get() as { count: number }
+  if (!volumeId) return 0
+  const row = db
+    .prepare('SELECT COUNT(*) as count FROM files WHERE volume_id = ? AND trashed_at IS NULL')
+    .get(volumeId) as { count: number }
   return row.count
-}
-
-// The drive-select screen's "indexed" status must reflect the real DB count,
-// not the renderer's session cache (which is empty for any drive not opened
-// yet this session - showing "not indexed" for drives that actually are).
-export function getFileCountsByDrive(): Record<string, number> {
-  const rows = db
-    .prepare("SELECT drive, COUNT(*) as count FROM files WHERE trashed_at IS NULL AND drive IS NOT NULL AND drive != '' GROUP BY drive")
-    .all() as { drive: string; count: number }[]
-  const result: Record<string, number> = {}
-  for (const r of rows) result[r.drive] = r.count
-  return result
 }
 
 // Restricted to extensions a thumbnail can actually be produced from. The
@@ -1229,17 +1282,22 @@ export async function updateFileInPlace(filePath: string, statInput?: fs.Stats):
     console.error(`[updateFileInPlace] Thumb generation failed for ${filePath}:`, e)
   }
 
+  // Whatever is currently live at this letter, verified by the watcher
+  // actually seeing this file appear/change there just now - never inferred
+  // from the letter alone for a row that already has a different identity.
+  const volumeId = getCachedVolumeId(drive)
   if (existing) {
     db.prepare(`
       UPDATE files
-      SET size = ?, date = ?, year = ?, month = ?, thumb = ?, mtime = ?, ino = ?
+      SET size = ?, date = ?, year = ?, month = ?, thumb = ?, mtime = ?, ino = ?,
+          volume_id = COALESCE(volume_id, ?)
       WHERE path = ?
-    `).run(stat.size, date.toISOString(), year, month, newThumb, mtimeMs, stat.ino ? Number(stat.ino) : null, filePath)
+    `).run(stat.size, date.toISOString(), year, month, newThumb, mtimeMs, stat.ino ? Number(stat.ino) : null, volumeId, filePath)
   } else {
     db.prepare(`
-      INSERT OR REPLACE INTO files (path, name, ext, size, date, year, month, lat, lng, drive, thumb, locked, hidden, mtime, ino)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
-    `).run(filePath, basename(filePath), ext, stat.size, date.toISOString(), year, month, null, null, drive, newThumb, mtimeMs, stat.ino ? Number(stat.ino) : null)
+      INSERT OR REPLACE INTO files (path, name, ext, size, date, year, month, lat, lng, drive, thumb, locked, hidden, mtime, ino, volume_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)
+    `).run(filePath, basename(filePath), ext, stat.size, date.toISOString(), year, month, null, null, drive, newThumb, mtimeMs, stat.ino ? Number(stat.ino) : null, volumeId)
   }
 
   const updated = db.prepare('SELECT * FROM files WHERE path = ?').get(filePath) as ScannedFile | undefined
@@ -1265,8 +1323,8 @@ export function recordCopiedFile(srcPath: string, destPath: string, destDrive: s
 
   db.prepare(
     `INSERT OR REPLACE INTO files
-       (path, name, ext, size, date, year, month, lat, lng, drive, thumb, favourited, locked, hidden, vault_path, trashed_at, mtime, exif_checked)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, NULL, NULL, ?, ?)`
+       (path, name, ext, size, date, year, month, lat, lng, drive, thumb, favourited, locked, hidden, vault_path, trashed_at, mtime, exif_checked, volume_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, NULL, NULL, ?, ?, ?)`
   ).run(
     destPath,
     basename(destPath),
@@ -1280,7 +1338,8 @@ export function recordCopiedFile(srcPath: string, destPath: string, destDrive: s
     destDrive,
     row?.thumb ?? null,
     Math.round(stat.mtimeMs),
-    row ? 1 : 0
+    row ? 1 : 0,
+    getCachedVolumeId(destDrive)
   )
 }
 
@@ -1288,10 +1347,11 @@ export function recordCopiedFile(srcPath: string, destPath: string, destDrive: s
 export function recordMovedFile(srcPath: string, destPath: string, destDrive: string): void {
   const exists = db.prepare('SELECT 1 FROM files WHERE path = ?').get(srcPath)
   if (exists) {
-    db.prepare('UPDATE files SET path = ?, name = ?, drive = ? WHERE path = ?').run(
+    db.prepare('UPDATE files SET path = ?, name = ?, drive = ?, volume_id = ? WHERE path = ?').run(
       destPath,
       basename(destPath),
       destDrive,
+      getCachedVolumeId(destDrive),
       srcPath
     )
     repointPath(srcPath, destPath)
@@ -1590,12 +1650,21 @@ export async function indexFolderBounded(
   cancelIndexRequested = false
   const drive = folder.slice(0, 2).toUpperCase()
   const volumeId = await getVolumeId(drive)
-  if (volumeId) saveVolumeDrive(volumeId, drive)
+  if (volumeId) {
+    primeVolumeCache(drive, volumeId)
+    reconcileDriveLetterForVolume(volumeId, drive)
+  }
 
+  // ON CONFLICT backfills volume_id for a row this exact walk just found on
+  // the live volume, verified by actually being there - never inferred from
+  // the letter alone. Every other column an existing row already has (thumb,
+  // favourited, hash, EXIF) is left untouched, same as the plain IGNORE this
+  // replaces.
   const insert = db.prepare(
-    `INSERT OR IGNORE INTO files
+    `INSERT INTO files
        (path, name, ext, size, date, year, month, lat, lng, drive, thumb, locked, hidden, mtime, ino, volume_id, exif_checked)
-     VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, 0, 0, ?, ?, ?, 0)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, 0, 0, ?, ?, ?, 0)
+     ON CONFLICT(path) DO UPDATE SET volume_id = excluded.volume_id WHERE files.volume_id IS NULL`
   )
 
   const rows: Parameters<typeof insert.run>[] = []
@@ -1686,9 +1755,9 @@ export function relinkMovedFile(oldPath: string, newPath: string, stat: fs.Stats
 
   db.prepare(`
     UPDATE files
-    SET path = ?, name = ?, ext = ?, drive = ?, size = ?, mtime = ?, ino = ?
+    SET path = ?, name = ?, ext = ?, drive = ?, size = ?, mtime = ?, ino = ?, volume_id = COALESCE(volume_id, ?)
     WHERE path = ?
-  `).run(newPath, basename(newPath), ext, drive, stat.size, mtimeMs, stat.ino ? Number(stat.ino) : null, oldPath)
+  `).run(newPath, basename(newPath), ext, drive, stat.size, mtimeMs, stat.ino ? Number(stat.ino) : null, getCachedVolumeId(drive), oldPath)
   repointPath(oldPath, newPath)
 
   const updated = db.prepare('SELECT * FROM files WHERE path = ?').get(newPath) as ScannedFile | undefined
@@ -1743,10 +1812,11 @@ const syncsInProgress = new Set<string>()
 export async function incrementalSyncDrive(
   drivePath: string,
   onProgress?: (count: number) => void
-): Promise<{ fullScanNeeded: boolean; count: number }> {
+): Promise<{ fullScanNeeded: boolean; count: number; volumeId: string | null }> {
   const driveKey = drivePath.slice(0, 2).toUpperCase()
   if (syncsInProgress.has(driveKey)) {
-    return { fullScanNeeded: false, count: getFileCount(driveKey) }
+    const volumeId = getCachedVolumeId(driveKey)
+    return { fullScanNeeded: false, count: getFileCount(volumeId), volumeId }
   }
   syncsInProgress.add(driveKey)
   try {
@@ -1759,23 +1829,30 @@ export async function incrementalSyncDrive(
 async function incrementalSyncDriveInner(
   drivePath: string,
   onProgress?: (count: number) => void
-): Promise<{ fullScanNeeded: boolean; count: number }> {
+): Promise<{ fullScanNeeded: boolean; count: number; volumeId: string | null }> {
   const currentVolId = await getVolumeId(drivePath)
+  primeVolumeCache(drivePath, currentVolId)
+
+  // No identity, no honest scope to sync against - require an explicit scan
+  // rather than falling back to whatever the letter happens to hold.
+  if (!currentVolId) {
+    console.warn(`[incrementalSync] Could not verify volume identity for ${drivePath}; requiring an explicit scan.`)
+    return { fullScanNeeded: true, count: 0, volumeId: null }
+  }
+
   const storedVolId = getStoredVolumeId(drivePath)
-
-  if (storedVolId && currentVolId && storedVolId !== currentVolId) {
+  if (storedVolId && storedVolId !== currentVolId) {
     console.log(`[incrementalSync] Volume ID mismatch for ${drivePath} (stored: ${storedVolId}, current: ${currentVolId}). Full scan required.`)
-    return { fullScanNeeded: true, count: 0 }
+    return { fullScanNeeded: true, count: 0, volumeId: currentVolId }
   }
 
-  if (currentVolId) {
-    saveVolumeDrive(currentVolId, drivePath)
-  }
+  reconcileDriveLetterForVolume(currentVolId, drivePath)
+  saveVolumeDrive(currentVolId, drivePath)
 
   const driveNorm = drivePath.slice(0, 2).toUpperCase()
   const dbFiles = db
-    .prepare('SELECT path, size, mtime, ino, thumb FROM files WHERE drive = ? AND trashed_at IS NULL')
-    .all(driveNorm) as Pick<ScannedFile, 'path' | 'size' | 'mtime' | 'ino' | 'thumb'>[]
+    .prepare('SELECT path, size, mtime, ino, thumb FROM files WHERE volume_id = ? AND trashed_at IS NULL')
+    .all(currentVolId) as Pick<ScannedFile, 'path' | 'size' | 'mtime' | 'ino' | 'thumb'>[]
 
   // The expensive part - stat-ing every known file plus a readdir of every known
   // folder to catch new files - runs in a worker_thread so it never blocks the
@@ -1822,9 +1899,9 @@ async function incrementalSyncDriveInner(
   }
   await Promise.all(Array.from({ length: CONCURRENCY }, () => updateWorker()))
 
-  const totalCount = getFileCount(driveNorm)
+  const totalCount = getFileCount(currentVolId)
   if (onProgress) onProgress(totalCount)
-  return { fullScanNeeded: false, count: totalCount }
+  return { fullScanNeeded: false, count: totalCount, volumeId: currentVolId }
 }
 
 function runIncrementalSyncWorker(
@@ -1862,14 +1939,15 @@ function runIncrementalSyncWorker(
 export function spawnScanUtilityProcess(
   drivePath: string,
   scanPath: string,
+  volumeId: string | null,
   onProgress: (count: number) => void,
   onElevationStatus?: (status: { isElevated: boolean; message: string }) => void
 ): Promise<number> {
   return new Promise((resolve, reject) => {
     const utilityScript = join(__dirname, 'scanUtility.js')
-    console.log(`[spawnScanUtilityProcess] Spawning Electron utilityProcess for ${drivePath} (script: ${utilityScript})`)
+    console.log(`[spawnScanUtilityProcess] Spawning Electron utilityProcess for ${drivePath} (script: ${utilityScript}, volume: ${volumeId ?? 'unresolved'})`)
 
-    const child = utilityProcess.fork(utilityScript, [drivePath, scanPath, dbPath])
+    const child = utilityProcess.fork(utilityScript, [drivePath, scanPath, dbPath, volumeId ?? ''])
     let finalCount = 0
     let settled = false
 
@@ -1992,8 +2070,17 @@ export function isDriveMounted(drive: string): boolean {
  */
 const volumeByLetter = new Map<string, string | null>()
 
-export async function refreshVolumeCache(): Promise<void> {
+/**
+ * Refreshes the letter -> volume id cache.
+ *
+ * Covers every previously-indexed drive plus `extraLetters` - the currently
+ * mounted letters, so a drive that has never been indexed (a brand new
+ * pendrive) still gets its live identity cached before the user can click it,
+ * rather than only after its first scan.
+ */
+export async function refreshVolumeCache(extraLetters: string[] = []): Promise<void> {
   const letters = new Set<string>(getAllKnownDrives().map((d) => d.slice(0, 2).toUpperCase()))
+  for (const l of extraLetters) letters.add(l.slice(0, 2).toUpperCase())
   for (const l of letters) {
     if (!/^[A-Z]:$/.test(l)) continue
     volumeByLetter.set(l, isDriveMounted(l) ? await getVolumeId(l) : null)
@@ -2002,6 +2089,78 @@ export async function refreshVolumeCache(): Promise<void> {
 
 export function getCachedVolumeId(letter: string): string | null {
   return volumeByLetter.get(letter.slice(0, 2).toUpperCase()) ?? null
+}
+
+/** Sets one letter's cached identity immediately, from an already-resolved read. */
+export function primeVolumeCache(letter: string, volumeId: string | null): void {
+  volumeByLetter.set(letter.slice(0, 2).toUpperCase(), volumeId)
+}
+
+/**
+ * Brings a volume's records onto its current letter when Windows has moved
+ * it - "same volume, new letter" rather than a different device that happens
+ * to share the old one.
+ *
+ * Gated entirely on a verified `volumeId` match, never on the letter alone:
+ * this only ever touches rows the caller has already confirmed belong to the
+ * volume now mounted at `newLetter`. Rows under any other volume, including
+ * legacy rows with no recorded identity, are untouched.
+ */
+export function reconcileDriveLetterForVolume(volumeId: string, newLetter: string): void {
+  const letter = newLetter.slice(0, 2).toUpperCase()
+  const oldLetters = (
+    db
+      .prepare('SELECT DISTINCT drive FROM files WHERE volume_id = ? AND drive IS NOT NULL AND drive != ?')
+      .all(volumeId, letter) as { drive: string }[]
+  )
+    .map((r) => r.drive)
+    .filter((d) => /^[A-Z]:$/.test(d))
+
+  if (oldLetters.length === 0) {
+    saveVolumeDrive(volumeId, letter)
+    return
+  }
+
+  const updateFile = db.prepare('UPDATE files SET drive = ?, path = ? WHERE path = ?')
+  // No OR REPLACE: a destination collision here must fail loudly (caught
+  // below) rather than silently deleting whatever other file was favourited
+  // at that path.
+  const updateFav = db.prepare('UPDATE favourite_paths SET path = ? WHERE path = ?')
+  let moved = 0
+  let collided = 0
+  db.transaction(() => {
+    for (const old of oldLetters) {
+      const rows = db
+        .prepare('SELECT path FROM files WHERE volume_id = ? AND drive = ?')
+        .all(volumeId, old) as { path: string }[]
+      for (const { path } of rows) {
+        const newPath = letter + path.slice(2)
+        // Each row is its own failure unit - SQLite's default ABORT
+        // resolution undoes only the statement that violated the UNIQUE
+        // constraint on `path`, not the whole transaction, so one colliding
+        // file (two volumes sharing a folder layout, e.g. DCIM\...\IMG_0001.JPG)
+        // does not strand every other row on its old, now-wrong letter.
+        try {
+          updateFile.run(letter, newPath, path)
+        } catch (err) {
+          collided++
+          console.error(`[reconcile] ${path} -> ${newPath} collided, left on ${old}:`, err)
+          continue
+        }
+        try {
+          updateFav.run(newPath, path)
+        } catch (err) {
+          console.error(`[reconcile] favourite at ${path} could not follow to ${newPath}:`, err)
+        }
+        moved++
+      }
+    }
+    saveVolumeDrive(volumeId, letter)
+  })()
+  clearPathStateCache()
+  console.log(
+    `[reconcile] ${volumeId} moved from ${oldLetters.join(', ')} to ${letter}: ${moved} rows moved, ${collided} left in place`
+  )
 }
 
 /**
@@ -2128,6 +2287,15 @@ export function checkPathAvailability(
   // looking for the wrong thing.
   try {
     fs.accessSync(resolved, fs.constants.R_OK)
+    // A path that resolves but never had a recorded identity is not proof of
+    // anything - a legacy row and an unrelated file on a different, currently
+    // mounted device can share the exact same path (camera folders reuse
+    // names like DCIM\100APPLE\IMG_0001.JPG constantly). Treated the same as
+    // a confirmed mismatch: recoverable, never served or deleted as if it
+    // were verified.
+    if (!recorded && isLetterPath && isDriveMounted(letter)) {
+      return { status: 'volume-mismatch', volumeKnown: false, resolved }
+    }
     return { status: 'ok', volumeKnown: !!recorded, resolved }
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code
@@ -2157,15 +2325,14 @@ export function checkPathAvailability(
  * check per distinct folder.
  */
 export function listUnresolvedRoots(
-  drive: string
+  volumeId: string | null
 ): { root: string; count: number; sample: string }[] {
-  const letter = drive.slice(0, 2).toUpperCase()
-  if (!isDriveMounted(letter)) return []
+  if (!volumeId) return []
   const rows = db
     .prepare(
-      'SELECT path FROM files WHERE drive = ? AND hidden = 0 AND trashed_at IS NULL LIMIT 250000'
+      'SELECT path FROM files WHERE volume_id = ? AND hidden = 0 AND trashed_at IS NULL LIMIT 250000'
     )
-    .all(drive) as { path: string }[]
+    .all(volumeId) as { path: string }[]
 
   const byRoot = new Map<string, { count: number; sample: string }>()
   for (const r of rows) {
@@ -2248,12 +2415,3 @@ export function removeFolderMapping(fromPrefix: string): void {
   clearPathStateCache()
 }
 
-/** Rows whose path did not resolve, for the unavailable-files filter. */
-export function getUnavailableCount(drive: string): number {
-  const row = db
-    .prepare(
-      'SELECT COUNT(*) n FROM files WHERE drive = ? AND hidden = 0 AND trashed_at IS NULL'
-    )
-    .get(drive) as { n: number }
-  return row.n
-}

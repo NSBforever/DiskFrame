@@ -20,20 +20,40 @@ import {
   type LibraryQuery
 } from './libraryQuery.ts'
 
-const base: LibraryQuery = { drive: 'C:', nav: 'all', search: '', groupBy: 'day', order: 'default' }
+const base: LibraryQuery = {
+  drive: 'C:',
+  volumeId: 'VOL-C',
+  nav: 'all',
+  search: '',
+  groupBy: 'day',
+  order: 'default'
+}
 
-test('base query scopes to drive and excludes hidden and trashed', () => {
+test('base query scopes to the resolved volume, not the letter, and excludes hidden and trashed', () => {
   const w = buildWhere(base)
-  assert.match(w.sql, /drive = \?/)
+  assert.match(w.sql, /volume_id = \?/)
+  assert.ok(!w.sql.includes('drive = ?'), 'the letter is never the filter for a real drive')
   assert.match(w.sql, /hidden = 0/)
   assert.match(w.sql, /trashed_at IS NULL/)
-  assert.deepEqual(w.params, ['C:'])
+  assert.deepEqual(w.params, ['VOL-C'])
+})
+
+test('unresolved identity returns nothing rather than falling back to the letter', () => {
+  const w = buildWhere({ ...base, volumeId: null })
+  assert.deepEqual(w.params, [])
+  assert.ok(!w.sql.includes('volume_id = ?'))
+})
+
+test('the diagnostic sample is still matched by its own key, not a volume', () => {
+  const w = buildWhere({ ...base, drive: 'SAMPLE:', volumeId: null })
+  assert.match(w.sql, /drive = \?/)
+  assert.deepEqual(w.params, ['SAMPLE:'])
 })
 
 test('nav filters bind their extension lists rather than interpolating', () => {
   const photos = buildWhere({ ...base, nav: 'photos' })
   assert.match(photos.sql, /ext IN \(\?,\?,\?,\?,\?\)/)
-  assert.deepEqual(photos.params, ['C:', '.jpg', '.jpeg', '.png', '.webp', '.heic'])
+  assert.deepEqual(photos.params, ['VOL-C', '.jpg', '.jpeg', '.png', '.webp', '.heic'])
 
   assert.match(buildWhere({ ...base, nav: 'places' }).sql, /lat IS NOT NULL AND lng IS NOT NULL/)
   assert.match(buildWhere({ ...base, nav: 'favourites' }).sql, /favourited = 1/)
@@ -44,11 +64,11 @@ test('search operators are parsed and bound', () => {
   assert.match(buildWhere({ ...base, search: 'is:fav' }).sql, /favourited = 1/)
 
   const ext = buildWhere({ ...base, search: 'ext:png' })
-  assert.deepEqual(ext.params, ['C:', '.png'], 'bare extension gets a leading dot')
-  assert.deepEqual(buildWhere({ ...base, search: 'ext:.png' }).params, ['C:', '.png'])
+  assert.deepEqual(ext.params, ['VOL-C', '.png'], 'bare extension gets a leading dot')
+  assert.deepEqual(buildWhere({ ...base, search: 'ext:.png' }).params, ['VOL-C', '.png'])
 
   const free = buildWhere({ ...base, search: 'Holiday' })
-  assert.deepEqual(free.params, ['C:', 'holiday', 'holiday'], 'case-folded and bound twice')
+  assert.deepEqual(free.params, ['VOL-C', 'holiday', 'holiday'], 'case-folded and bound twice')
 })
 
 // A search term must never become SQL. These are the shapes that would matter.
@@ -177,6 +197,7 @@ test('favourites grouping separates favourited from the rest', () => {
 
 const mapQ = (over: Partial<LibraryQuery> = {}): LibraryQuery => ({
   drive: 'C:',
+  volumeId: 'VOL-C',
   nav: 'all',
   search: '',
   groupBy: 'day',
@@ -231,11 +252,11 @@ test('the cell size binds before the where-clause parameters', () => {
   const c = mapClustersSql(mapQ(), 0.25)
   assert.equal(c.params[0], 0.25)
   assert.equal(c.params[1], 0.25)
-  assert.equal(c.params[2], 'C:')
+  assert.equal(c.params[2], 'VOL-C')
 
   const t = clusterThumbsSql(mapQ(), 0.25)
   assert.deepEqual(t.params.slice(0, 4), [0.25, 0.25, 0.25, 0.25])
-  assert.equal(t.params[4], 'C:')
+  assert.equal(t.params[4], 'VOL-C')
 })
 
 test('clusters are capped and ordered by size', () => {

@@ -1,7 +1,14 @@
 import chokidar, { FSWatcher } from 'chokidar'
 import * as fs from 'fs'
 import { BrowserWindow } from 'electron'
-import { updateFileInPlace, removeFileRecord, getGroupedFiles, getFileIno, relinkMovedFile } from './scanner'
+import {
+  updateFileInPlace,
+  removeFileRecord,
+  getGroupedFiles,
+  getFileIno,
+  relinkMovedFile,
+  getCachedVolumeId
+} from './scanner'
 import { isIndexableUserMedia } from './validation'
 
 // How long a removed file's inode is remembered as a "possible move" before
@@ -190,7 +197,7 @@ export class WatcherManager {
         if (this.mainWindow && !this.mainWindow.isDestroyed()) {
           this.mainWindow.webContents.send('files-updated', {
             drive: driveKey,
-            groups: getGroupedFiles(driveKey),
+            groups: getGroupedFiles(driveKey, getCachedVolumeId(driveKey)),
             reason: 'background'
           })
         }

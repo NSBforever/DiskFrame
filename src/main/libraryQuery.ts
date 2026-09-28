@@ -30,6 +30,15 @@ export interface MapBounds {
 
 export interface LibraryQuery {
   drive: string
+  /**
+   * The volume currently, verifiably mounted at `drive` - resolved by the
+   * main process from live hardware, never trusted from the renderer. A
+   * drive letter is a mount point, not an identity: two different volumes
+   * can each be "D:" at different times, so every real query is scoped by
+   * this instead of the letter. `null` means identity could not be
+   * established and the query returns nothing rather than guessing.
+   */
+  volumeId: string | null
   nav: NavFilter
   search: string
   groupBy: GroupBy
@@ -81,9 +90,26 @@ export function compactExpr(): string {
  * WHERE clause for a query, as SQL plus positional parameters.
  * Every value is bound, never interpolated.
  */
+// Kept as a literal rather than imported from scanner.ts, which imports this
+// module - importing it back would make the two files circular. The
+// diagnostic sample has no physical volume to verify identity against, so it
+// is the one drive value still matched by letter.
+const SAMPLE_DRIVE_KEY = 'SAMPLE:'
+
 export function buildWhere(q: LibraryQuery): { sql: string; params: unknown[] } {
-  const clauses: string[] = ['drive = ?', 'hidden = 0', 'trashed_at IS NULL']
-  const params: unknown[] = [q.drive]
+  const clauses: string[] = ['hidden = 0', 'trashed_at IS NULL']
+  const params: unknown[] = []
+  if (q.drive === SAMPLE_DRIVE_KEY) {
+    clauses.unshift('drive = ?')
+    params.push(q.drive)
+  } else if (q.volumeId) {
+    clauses.unshift('volume_id = ?')
+    params.push(q.volumeId)
+  } else {
+    // Identity unresolved (or this letter has never held a verified volume) -
+    // an honest empty result, never a fallback to whatever the letter holds.
+    clauses.unshift('0')
+  }
 
   switch (q.nav) {
     case 'photos': {

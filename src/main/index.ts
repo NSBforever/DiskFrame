@@ -13,7 +13,6 @@ import {
   toggleFavourite,
   getFavourites,
   getFileCount,
-  getFileCountsByDrive,
   getAllFilesWithoutThumbs,
   generateThumbForFile,
   updateThumb,
@@ -61,7 +60,9 @@ import {
   getFolderMappings,
   clearPathStateCache,
   refreshVolumeCache,
-
+  primeVolumeCache,
+  getCachedVolumeId,
+  reconcileDriveLetterForVolume,
   getFavouritePaths
 } from './scanner'
 import type { LibraryQuery } from './libraryQuery'
@@ -152,9 +153,10 @@ function logMemoryMetrics(): void {
 // the open gallery nor rearrange it mid-scroll.
 function sendFilesUpdated(drive: string, reason: 'initial' | 'background' | 'index-folder'): void {
   if (!mainWindow || mainWindow.isDestroyed()) return
+  const volumeId = drive === SAMPLE_DRIVE_KEY ? null : getCachedVolumeId(drive)
   mainWindow.webContents.send('files-updated', {
     drive,
-    groups: getGroupedFiles(drive),
+    groups: getGroupedFiles(drive, volumeId),
     reason
   })
 }
@@ -405,6 +407,12 @@ async function sendDrives(): Promise<void> {
     if (!sameSet) {
       knownDriveLetters = currentSet
       driveHardwareCache = await queryDriveHardware(letters)
+      // A drive that has never been indexed has no rows to derive its letter
+      // from, so it would never get an identity cached until the user opened
+      // it - and by then the drive-select screen would already have asked
+      // "how many files" using a stale or missing volume id. Priming here,
+      // for every currently mounted letter, closes that gap.
+      await refreshVolumeCache(letters)
     }
 
     const drivesWithType = drives.map((d) => ({
@@ -646,7 +654,16 @@ app.whenReady().then(() => {
 
   // ── DRIVE / SCAN ──
   ipcMain.on('get-drives', () => sendDrives())
-  ipcMain.handle('get-drive-file-counts', () => getFileCountsByDrive())
+  // Per-letter, but the count itself is looked up by the volume currently
+  // proven to be at that letter - a stale or foreign catalogue under the same
+  // letter is never reported as this drive's count.
+  ipcMain.handle('get-drive-file-counts', () => {
+    const out: Record<string, number> = {}
+    for (const letter of knownDriveLetters) {
+      out[letter] = getFileCount(getCachedVolumeId(letter))
+    }
+    return out
+  })
 
   // Queried by the renderer on mount rather than pushed once at load time.
   // The push could be missed if the renderer subscribed after it fired, which
@@ -671,7 +688,7 @@ app.whenReady().then(() => {
     const d = normalizeDrive(drive)
     if (!d) return { roots: [] }
     try {
-      return { roots: listUnresolvedRoots(d) }
+      return { roots: listUnresolvedRoots(getCachedVolumeId(d)) }
     } catch (err) {
       diag('relink', 'listing failed: ' + String(err))
       return { roots: [] }
@@ -755,7 +772,10 @@ app.whenReady().then(() => {
     if (!subsystemEnabled(safeMode, 'scan')) {
       diag('safe-mode', `scan request for ${drivePath} refused (scan subsystem off)`)
       if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('scan-complete', { count: getFileCount(drivePath), drive: drivePath })
+        mainWindow.webContents.send('scan-complete', {
+          count: getFileCount(getCachedVolumeId(drivePath)),
+          drive: drivePath
+        })
       }
       sendFilesUpdated(drivePath, 'initial')
       return
@@ -771,13 +791,23 @@ app.whenReady().then(() => {
       // the volume root - watching all of C:\ recursively is enormously more
       // expensive and almost all of it is system files we skip anyway.
       const scanPath = drivePath === 'C:' ? homedir() : `${drivePath}\\`
+
+      // Resolved and cached BEFORE the watcher starts, not after: a chokidar
+      // event can fire the instant watchDrive() returns, and it reads this
+      // same cache to stamp volume_id on whatever it sees. Priming it first
+      // closes the gap where an add/change could tag a brand new device's
+      // file with a previous device's identity.
+      const liveVolumeId = await getVolumeId(drivePath)
+      primeVolumeCache(drivePath, liveVolumeId)
+      if (liveVolumeId) reconcileDriveLetterForVolume(liveVolumeId, drivePath)
+
       if (subsystemEnabled(safeMode, 'watcher')) {
         watcherManager.watchDrive(scanPath)
       } else {
         diag('safe-mode', `watcher suppressed for ${scanPath}`)
       }
 
-      if (!opts.forceFull && getFileCount(drivePath) > 0) {
+      if (!opts.forceFull && liveVolumeId && getFileCount(liveVolumeId) > 0) {
         const incResult = await incrementalSyncDrive(drivePath, (progress) => {
           if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('scan-progress', { count: progress, drive: drivePath })
@@ -797,6 +827,7 @@ app.whenReady().then(() => {
       await spawnScanUtilityProcess(
         drivePath,
         scanPath,
+        liveVolumeId,
         (progress) => {
           count = progress
           if (mainWindow && !mainWindow.isDestroyed()) {
@@ -828,18 +859,34 @@ app.whenReady().then(() => {
   ipcMain.on('open-drive', (_event, drivePath: string) => {
     const drive = normalizeDrive(drivePath)
     if (!drive) return
-    const indexed = getFileCount(drive)
-    const t0 = Date.now()
-    sendFilesUpdated(drive, 'initial')
-    diag('open-drive', `${drive}: served ${indexed} cached records in ${Date.now() - t0}ms (no scan, no stat)`)
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('drive-opened', {
-        drive,
-        indexed,
-        // A drive with no records needs a first scan, but the user asks for it.
-        needsInitialScan: indexed === 0
-      })
-    }
+    ;(async () => {
+      const t0 = Date.now()
+      // One WMI lookup for the volume itself, not a stat of any file - still
+      // "no scan" in the sense the comment above means. Without this, opening
+      // a drive would serve whatever the letter last showed, which is exactly
+      // the cross-drive mixup this whole identity layer exists to prevent.
+      const liveVolumeId = await getVolumeId(drive)
+      primeVolumeCache(drive, liveVolumeId)
+      if (liveVolumeId) reconcileDriveLetterForVolume(liveVolumeId, drive)
+
+      const indexed = getFileCount(liveVolumeId)
+      sendFilesUpdated(drive, 'initial')
+      diag(
+        'open-drive',
+        `${drive}: served ${indexed} cached records in ${Date.now() - t0}ms (volume ${liveVolumeId ?? 'unresolved'})`
+      )
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('drive-opened', {
+          drive,
+          indexed,
+          // A drive with no records needs a first scan, but the user asks for it.
+          needsInitialScan: indexed === 0,
+          // Distinct from "not indexed yet": we could not verify what is
+          // actually mounted here at all, so even a scan would be a guess.
+          identityUnresolved: !liveVolumeId
+        })
+      }
+    })()
   })
 
   // ── PAGINATED LIBRARY READS ───────────────────────────────────────────────
@@ -854,6 +901,10 @@ app.whenReady().then(() => {
     const groups = ['day', 'month', 'year', 'location', 'favorites']
     return {
       drive,
+      // Read from the same live cache open-drive/scan primed - never trusted
+      // from the renderer, and never re-resolved per page/summary/cluster
+      // request (that would mean a PowerShell shell-out per keystroke).
+      volumeId: drive === SAMPLE_DRIVE_KEY ? null : getCachedVolumeId(drive),
       nav: (navs.includes(String(q.nav)) ? q.nav : 'all') as LibraryQuery['nav'],
       search: typeof q.search === 'string' ? q.search.slice(0, 200) : '',
       groupBy: (groups.includes(String(q.groupBy)) ? q.groupBy : 'day') as LibraryQuery['groupBy'],
@@ -940,7 +991,7 @@ app.whenReady().then(() => {
 
   ipcMain.handle('incremental-sync-drive', async (_event, drivePath: string) => {
     const drive = normalizeDrive(drivePath)
-    if (!drive) return { fullScanNeeded: false, count: 0 }
+    if (!drive) return { fullScanNeeded: false, count: 0, volumeId: null }
     return incrementalSyncDrive(drive)
   })
 

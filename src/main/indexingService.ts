@@ -2,6 +2,7 @@ import * as fs from 'fs'
 import { BrowserWindow } from 'electron'
 import { incrementalSyncDrive, getAllKnownDrives, getGroupedFiles } from './scanner'
 
+
 const RESCAN_INTERVAL_MS = 30 * 60 * 1000
 
 /**
@@ -57,7 +58,7 @@ export class IndexingService {
             // open gallery with a different drive's contents.
             this.mainWindow.webContents.send('files-updated', {
               drive,
-              groups: getGroupedFiles(drive),
+              groups: getGroupedFiles(drive, result.volumeId),
               reason: 'background'
             })
           }

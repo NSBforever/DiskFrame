@@ -55,7 +55,12 @@ declare global {
       openDrive: (drivePath: string) => void
       reconcileDrive: (drivePath: string) => void
       onDriveOpened: (
-        callback: (data: { drive: string; indexed: number; needsInitialScan: boolean }) => void
+        callback: (data: {
+          drive: string
+          indexed: number
+          needsInitialScan: boolean
+          identityUnresolved: boolean
+        }) => void
       ) => () => void
       getFiles: (drivePath: string) => void
       librarySummary: (query: LibraryQueryLike) => Promise<{
@@ -208,7 +213,9 @@ declare global {
       onMpvError: (callback: (data: { error: string }) => void) => () => void
       startNativeDrag: (filePaths: string[]) => void
       onNativeDragError: (callback: (data: { error: string }) => void) => () => void
-      incrementalSyncDrive: (drivePath: string) => Promise<{ fullScanNeeded: boolean; count: number }>
+      incrementalSyncDrive: (
+        drivePath: string
+      ) => Promise<{ fullScanNeeded: boolean; count: number; volumeId: string | null }>
       getVolumeId: (drivePath: string) => Promise<string | null>
       onSafeModeSample: (
         callback: (data: { drive: string; folder: string; count: number }) => void

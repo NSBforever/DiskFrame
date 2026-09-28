@@ -17,7 +17,9 @@ const api = {
   openDrive: (p: string) => ipcRenderer.send('open-drive', p),
   /** Explicit reconciliation, separate from opening. */
   reconcileDrive: (p: string) => ipcRenderer.send('reconcile-drive', p),
-  onDriveOpened: (cb: (d: { drive: string; indexed: number; needsInitialScan: boolean }) => void) => {
+  onDriveOpened: (
+    cb: (d: { drive: string; indexed: number; needsInitialScan: boolean; identityUnresolved: boolean }) => void
+  ) => {
     const listener = (_e: unknown, d: any) => cb(d)
     ipcRenderer.on('drive-opened', listener)
     return () => {

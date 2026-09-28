@@ -588,7 +588,7 @@ const MainContentArea: React.FC<{
   onHoverPreviewsChange: (enabled: boolean) => void
   libraryState: 'idle' | 'loading' | 'ready'
   runtimeMode: { safeMode: boolean; userDataPath: string; isDefaultUserData: boolean } | null
-  driveOpened: { drive: string; indexed: number; needsInitialScan: boolean } | null
+  driveOpened: { drive: string; indexed: number; needsInitialScan: boolean; identityUnresolved: boolean } | null
   onReconcile: () => void
 }> = React.memo(({
   activeNav,
@@ -1136,6 +1136,18 @@ const MainContentArea: React.FC<{
             </div>
             <div style={{ fontSize: '9px', color: 'var(--app-fg-muted, #52525b)', wordBreak: 'break-all', maxWidth: '520px' }}>{runtimeMode?.userDataPath}</div>
           </>
+        ) : driveOpened?.identityUnresolved ? (
+          <>
+            <AlertTriangle size={40} style={{ color: 'var(--app-fg-muted, #52525b)' }} />
+            <div style={{ fontSize: '13px', color: 'var(--app-fg, #f2f2f0)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px' }}>
+              Could not verify {selectedDrive}
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', maxWidth: '460px', lineHeight: 1.6 }}>
+              DiskFrame could not confirm which physical drive is connected at {selectedDrive} right now, so
+              its catalogue is not shown rather than risking someone else&apos;s. Reconnecting the drive or
+              trying again usually resolves this.
+            </div>
+          </>
         ) : driveOpened?.needsInitialScan ? (
           <>
             <FolderOpen size={40} style={{ color: 'var(--app-fg-muted, #52525b)' }} />
@@ -1477,7 +1489,12 @@ export default function App(): React.JSX.Element {
   const pendingGroupAnchorRef = useRef<string | null>(null)
   // What the cached open reported: how many records exist for this drive, and
   // whether it has never been indexed (which needs a first scan the user asks for).
-  const [driveOpened, setDriveOpened] = useState<{ drive: string; indexed: number; needsInitialScan: boolean } | null>(null)
+  const [driveOpened, setDriveOpened] = useState<{
+    drive: string
+    indexed: number
+    needsInitialScan: boolean
+    identityUnresolved: boolean
+  } | null>(null)
   const [updatesPending, setUpdatesPending] = useState(false)
   const pendingFilesRef = useRef<{ drive: string; groups: Record<string, ScannedFile[]> } | null>(null)
   const hasFilesRef = useRef(false)

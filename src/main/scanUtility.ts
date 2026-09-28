@@ -24,6 +24,7 @@ interface ScanTaskPayload {
   drivePath: string
   scanPath: string
   dbPath: string
+  volumeId: string | null
 }
 
 function checkElevationWindows(): { isElevated: boolean; message: string } {
@@ -50,11 +51,13 @@ async function startUtilityScan() {
   let drivePath = 'C:'
   let scanPath = 'C:\\'
   let dbPath = ''
+  let volumeId: string | null = null
 
   if (args.length >= 3) {
     drivePath = args[0]
     scanPath = args[1]
     dbPath = args[2]
+    volumeId = args[3] || null
   }
 
   // Also listen for parentPort messages if passed via IPC
@@ -62,17 +65,17 @@ async function startUtilityScan() {
     process.parentPort.on('message', (e) => {
       if (e.data && e.data.action === 'start') {
         const payload = e.data as ScanTaskPayload
-        executeScan(payload.drivePath, payload.scanPath, payload.dbPath)
+        executeScan(payload.drivePath, payload.scanPath, payload.dbPath, payload.volumeId)
       }
     })
   }
 
   if (dbPath) {
-    await executeScan(drivePath, scanPath, dbPath)
+    await executeScan(drivePath, scanPath, dbPath, volumeId)
   }
 }
 
-async function executeScan(drivePath: string, scanPath: string, dbPath: string): Promise<void> {
+async function executeScan(drivePath: string, scanPath: string, dbPath: string, volumeId: string | null): Promise<void> {
   const elevation = checkElevationWindows()
   console.log(`[scanUtility] Starting Phase 1 enumeration for ${drivePath} (ScanPath: ${scanPath}). Elevation: ${elevation.message}`)
 
@@ -88,9 +91,15 @@ async function executeScan(drivePath: string, scanPath: string, dbPath: string):
   db.pragma('journal_mode = WAL')
   db.pragma('synchronous = NORMAL')
 
+  // ON CONFLICT backfills volume_id for a row this exact walk just found on
+  // the live volume, verified by actually being there - never inferred from
+  // the letter alone. Every other column an existing row already has (thumb,
+  // favourited, hash, EXIF) is left untouched, same as the plain IGNORE this
+  // replaces.
   const insertStmt = db.prepare(`
-    INSERT OR IGNORE INTO files (path, name, ext, size, date, year, month, lat, lng, drive, thumb, locked, hidden, mtime, ino)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+    INSERT INTO files (path, name, ext, size, date, year, month, lat, lng, drive, thumb, locked, hidden, mtime, ino, volume_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)
+    ON CONFLICT(path) DO UPDATE SET volume_id = excluded.volume_id WHERE files.volume_id IS NULL
   `)
 
   let count = 0
@@ -142,7 +151,8 @@ async function executeScan(drivePath: string, scanPath: string, dbPath: string):
             drivePath,
             null,
             item.mtime_ms,
-            null
+            null,
+            volumeId
           ])
           count++
 
@@ -214,7 +224,8 @@ async function executeScan(drivePath: string, scanPath: string, dbPath: string):
             drivePath,
             null,
             mtimeMs,
-            ino
+            ino,
+            volumeId
           ])
 
           count++
