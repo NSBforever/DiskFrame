@@ -49,6 +49,7 @@ declare global {
         sampleFolder: string | null
         userDataPath: string
         isDefaultUserData: boolean
+        appVersion: string
       }>
       onDrivesUpdated: (callback: (drives: DriveInfo[]) => void) => () => void
       scanDrive: (drivePath: string) => void

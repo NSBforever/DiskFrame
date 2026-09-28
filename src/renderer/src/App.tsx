@@ -119,6 +119,7 @@ import MagneticDock from './components/MagneticDock'
 import MapPage from './components/MapPage'
 import UnresolvedFolders from './components/UnresolvedFolders'
 import AppearanceSetting from './components/AppearanceSetting'
+import AboutConnect from './components/AboutConnect'
 import GlassSelect from './components/GlassSelect'
 import DateScrubber from './components/DateScrubber'
 import { useLibrary, type LibraryGroup, type LibraryQuery } from './hooks/useLibrary'
@@ -587,7 +588,7 @@ const MainContentArea: React.FC<{
   hoverPreviewsEnabled: boolean
   onHoverPreviewsChange: (enabled: boolean) => void
   libraryState: 'idle' | 'loading' | 'ready'
-  runtimeMode: { safeMode: boolean; userDataPath: string; isDefaultUserData: boolean } | null
+  runtimeMode: { safeMode: boolean; userDataPath: string; isDefaultUserData: boolean; appVersion: string } | null
   driveOpened: { drive: string; indexed: number; needsInitialScan: boolean; identityUnresolved: boolean } | null
   onReconcile: () => void
 }> = React.memo(({
@@ -1320,6 +1321,8 @@ const MainContentArea: React.FC<{
               <div className="settings-hint">Play a short muted preview when hovering a video tile.</div>
             </div>
           </section>
+
+          <AboutConnect version={runtimeMode?.appVersion ?? null} />
         </div>
       )}
 
@@ -1479,6 +1482,7 @@ export default function App(): React.JSX.Element {
     safeMode: boolean
     userDataPath: string
     isDefaultUserData: boolean
+    appVersion: string
   } | null>(null)
   // Distinguishes "still loading" from "genuinely empty" so the status bar
   // never reports a confident 0 for data that simply has not arrived.

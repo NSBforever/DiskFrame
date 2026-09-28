@@ -674,7 +674,10 @@ app.whenReady().then(() => {
     allowed: [...safeMode.allow],
     sampleFolder: safeMode.sampleFolder,
     userDataPath: app.getPath('userData'),
-    isDefaultUserData: app.getPath('userData').toLowerCase() === join(app.getPath('appData'), 'diskframe').toLowerCase()
+    isDefaultUserData: app.getPath('userData').toLowerCase() === join(app.getPath('appData'), 'diskframe').toLowerCase(),
+    // The actual installed version, not a value baked into the renderer bundle -
+    // this reads the packaged app's own version in a built install too.
+    appVersion: app.getVersion()
   }))
   ipcMain.on('reveal-file', (_event, filePath: string) => {
     if (isSafeLocalPath(filePath)) shell.showItemInFolder(resolveStoredPath(filePath))
