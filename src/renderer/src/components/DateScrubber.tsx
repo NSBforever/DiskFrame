@@ -23,11 +23,27 @@ export interface DateScrubberProps {
   formatGroupKey: (key: string) => string
   currentKey: string | null
   onJump: (key: string) => void
+  /**
+   * DOM ref to the position dot, so the parent can move it directly on every
+   * scroll frame (true scroll progress: 0 at the top, 1 at the bottom) without
+   * round-tripping through React state - the gallery re-rendering on every
+   * scroll tick is exactly the kind of cost the rest of this component avoids
+   * with its own CSS-var pointer glow. `currentKey` still drives the label and
+   * keyboard navigation, which only need to update once per group, not once
+   * per pixel.
+   */
+  indicatorRef?: React.RefObject<HTMLDivElement | null>
 }
 
 const UNKNOWN = 'Unknown date'
 
-export default function DateScrubber({ groups, formatGroupKey, currentKey, onJump }: DateScrubberProps): React.JSX.Element | null {
+export default function DateScrubber({
+  groups,
+  formatGroupKey,
+  currentKey,
+  onJump,
+  indicatorRef
+}: DateScrubberProps): React.JSX.Element | null {
   const railRef = useRef<HTMLDivElement>(null)
   const [hoverFrac, setHoverFrac] = useState<number | null>(null)
   const [hoverLabel, setHoverLabel] = useState<string | null>(null)
@@ -168,9 +184,14 @@ export default function DateScrubber({ groups, formatGroupKey, currentKey, onJum
         .map((e) => (
           <div key={'m:' + e.key} className="date-scrubber-tick" style={{ top: `${e.frac * 100}%` }} />
         ))}
-      {currentEntry && (
-        <div className="date-scrubber-current" style={{ top: `${currentEntry.frac * 100}%` }} />
-      )}
+      <div
+        ref={indicatorRef}
+        className="date-scrubber-current"
+        // Count-based estimate for the very first paint, before any scroll
+        // event has fired; every scroll after that overwrites this directly
+        // via the ref instead of through a React re-render (see the prop doc).
+        style={{ top: `${(currentEntry?.frac ?? 0) * 100}%` }}
+      />
       {hoverFrac !== null && hoverLabel && (
         <div className="date-scrubber-label" style={{ top: `${hoverFrac * 100}%` }}>
           {hoverLabel}

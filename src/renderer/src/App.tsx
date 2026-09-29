@@ -6,7 +6,7 @@ import { Virtuoso } from 'react-virtuoso'
 // ─── BROWSER MOCKS FOR TESTING & WEB ENVIRONMENT ──────────────────────────────────
 if (typeof window !== 'undefined' && !window.api) {
   const drivesUpdatedListeners = new Set<(d: any[]) => void>()
-  const favouritesUpdatedListeners = new Set<(f: any[]) => void>()
+  const favouritesUpdatedListeners = new Set<(f: { drive: string; files: any[] }) => void>()
   const scanProgressListeners = new Set<(p: any) => void>()
   const scanCompleteListeners = new Set<(c: any) => void>()
   const filesUpdatedListeners = new Set<(g: any) => void>()
@@ -56,9 +56,9 @@ if (typeof window !== 'undefined' && !window.api) {
         drivesUpdatedListeners.forEach(l => l(drives))
       }, 50)
     },
-    getFavourites: () => {
+    getFavourites: (drive: string) => {
       setTimeout(() => {
-        favouritesUpdatedListeners.forEach(l => l([]))
+        favouritesUpdatedListeners.forEach(l => l({ drive, files: [] }))
       }, 50)
     },
     getFiles: (drive: string) => {
@@ -591,7 +591,13 @@ const MainContentArea: React.FC<{
   thumbVersion: number
   hoverPreviewsEnabled: boolean
   onHoverPreviewsChange: (enabled: boolean) => void
+  aiSearchButtonEnabled: boolean
+  onAiSearchButtonChange: (enabled: boolean) => void
   libraryState: 'idle' | 'loading' | 'ready'
+  /** True once the lightweight group summary confirms this drive has files -
+   *  long before the full row fetch (driveFiles) completes. Lets the grid
+   *  itself appear promptly without waiting on that slower fetch. */
+  librarySummaryHasData: boolean
   runtimeMode: {
     safeMode: boolean
     userDataPath: string
@@ -650,7 +656,10 @@ const MainContentArea: React.FC<{
   thumbVersion,
   hoverPreviewsEnabled,
   onHoverPreviewsChange,
+  aiSearchButtonEnabled,
+  onAiSearchButtonChange,
   libraryState,
+  librarySummaryHasData,
   runtimeMode,
   driveOpened,
   onReconcile
@@ -831,6 +840,13 @@ const MainContentArea: React.FC<{
   const onVisibleKeyChange = useCallback((key: string | null) => {
     setVisibleKey(key)
     visibleKeyRefProp.current = key
+  }, [])
+  // The scrubber's position dot is moved directly through this ref on every
+  // scroll frame - true scroll progress, not React state, so scrolling never
+  // re-renders this whole view. See DateScrubber's indicatorRef prop doc.
+  const scrubberDotRef = useRef<HTMLDivElement>(null)
+  const onScrollFracChange = useCallback((frac: number) => {
+    if (scrubberDotRef.current) scrubberDotRef.current.style.top = `${frac * 100}%`
   }, [])
   const jumpToGroup = useCallback((key: string | undefined) => {
     setActiveView('Grid')
@@ -1086,7 +1102,17 @@ const MainContentArea: React.FC<{
   // Cached files for this drive are already loaded (see hasFiles below) - background
   // scanning/indexing must never hide them. Only a genuinely empty, never-scanned
   // drive falls through to the full-screen "indexing" state further down.
-  const hasFiles = allFiles.length > 0
+  //
+  // The grid itself only ever reads through the paginated library (getRow/
+  // ensureRange), never allFiles - so it does not actually need the full,
+  // unbounded driveFiles fetch to render. Waiting for that fetch anyway was
+  // the gap between "cached index on disk" and "grid on screen": the cheap
+  // summary (librarySummaryHasData) already knows there is something to show,
+  // long before the full row set has been read, serialized and cloned across
+  // IPC. driveFiles keeps loading in the background regardless - group
+  // select-all, shift-range-select, the search overlay and the Places
+  // map/globe still read it, and simply catch up a little after the grid does.
+  const hasFiles = allFiles.length > 0 || librarySummaryHasData
 
   const isVirtualized =
     (hasFiles || !scanning) &&
@@ -1219,12 +1245,14 @@ const MainContentArea: React.FC<{
           thumbVersion={thumbVersion}
           hoverPreviewsEnabled={hoverPreviewsEnabled}
           onVisibleKeyChange={onVisibleKeyChange}
+          onScrollFracChange={onScrollFracChange}
         />
         <DateScrubber
           groups={libraryGroups}
           formatGroupKey={formatGroupKey}
           currentKey={visibleKey}
           onJump={jumpToGroup}
+          indicatorRef={scrubberDotRef}
         />
       </div>
     )
@@ -1329,6 +1357,31 @@ const MainContentArea: React.FC<{
                 />
               </div>
               <div className="settings-hint">Play a short muted preview when hovering a video tile.</div>
+            </div>
+          </section>
+
+          <section className="glass-panel settings-card" aria-labelledby="search-heading">
+            <h3 id="search-heading" className="settings-heading">
+              Search
+            </h3>
+            <div className="settings-field">
+              <div className="settings-field-head">
+                <label htmlFor="settings-ai-search-button" className="settings-label">
+                  Floating search button
+                </label>
+                <input
+                  id="settings-ai-search-button"
+                  className="settings-switch"
+                  type="checkbox"
+                  checked={aiSearchButtonEnabled}
+                  onChange={(e) => onAiSearchButtonChange(e.target.checked)}
+                />
+              </div>
+              <div className="settings-hint">
+                The circular button over the bottom-right of the gallery that opens search by name,
+                date or place. Turning it off removes the button and its search overlay entirely,
+                until turned back on here.
+              </div>
             </div>
           </section>
 
@@ -1563,12 +1616,18 @@ export default function App(): React.JSX.Element {
   const [hoverPreviewsEnabled, setHoverPreviewsEnabled] = useState(
     () => localStorage.getItem('diskframe-hover-previews') !== 'off'
   )
+  const [aiSearchButtonEnabled, setAiSearchButtonEnabled] = useState(
+    () => localStorage.getItem('diskframe-ai-search-button') !== 'off'
+  )
   useEffect(() => {
     localStorage.setItem('diskframe-tile-size', String(tileSize))
   }, [tileSize])
   useEffect(() => {
     localStorage.setItem('diskframe-hover-previews', hoverPreviewsEnabled ? 'on' : 'off')
   }, [hoverPreviewsEnabled])
+  useEffect(() => {
+    localStorage.setItem('diskframe-ai-search-button', aiSearchButtonEnabled ? 'on' : 'off')
+  }, [aiSearchButtonEnabled])
   // Collapsed on every fresh launch. sessionStorage remembers the choice for
   // this window only, so reopening the app starts collapsed again.
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
@@ -1661,15 +1720,43 @@ export default function App(): React.JSX.Element {
   const patchLibraryThumbRef = useRef<(path: string, thumb: string) => boolean>(() => false)
   const [thumbVersion, setThumbVersion] = useState(0)
 
+  // Bumped on every call; a response whose id has since been superseded (the
+  // user switched drives while it was in flight) is dropped rather than
+  // applied, so a slow query for a drive that is no longer open can never
+  // briefly show its counts over the one now selected.
+  const trashRequestIdRef = useRef(0)
   const refreshTrash = useCallback(async () => {
+    const drive = currentDriveRef.current
+    const requestId = ++trashRequestIdRef.current
+    if (!drive) {
+      setTrashedFiles([])
+      setTrashCount(0)
+      return
+    }
     try {
-      const list = await window.electron.ipcRenderer.invoke('get-trashed-files')
+      const list = await window.electron.ipcRenderer.invoke('get-trashed-files', drive)
+      if (requestId !== trashRequestIdRef.current) return
       setTrashedFiles(list || [])
-      const count = await window.electron.ipcRenderer.invoke('get-trash-count')
+      const count = await window.electron.ipcRenderer.invoke('get-trash-count', drive)
+      if (requestId !== trashRequestIdRef.current) return
       setTrashCount(count || 0)
     } catch (e) {
       console.error('Error fetching trash list/count:', e)
     }
+  }, [])
+
+  // Asks for the authoritative favourites list for the currently open drive.
+  // The response is tagged with that drive (see onFavouritesUpdated below),
+  // so a request for a drive since switched away from is safely ignored
+  // rather than applied when it lands.
+  const loadFavourites = useCallback((): void => {
+    const drive = currentDriveRef.current
+    if (!drive) {
+      setFavRecords([])
+      setFavourites(new Set())
+      return
+    }
+    window.api.getFavourites(drive)
   }, [])
 
   // Auto-clear toast alert messages after 3s
@@ -1743,25 +1830,22 @@ export default function App(): React.JSX.Element {
   // Setup fully cleanable IPC listeners on mount and return cleanup callbacks
   useEffect(() => {
     const unsubDrives = window.api.onDrivesUpdated((d) => setDrives(d as DriveInfo[]))
-    const unsubFavs = window.api.onFavouritesUpdated((files) => {
-      // One source for both the badge and the Favourites view.
-      //
-      // The badge used to count favourite_paths (every drive, including
-      // trashed items) while the view filtered the OPEN drive's loaded rows -
-      // so a favourite on an unplugged drive was counted but never listed,
-      // which is the 4-vs-3 discrepancy. getFavourites() in the main process
-      // already returns exactly the right set: favourited, not trashed, not
-      // hidden, across all drives.
+    const unsubFavs = window.api.onFavouritesUpdated(({ drive, files }) => {
+      // Scoped to one volume, never merged across drives (see getFavourites
+      // in the main process). Tagged with the drive it was computed for, so
+      // a response for a drive since switched away from - the query started
+      // before the switch, but only resolved after - is dropped instead of
+      // briefly showing over the one now selected.
+      if (drive !== currentDriveRef.current) return
       const records = (files as ScannedFile[]) || []
       setFavRecords(records)
       setFavourites(new Set(records.map((f) => f.path)))
     })
     // Ask for the authoritative list once on mount, then again whenever a
     // favourite is toggled, so the badge and the view never drift.
-    const loadFavs = (): void => window.api.getFavourites()
-    loadFavs()
+    loadFavourites()
     const unsubFavToggle = window.api.onFavouriteToggled
-      ? window.api.onFavouriteToggled(() => loadFavs())
+      ? window.api.onFavouriteToggled(() => loadFavourites())
       : () => {}
     const unsubProgress = window.api.onScanProgress((d) => setScanCount(d.count))
     const unsubComplete = window.api.onScanComplete((d) => {
@@ -1809,6 +1893,10 @@ export default function App(): React.JSX.Element {
           console.log(`[safe-mode] sample folder ${folder} (${count} files)`)
           currentDriveRef.current = drive
           setSelectedDrive(drive)
+          setFavRecords([])
+          setFavourites(new Set())
+          setTrashedFiles([])
+          setTrashCount(0)
           setSafeModeSample({ folder, count })
           setScanning(false)
           setActiveNav('all')
@@ -1853,12 +1941,16 @@ export default function App(): React.JSX.Element {
       .then((enabled) => setHoverPreviewsEnabled(enabled !== false))
       .catch((err) => console.error('Error loading hover previews preference:', err))
 
+    window.api.getAiSearchButton()
+      .then((enabled) => setAiSearchButtonEnabled(enabled !== false))
+      .catch((err) => console.error('Error loading AI search button preference:', err))
+
     window.api.getRuntimeMode?.()
       .then(setRuntimeMode)
       .catch(() => setRuntimeMode(null))
 
     window.api.getDrives()
-    window.api.getFavourites()
+    loadFavourites()
     refreshTrash()
 
     return () => {
@@ -1874,7 +1966,7 @@ export default function App(): React.JSX.Element {
       unsubSample()
       unsubOpened()
     }
-  }, [refreshTrash])
+  }, [refreshTrash, loadFavourites])
 
   // Trigger reload when navigating
   useEffect(() => {
@@ -1907,6 +1999,18 @@ export default function App(): React.JSX.Element {
     setLibraryState('loading')
 
     setDriveOpened(null)
+    // Favourites and trash are scoped to the drive just left - cleared here,
+    // synchronously, rather than left showing that drive's counts until the
+    // new drive's fetch resolves. loadFavourites/refreshTrash read
+    // currentDriveRef (already updated above) and tag their requests with it,
+    // so even if a fetch for the old drive is still in flight it cannot land
+    // and overwrite these.
+    setFavRecords([])
+    setFavourites(new Set())
+    setTrashedFiles([])
+    setTrashCount(0)
+    loadFavourites()
+    refreshTrash()
     // Cached-only. Opening a drive no longer reconciles it: that used to stat
     // every indexed file before the user had even decided to stay. Use the
     // "Check for changes" action to reconcile.
@@ -1937,6 +2041,11 @@ export default function App(): React.JSX.Element {
     window.api.setHoverPreviews(enabled).catch((err) => console.error(err))
   }
 
+  const handleAiSearchButtonChange = (enabled: boolean) => {
+    setAiSearchButtonEnabled(enabled)
+    window.api.setAiSearchButton(enabled).catch((err) => console.error(err))
+  }
+
   const _handleRescan = useCallback((name: string): void => {
     setScanning(true); setScanCount(0); currentDriveRef.current = name
     setSelected(new Set())
@@ -1965,6 +2074,11 @@ export default function App(): React.JSX.Element {
     [selectedDrive, galleryNav, searchQuery, groupBy, viewOrder]
   )
   const library = useLibrary(libraryQuery)
+  // The cheap summary knowing there is at least one file is enough to show
+  // the grid - it does not need to wait for the slower full-row driveFiles
+  // fetch. total === 0 is left alone here (falls through to the existing
+  // needs-initial-scan / diagnostic messaging, which reads driveOpened).
+  const librarySummaryHasData = library.state === 'ready' && library.total > 0
 
   // A relink rewrites where thousands of rows point, so the library is re-read
   // and any remembered failure for those paths is dropped rather than left to
@@ -2879,7 +2993,10 @@ export default function App(): React.JSX.Element {
           thumbVersion={thumbVersion}
           hoverPreviewsEnabled={hoverPreviewsEnabled}
           onHoverPreviewsChange={handleHoverPreviewsChange}
+          aiSearchButtonEnabled={aiSearchButtonEnabled}
+          onAiSearchButtonChange={handleAiSearchButtonChange}
           libraryState={libraryState}
+          librarySummaryHasData={librarySummaryHasData}
           runtimeMode={runtimeMode}
           driveOpened={driveOpened}
           onReconcile={handleReconcile}
@@ -3009,8 +3126,11 @@ export default function App(): React.JSX.Element {
         </div>
       )}
 
-      {/* Floating AI search action button (offset bottom: 55px to float above status bar) */}
-      {selectedDrive && isGalleryPage && (
+      {/* Floating AI search action button (offset bottom: 55px to float above status bar).
+          isGalleryPage already excludes Settings and Map; !lightbox excludes the
+          open-file viewer explicitly rather than relying on it being visually
+          covered, and aiSearchButtonEnabled is the user's own Settings toggle. */}
+      {selectedDrive && isGalleryPage && !lightbox && aiSearchButtonEnabled && (
         <button
           onClick={() => setShowAiOverlay(true)}
           className="gallery-chrome"
@@ -3572,7 +3692,9 @@ export default function App(): React.JSX.Element {
               <button
                 onClick={async () => {
                   try {
-                    await window.electron.ipcRenderer.invoke('empty-trash')
+                    if (currentDriveRef.current) {
+                      await window.electron.ipcRenderer.invoke('empty-trash', currentDriveRef.current)
+                    }
                     refreshTrash()
                   } catch (err) {
                     console.error(err)

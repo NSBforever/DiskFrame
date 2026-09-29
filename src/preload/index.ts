@@ -69,9 +69,9 @@ const api = {
   },
   toggleFavourite: (p: string, volumeId?: string | null) =>
     ipcRenderer.send('toggle-favourite', p, volumeId),
-  getFavourites: () => ipcRenderer.send('get-favourites'),
-  onFavouritesUpdated: (cb: (files: unknown[]) => void) => {
-    const listener = (_e: unknown, f: any) => cb(f)
+  getFavourites: (drive: string) => ipcRenderer.send('get-favourites', drive),
+  onFavouritesUpdated: (cb: (payload: { drive: string | null; files: unknown[] }) => void) => {
+    const listener = (_e: unknown, payload: any) => cb(payload)
     ipcRenderer.on('favourites-updated', listener)
     return () => {
       ipcRenderer.removeListener('favourites-updated', listener)
@@ -135,6 +135,8 @@ const api = {
   setViewOrder: (order: 'default' | 'reverse') => ipcRenderer.invoke('set-view-order', order),
   getHoverPreviews: () => ipcRenderer.invoke('get-hover-previews'),
   setHoverPreviews: (enabled: boolean) => ipcRenderer.invoke('set-hover-previews', enabled),
+  getAiSearchButton: () => ipcRenderer.invoke('get-ai-search-button'),
+  setAiSearchButton: (enabled: boolean) => ipcRenderer.invoke('set-ai-search-button', enabled),
   prioritizeThumbnails: (filePaths: string[]) => ipcRenderer.invoke('prioritize-thumbnails', filePaths),
   pickFolder: () => ipcRenderer.invoke('pick-folder'),
   indexFolder: (folder: string, maxFiles?: number) => ipcRenderer.invoke('index-folder', folder, maxFiles),

@@ -516,6 +516,13 @@ if (!deletePrefsCols.includes('hover_previews')) {
     console.error('Error migrating delete_prefs (hover_previews):', e)
   }
 }
+if (!deletePrefsCols.includes('ai_search_button')) {
+  try {
+    db.prepare('ALTER TABLE delete_prefs ADD COLUMN ai_search_button INTEGER DEFAULT 1').run()
+  } catch (e) {
+    console.error('Error migrating delete_prefs (ai_search_button):', e)
+  }
+}
 
 export interface ScannedFile {
   path: string
@@ -642,6 +649,31 @@ export function setHoverPreviewsPref(enabled: boolean): void {
   }
 }
 
+/** The floating bottom-right button that opens the fuzzy/place-name search overlay. */
+export function getAiSearchButtonPref(): boolean {
+  try {
+    const row = db.prepare('SELECT ai_search_button FROM delete_prefs WHERE id = 1').get() as
+      | { ai_search_button: number }
+      | undefined
+    return (row?.ai_search_button ?? 1) === 1
+  } catch {
+    return true
+  }
+}
+
+export function setAiSearchButtonPref(enabled: boolean): void {
+  try {
+    const exists = db.prepare('SELECT id FROM delete_prefs WHERE id = 1').get()
+    if (exists) {
+      db.prepare('UPDATE delete_prefs SET ai_search_button = ? WHERE id = 1').run(enabled ? 1 : 0)
+    } else {
+      db.prepare('INSERT OR REPLACE INTO delete_prefs (id, ai_search_button) VALUES (1, ?)').run(enabled ? 1 : 0)
+    }
+  } catch (e) {
+    console.error('Error saving AI search button pref:', e)
+  }
+}
+
 // ─── HIDE/LOCK FILES ──────────────────────────────────────────────────────────
 export function hideFile(filePath: string): { vaultPath: string } | null {
   const file = db.prepare('SELECT * FROM files WHERE path = ?').get(filePath) as
@@ -681,14 +713,20 @@ export function unhideFile(filePath: string, pin: string): boolean {
 }
 
 // ─── TRASH / RECYCLE BIN LIFECYCLE ───────────────────────────────────────────
-export function getTrashedFiles(): ScannedFile[] {
+/** Trashed rows for one volume - see getFavourites for why a legacy row with
+ *  no recorded identity is left out rather than guessed. */
+export function getTrashedFiles(volumeId: string | null): ScannedFile[] {
+  if (!volumeId) return []
   return db
-    .prepare('SELECT * FROM files WHERE trashed_at IS NOT NULL ORDER BY trashed_at DESC')
-    .all() as ScannedFile[]
+    .prepare('SELECT * FROM files WHERE trashed_at IS NOT NULL AND volume_id = ? ORDER BY trashed_at DESC')
+    .all(volumeId) as ScannedFile[]
 }
 
-export function getTrashCount(): number {
-  const row = db.prepare('SELECT COUNT(*) as count FROM files WHERE trashed_at IS NOT NULL').get() as { count: number }
+export function getTrashCount(volumeId: string | null): number {
+  if (!volumeId) return 0
+  const row = db
+    .prepare('SELECT COUNT(*) as count FROM files WHERE trashed_at IS NOT NULL AND volume_id = ?')
+    .get(volumeId) as { count: number }
   return row?.count ?? 0
 }
 
@@ -817,8 +855,16 @@ export async function deleteFilesPermanently(refs: PathRef[]): Promise<{ success
   return { success, failed }
 }
 
-export async function emptyTrash(): Promise<{ success: boolean; count: number }> {
-  const toPurge = db.prepare('SELECT * FROM files WHERE trashed_at IS NOT NULL').all() as ScannedFile[]
+/**
+ * Empties trash for one volume only - "Empty Trash" inside a selected drive
+ * must never touch another drive's trashed files. `volumeId` null (identity
+ * unresolved) empties nothing rather than guessing.
+ */
+export async function emptyTrash(volumeId: string | null): Promise<{ success: boolean; count: number }> {
+  if (!volumeId) return { success: true, count: 0 }
+  const toPurge = db
+    .prepare('SELECT * FROM files WHERE trashed_at IS NOT NULL AND volume_id = ?')
+    .all(volumeId) as ScannedFile[]
   let count = 0
   for (const file of toPurge) {
     try {
@@ -936,10 +982,18 @@ export function getGroupedFiles(drivePath?: string, volumeId?: string | null): R
   return grouped
 }
 
-export function getFavourites(): ScannedFile[] {
+/**
+ * Favourites for one volume - never every drive at once. A file with no
+ * recorded identity (a legacy row never re-verified by a scan) is left out
+ * rather than guessed into whichever volume happens to be open; it reappears
+ * here on its own once that file is rediscovered by a real walk of its real
+ * volume, the same self-healing backfill the rest of the library relies on.
+ */
+export function getFavourites(volumeId: string | null): ScannedFile[] {
+  if (!volumeId) return []
   return db
-    .prepare('SELECT * FROM files WHERE favourited = 1 AND hidden = 0 AND trashed_at IS NULL ORDER BY date DESC')
-    .all() as ScannedFile[]
+    .prepare('SELECT * FROM files WHERE favourited = 1 AND volume_id = ? AND hidden = 0 AND trashed_at IS NULL ORDER BY date DESC')
+    .all(volumeId) as ScannedFile[]
 }
 
 
@@ -2374,6 +2428,19 @@ export async function refreshVolumeCache(extraLetters: string[] = []): Promise<v
 
 export function getCachedVolumeId(letter: string): string | null {
   return volumeByLetter.get(letter.slice(0, 2).toUpperCase()) ?? null
+}
+
+/**
+ * Whether this letter has ever been resolved, so a caller can tell "checked,
+ * unresolved" (cached as null - trust it) apart from "never looked at" (not
+ * in the map at all - a live check is the only honest answer). `sendDrives`
+ * primes every currently mounted letter before the renderer can see it in the
+ * drive list, so in practice this is warm by the time a real click reaches
+ * open-drive; only a letter no `drives-updated` tick has covered yet falls
+ * through to a live PowerShell call.
+ */
+export function hasCachedVolumeId(letter: string): boolean {
+  return volumeByLetter.has(letter.slice(0, 2).toUpperCase())
 }
 
 /** Sets one letter's cached identity immediately, from an already-resolved read. */

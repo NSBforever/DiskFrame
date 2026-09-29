@@ -29,6 +29,8 @@ import {
   setViewOrderPref,
   getHoverPreviewsPref,
   setHoverPreviewsPref,
+  getAiSearchButtonPref,
+  setAiSearchButtonPref,
   getTrashedFiles,
   getTrashCount,
   softDeleteFiles,
@@ -62,6 +64,7 @@ import {
   refreshVolumeCache,
   primeVolumeCache,
   getCachedVolumeId,
+  hasCachedVolumeId,
   reconcileDriveLetterForVolume,
   getFavouritePaths
 } from './scanner'
@@ -869,19 +872,30 @@ app.whenReady().then(() => {
     if (!drive) return
     ;(async () => {
       const t0 = Date.now()
-      // One WMI lookup for the volume itself, not a stat of any file - still
-      // "no scan" in the sense the comment above means. Without this, opening
-      // a drive would serve whatever the letter last showed, which is exactly
-      // the cross-drive mixup this whole identity layer exists to prevent.
-      const liveVolumeId = await getVolumeId(drive)
+      // The drive-select grid already primed this letter's identity before
+      // the user could even see, let alone click, the card (sendDrives()
+      // resolves every mounted letter before the next 'drives-updated' tick).
+      // Trusting that cache is what makes opening instant; a fresh
+      // PowerShell shell-out here on every single click was the one thing
+      // still standing between "cached index" and "on screen" - still "no
+      // scan" in the sense the comment above means, just not a live WMI
+      // round trip when a good answer is already sitting in memory.
+      const fromCache = hasCachedVolumeId(drive)
+      const liveVolumeId = fromCache ? getCachedVolumeId(drive) : await getVolumeId(drive)
+      const tIdentity = Date.now()
       primeVolumeCache(drive, liveVolumeId)
       if (liveVolumeId) reconcileDriveLetterForVolume(liveVolumeId, drive)
+      const tReconcile = Date.now()
 
       const indexed = getFileCount(liveVolumeId)
+      const tCount = Date.now()
       sendFilesUpdated(drive, 'initial')
+      const tFiles = Date.now()
       diag(
         'open-drive',
-        `${drive}: served ${indexed} cached records in ${Date.now() - t0}ms (volume ${liveVolumeId ?? 'unresolved'})`
+        `${drive}: ${indexed} cached records, volume ${liveVolumeId ?? 'unresolved'} ` +
+          `(${fromCache ? 'cache' : 'live'}) - identity ${tIdentity - t0}ms, reconcile ${tReconcile - tIdentity}ms, ` +
+          `count ${tCount - tReconcile}ms, full fetch ${tFiles - tCount}ms, total ${tFiles - t0}ms`
       )
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('drive-opened', {
@@ -1031,53 +1045,84 @@ app.whenReady().then(() => {
     }
   })
 
-  ipcMain.on('get-favourites', () => {
-    const files = getFavourites()
-    if (mainWindow) mainWindow.webContents.send('favourites-updated', files)
+  // Favourites and trash are scoped per volume, never merged across drives -
+  // the renderer always names the drive it means, resolved here to the same
+  // live-cached identity every other query uses, and every response is
+  // tagged with that drive so a renderer that has since switched drives can
+  // tell a late answer apart from a current one instead of briefly showing
+  // it.
+  ipcMain.on('get-favourites', (_event, drivePath: unknown) => {
+    const drive = normalizeDrive(drivePath)
+    const volumeId = drive ? getCachedVolumeId(drive) : null
+    const files = getFavourites(volumeId)
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('favourites-updated', { drive, files })
+    }
   })
 
   // ── SOFT DELETE (TRASH) ──
   /**
-   * Re-push the favourites list. Trashing or restoring a favourited file
-   * changes what the badge and the Favourites view should show, and both read
-   * this one list - so it has to be resent, not just recomputed on next launch.
+   * Re-push the favourites list for one volume. Trashing or restoring a
+   * favourited file changes what the badge and the Favourites view should
+   * show, and both read this one push - so it has to be resent, not just
+   * recomputed on next launch.
    */
-  const pushFavourites = (): void => {
+  const pushFavourites = (volumeId: string | null): void => {
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('favourites-updated', getFavourites())
+      mainWindow.webContents.send('favourites-updated', { volumeId, files: getFavourites(volumeId) })
     }
+  }
+
+  // The refs a batch operates on all come from one open drive in practice;
+  // the first ref that actually carries an identity (set by a single-file
+  // action that already knew its row's volume) is trusted, falling back to
+  // whatever the ref's own letter currently resolves to for a plain-path
+  // batch (multi-select) that never carried one.
+  const resolveVolumeIdForRefs = (refs: ReturnType<typeof safePathRefs>): string | null => {
+    for (const r of refs) {
+      if (typeof r !== 'string' && r.volumeId !== undefined) return r.volumeId
+    }
+    const first = refs[0]
+    if (!first) return null
+    const path = typeof first === 'string' ? first : first.path
+    return getCachedVolumeId(path.slice(0, 2))
   }
 
   ipcMain.handle('delete-files', (_event, filePaths: unknown) => {
     const refs = safePathRefs(filePaths)
     softDeleteFiles(refs)
-    pushFavourites()
+    pushFavourites(resolveVolumeIdForRefs(refs))
     return { success: refs.map((r) => (typeof r === 'string' ? r : r.path)), failed: [] }
   })
 
   // ── TRASH IPC HANDLERS ──
   ipcMain.handle('restore-files', (_event, filePaths: unknown) => {
-    restoreFiles(safePathRefs(filePaths))
-    pushFavourites()
+    const refs = safePathRefs(filePaths)
+    restoreFiles(refs)
+    pushFavourites(resolveVolumeIdForRefs(refs))
     return { success: true }
   })
 
   ipcMain.handle('delete-files-permanently', async (_event, filePaths: unknown) => {
-    const r = await deleteFilesPermanently(safePathRefs(filePaths))
-    pushFavourites()
+    const refs = safePathRefs(filePaths)
+    const r = await deleteFilesPermanently(refs)
+    pushFavourites(resolveVolumeIdForRefs(refs))
     return r
   })
 
-  ipcMain.handle('empty-trash', () => {
-    return emptyTrash()
+  ipcMain.handle('empty-trash', (_event, drivePath: unknown) => {
+    const drive = normalizeDrive(drivePath)
+    return emptyTrash(drive ? getCachedVolumeId(drive) : null)
   })
 
-  ipcMain.handle('get-trashed-files', () => {
-    return getTrashedFiles()
+  ipcMain.handle('get-trashed-files', (_event, drivePath: unknown) => {
+    const drive = normalizeDrive(drivePath)
+    return getTrashedFiles(drive ? getCachedVolumeId(drive) : null)
   })
 
-  ipcMain.handle('get-trash-count', () => {
-    return getTrashCount()
+  ipcMain.handle('get-trash-count', (_event, drivePath: unknown) => {
+    const drive = normalizeDrive(drivePath)
+    return getTrashCount(drive ? getCachedVolumeId(drive) : null)
   })
 
   // ── SKIP CONFIRM PREF ──
@@ -1102,6 +1147,12 @@ app.whenReady().then(() => {
   ipcMain.handle('get-hover-previews', () => getHoverPreviewsPref())
   ipcMain.handle('set-hover-previews', (_event, enabled: boolean) => {
     setHoverPreviewsPref(enabled)
+    return true
+  })
+
+  ipcMain.handle('get-ai-search-button', () => getAiSearchButtonPref())
+  ipcMain.handle('set-ai-search-button', (_event, enabled: boolean) => {
+    setAiSearchButtonPref(enabled)
     return true
   })
 

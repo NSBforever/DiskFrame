@@ -639,8 +639,17 @@ export interface PhotoGridProps {
   /** Bumped when thumbnails are patched into file objects in place. */
   thumbVersion: number
   hoverPreviewsEnabled: boolean
-  /** Fired when the topmost visible section changes, for the date scrubber's highlight. */
+  /** Fired when the topmost visible section changes, for the floating date pill. */
   onVisibleKeyChange?: (key: string | null) => void
+  /**
+   * Fired on every scroll with true scroll progress (0 at the very top, 1 at
+   * the very bottom), for the date scrubber's position indicator. Deliberately
+   * not derived from "which section is at the top" - a short trailing group
+   * (a handful of files after a long one) never reaches the top of a taller
+   * viewport, so that signal gets permanently stuck on the second-to-last
+   * group instead of ever reporting the last one.
+   */
+  onScrollFracChange?: (frac: number) => void
 }
 
 interface Pending {
@@ -1275,6 +1284,19 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
     lastReportedKeyRef.current = key
     props.onVisibleKeyChange?.(key)
   })
+
+  // True scroll progress, not "which section's header is at the top" - the
+  // latter can never reach a short trailing group once the viewport is
+  // taller than that group's own content, since nothing pushes its header up
+  // past the top edge. 0 and 1 are always reachable: at max scroll,
+  // scrollTop equals exactly layout.height - viewport.height (browsers clamp
+  // to that), so frac is exactly 1 there regardless of section sizes.
+  const scrollableHeight = Math.max(1, layout.height - viewport.height)
+  const scrollFrac = viewport.height > 0 ? Math.max(0, Math.min(1, scrollTop / scrollableHeight)) : 0
+  useEffect(() => {
+    props.onScrollFracChange?.(scrollFrac)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scrollFrac])
 
   return (
     <div ref={outerRef} className="pg-outer">

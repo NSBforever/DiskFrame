@@ -146,8 +146,10 @@ declare global {
         }) => void
       ) => () => void
       toggleFavourite: (filePath: string, volumeId?: string | null) => void
-      getFavourites: () => void
-      onFavouritesUpdated: (callback: (files: ScannedFile[]) => void) => () => void
+      getFavourites: (drive: string) => void
+      onFavouritesUpdated: (
+        callback: (payload: { drive: string | null; files: ScannedFile[] }) => void
+      ) => () => void
       onFavouriteToggled: (callback: (data: { filePath: string; isFav: boolean }) => void) => () => void
       openFile: (filePath: string) => void
       readFileBase64: (filePath: string) => Promise<string>
@@ -174,6 +176,8 @@ declare global {
       setViewOrder: (order: 'default' | 'reverse') => Promise<void>
       getHoverPreviews: () => Promise<boolean>
       setHoverPreviews: (enabled: boolean) => Promise<void>
+      getAiSearchButton: () => Promise<boolean>
+      setAiSearchButton: (enabled: boolean) => Promise<void>
       setOverlayMeta: (meta: { name?: string; isFav?: boolean; toast?: string; show?: boolean }) => void
       onOverlayMeta: (
         cb: (m: { name?: string; isFav?: boolean; toast?: string; show?: boolean }) => void
