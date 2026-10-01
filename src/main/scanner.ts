@@ -1757,19 +1757,35 @@ export function getLibrarySummary(q: LibraryQuery): {
 /**
  * A fingerprint of the catalogue's current contents.
  *
- * Changes whenever anything writes to `files`, from any connection:
- * PRAGMA data_version moves when ANOTHER connection commits (the scan utility
- * is a separate process with its own connection, which is the case that matters
- * during discovery), and total_changes() moves when this connection writes (the
- * watcher, favourites, trash). Either is enough to tell the renderer that the
- * pages it already holds were read against a different set of rows.
+ * This exists for exactly one purpose: telling the renderer that the pages it
+ * already holds were read against a different set of rows, so an OFFSET page
+ * read before a change and one read after it cannot both stay resident and
+ * draw the same file twice.
  *
- * Two cheap reads, no table scan - this is called once per summary/page request.
+ * So it must move for changes to row MEMBERSHIP or ORDERING, and must not move
+ * for anything else. PRAGMA data_version moves when another connection commits,
+ * which is precisely the case that matters: the scan utility is a separate
+ * process, and its batched inserts during discovery are the only writes that
+ * arrive while the user is browsing without this process knowing. Same-
+ * connection membership changes - the watcher adding or removing a file, a
+ * delete, a trash, an incremental sync - already push 'files-updated' or
+ * 'scan-complete', on which the renderer reloads and clears every page.
+ *
+ * It deliberately does NOT include total_changes(). That counts every row write
+ * on this connection, thumbnail updates included - and a thumbnail changes
+ * neither membership nor ordering, so it cannot produce a duplicate tile.
+ * Measured on the real 40,960-row volume with total_changes() in the version:
+ * a single full walk saw 16 distinct versions purely because the thumbnail
+ * backfill was running, which would empty the renderer's page cache on nearly
+ * every page that arrived - a re-fetch storm during ordinary browsing, caused
+ * by pictures showing up. Thumbnails reach resident rows through patchThumb,
+ * which is exactly why they must not invalidate anything.
+ *
+ * One cheap pragma read, no table scan - called once per summary/page request.
  */
 export function getCatalogueVersion(): string {
   const dv = db.prepare('PRAGMA data_version').get() as { data_version?: number } | undefined
-  const tc = db.prepare('SELECT total_changes() AS n').get() as { n?: number } | undefined
-  return `${dv?.data_version ?? 0}:${tc?.n ?? 0}`
+  return String(dv?.data_version ?? 0)
 }
 
 export function getLibraryPage(q: LibraryQuery, offset: number, limit: number): ScannedFile[] {
