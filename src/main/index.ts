@@ -310,7 +310,18 @@ function getDrivesPowerShell(): Promise<Array<{ name: string; filesystem: string
 // Cached by drive letter so the (multi-CIM-call) classification query only
 // re-runs when the set of mounted letters changes, not on every 3s poll.
 let driveHardwareCache: Record<string, DriveHardware> = {}
+/** Letters presented to the user as drives. Aliases are not in here. */
 let knownDriveLetters: Set<string> = new Set()
+/**
+ * Every letter the last enumeration saw, aliases included.
+ *
+ * Kept separate from knownDriveLetters because that one excludes aliases: using
+ * it to decide "has the drive set changed?" would compare a set containing an
+ * alias against one that never can, so the answer would always be "changed" and
+ * the hardware query would re-run its PowerShell shell-outs on every 3-second
+ * poll for as long as any alias existed.
+ */
+let knownEnumeratedLetters: Set<string> = new Set()
 
 /** Physical medium. Deliberately separate from how the drive is attached:
  *  a USB-attached SSD is external AND an SSD. */
@@ -473,10 +484,16 @@ async function sendDrives(): Promise<void> {
     const letters = drives.map((d) => d.name.slice(0, 2).toUpperCase())
     const currentSet = new Set(letters)
     const sameSet =
-      currentSet.size === knownDriveLetters.size && [...currentSet].every((l) => knownDriveLetters.has(l))
+      currentSet.size === knownEnumeratedLetters.size &&
+      [...currentSet].every((l) => knownEnumeratedLetters.has(l))
     if (!sameSet) {
-      knownDriveLetters = currentSet
       driveHardwareCache = await queryDriveHardware(letters)
+      // Recorded only once the hardware answers actually exist. Setting it
+      // before the await let the next poll see "same set", skip the query, and
+      // build the drive list from an empty hardware cache - which read as "this
+      // letter has no verifiable volume identity" and briefly labelled a
+      // perfectly ordinary C: as unverifiable.
+      knownEnumeratedLetters = currentSet
       // A drive that has never been indexed has no rows to derive its letter
       // from, so it would never get an identity cached until the user opened
       // it - and by then the drive-select screen would already have asked
@@ -494,8 +511,15 @@ async function sendDrives(): Promise<void> {
     //
     // Resolution is by verified volume identity, never by capacity, label or
     // letter. See driveIdentity.ts for what is and is not treated as an alias.
+    //
+    // Only letters Windows has actually been asked about take part. "We asked
+    // and there is no volume here" and "we have not asked yet" are different
+    // facts: resolving on the second would call a drive unverifiable for no
+    // better reason than that a PowerShell call had not come back. A letter with
+    // no hardware answer yet is simply passed through unchanged.
+    const answered = letters.filter((l) => driveHardwareCache[l] !== undefined)
     const resolved = resolveDriveLetters(
-      letters.map((letter) => ({
+      answered.map((letter) => ({
         letter,
         volumeId: driveHardwareCache[letter]?.volumeId ?? null,
         fsSerial: driveHardwareCache[letter]?.fsSerial ?? null

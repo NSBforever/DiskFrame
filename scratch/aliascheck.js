@@ -42,6 +42,10 @@ function substList() {
 
 function removeMapping() {
   try {
+    // execFileSync with an argv array, deliberately not a shell string. Running
+    // `subst Q: /D` through a POSIX shell on Windows (git-bash, MSYS) rewrites
+    // the `/D` flag into a filesystem path, so subst silently never receives it
+    // and the mapping survives - observed while verifying this very fix.
     execFileSync('cmd', ['/c', 'subst', LETTER, '/D'], { stdio: 'ignore', timeout: 10000 })
   } catch {
     /* already gone */

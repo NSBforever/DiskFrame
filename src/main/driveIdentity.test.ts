@@ -147,6 +147,15 @@ test('an alias pointing at a volume that is not currently listed stays visible',
   assert.equal(t.identityUnverified, true)
 })
 
+test('an empty enumeration resolves to nothing rather than inventing a drive', () => {
+  // "We have not asked Windows yet" must never be fed in as "we asked and found
+  // nothing". The caller filters to letters that actually have a hardware
+  // answer; with none, there is nothing to resolve. Passing unanswered letters
+  // in here is what briefly labelled an ordinary C: as unverifiable.
+  assert.deepEqual(resolveDriveLetters([]), [])
+  assert.deepEqual(independentLetters(resolveDriveLetters([])), [])
+})
+
 test('no letter is ever special-cased', () => {
   // The same shape of input gives the same answer whatever the letters are, so
   // nothing here can be a hard-coded C:/D: rule.
