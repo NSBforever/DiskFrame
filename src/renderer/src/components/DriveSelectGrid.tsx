@@ -12,6 +12,12 @@ export interface Drive {
   model: string | null
   totalBytes: number
   freeBytes: number
+  /**
+   * No volume identity could be read for this letter, and no backing volume was
+   * found for it either. It is still listed - the app cannot tell whether it is
+   * real - but its catalogue state is unknown, so the card must not claim one.
+   */
+  identityUnverified: boolean
 }
 
 interface DriveSelectGridProps {
@@ -59,7 +65,8 @@ function mapRawDrive(d: any): Drive {
     media,
     model: typeof d.model === 'string' && d.model ? d.model : null,
     totalBytes,
-    freeBytes
+    freeBytes,
+    identityUnverified: d.identityUnverified === true
   }
 }
 
@@ -106,9 +113,30 @@ export default function DriveSelectGrid({ onSelectDrive, drives: propDrives }: D
   // different heights). null = not fetched yet.
   const [driveCounts, setDriveCounts] = useState<Record<string, number> | null>(null)
 
+  // Re-asked whenever the set of drives changes, not just once on mount.
+  //
+  // The counts are keyed by the volume verified at each letter, and the main
+  // process resolves those identities with PowerShell during enumeration. On a
+  // cold start this component mounts well before that finishes, so a single
+  // fetch on mount came back with every count 0 and every card read
+  // "Not indexed yet" on a library that was fully indexed. Keying on the
+  // enumerated letters means the answer is re-read once the drives are actually
+  // known, and again whenever one is plugged in or removed.
+  const driveKey = drives.map((d) => d.letter).join('|')
   useEffect(() => {
-    window.api.getDriveFileCounts().then(setDriveCounts).catch(() => setDriveCounts({}))
-  }, [])
+    let cancelled = false
+    window.api
+      .getDriveFileCounts()
+      .then((c) => {
+        if (!cancelled) setDriveCounts(c)
+      })
+      .catch(() => {
+        if (!cancelled) setDriveCounts({})
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [driveKey])
 
   useEffect(() => {
     if (propDrives && propDrives.length > 0) {
@@ -214,11 +242,17 @@ export default function DriveSelectGrid({ onSelectDrive, drives: propDrives }: D
                 />
               </div>
               <div className="drive-filecount">
-                {realCount === undefined
-                  ? <span className="drive-filecount-loading" />
-                  : realCount > 0
-                    ? `${realCount.toLocaleString()} files indexed`
-                    : 'Not indexed yet'}
+                {drive.identityUnverified
+                  ? // Its catalogue is looked up by the volume verified at this
+                    // letter. With no verified volume there is no count to
+                    // report, and "Not indexed yet" would be a claim the app
+                    // cannot make.
+                    'Drive could not be verified'
+                  : realCount === undefined
+                    ? <span className="drive-filecount-loading" />
+                    : realCount > 0
+                      ? `${realCount.toLocaleString()} files indexed`
+                      : 'Not indexed yet'}
               </div>
             </button>
           )

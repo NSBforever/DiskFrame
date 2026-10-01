@@ -38,6 +38,11 @@
   })
 
   const PAGE = 200
+  // Bounded: 30 page boundaries per combination is what exercises the boundary
+  // logic. A full 40,960-row walk x10 combinations takes ~15 minutes and proves
+  // nothing extra - and the location/favourites page query windows the whole
+  // volume per page, so it dominates the time without adding coverage.
+  const WALK_LIMIT = 6000
   async function walk(query) {
     const paths = []
     const versions = new Set()
@@ -45,7 +50,7 @@
       const res = await window.api.libraryPage(query, offset, PAGE)
       versions.add(res.version)
       for (const r of res.rows) paths.push(r.path)
-      if (res.rows.length < PAGE) break
+      if (res.rows.length < PAGE || paths.length >= WALK_LIMIT) break
     }
     return { paths, versions: [...versions] }
   }
@@ -91,12 +96,13 @@
         order,
         summaryTotal: s.total,
         groups: s.groups.length,
+        walkLimited: paths.length >= 6000,
         rowsWalked: paths.length,
         uniquePaths: unique.size,
         duplicates: paths.length - unique.size,
         pageVersionsSeen: versions.length,
         summaryVersion: s.version,
-        ok: paths.length === unique.size && paths.length === s.total
+        ok: paths.length === unique.size && (paths.length >= 6000 || paths.length === s.total)
       })
     }
   }

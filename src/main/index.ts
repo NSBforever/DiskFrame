@@ -87,6 +87,7 @@ import {
   THUMB_NO_ACCESS
 } from './validation'
 import { parseSafeMode, subsystemEnabled } from './runtimeMode'
+import { resolveDriveLetters } from './driveIdentity'
 import {
   EMPTY_QUEUE,
   mergeThumbRequest,
@@ -337,6 +338,13 @@ export interface DriveHardware {
   media: 'ssd' | 'hdd' | 'unknown'
   model: string | null
   volumeId: string | null
+  /**
+   * Win32_LogicalDisk.VolumeSerialNumber - the serial of the filesystem this
+   * letter resolves to. An alias (a SUBST mapping, say) has no volumeId but
+   * reports the serial of the volume behind it, which is what lets the letter be
+   * resolved to its backing volume instead of shown as separate storage.
+   */
+  fsSerial: string | null
 }
 
 /**
@@ -387,7 +395,14 @@ function queryDriveHardware(letters: string[]): Promise<Record<string, DriveHard
       `    if ($v.SerialNumber) { $vol = [string]$v.SerialNumber }`,
       `    elseif ($v.DeviceID) { $vol = [string]$v.DeviceID }`,
       `  }`,
-      `  $out += [PSCustomObject]@{ DriveLetter = $dl; BusType = $bus; MediaType = $media; Model = $model; VolumeId = $vol; Err = $err }`,
+      // Win32_LogicalDisk lists letters that are not volumes - a SUBST mapping
+      // enumerates here but has no Win32_Volume entry at all - and reports the
+      // serial of whatever filesystem the letter resolves to. That serial is
+      // what lets an alias be resolved to the volume actually behind it.
+      `  $fsSerial = ''`,
+      `  $ld = Get-CimInstance Win32_LogicalDisk | Where-Object { $_.DeviceID -eq ($dl + ':') }`,
+      `  if ($ld -and $ld.VolumeSerialNumber) { $fsSerial = [string]$ld.VolumeSerialNumber }`,
+      `  $out += [PSCustomObject]@{ DriveLetter = $dl; BusType = $bus; MediaType = $media; Model = $model; VolumeId = $vol; FsSerial = $fsSerial; Err = $err }`,
       `}`,
       `$out | ConvertTo-Json -Compress`
     ].join(String.fromCharCode(13, 10))
@@ -425,7 +440,8 @@ function queryDriveHardware(letters: string[]): Promise<Record<string, DriveHard
               connection: classifyBusType(String(item.BusType || '')),
               media: classifyMediaType(String(item.MediaType || '')),
               model: item.Model ? String(item.Model) : null,
-              volumeId: item.VolumeId ? String(item.VolumeId) : null
+              volumeId: item.VolumeId ? String(item.VolumeId) : null,
+              fsSerial: item.FsSerial ? String(item.FsSerial) : null
             }
             console.log(`[driveHardware] ${letter} bus=${item.BusType} media=${item.MediaType} model=${item.Model}`)
           }
@@ -469,18 +485,55 @@ async function sendDrives(): Promise<void> {
       await refreshVolumeCache(letters)
     }
 
-    const drivesWithType = drives.map((d) => ({
-      ...d,
-      ...(() => {
-        const hw = driveHardwareCache[d.name.slice(0, 2).toUpperCase()]
-        return {
-          connectionType: hw?.connection ?? 'unknown',
-          mediaType: hw?.media ?? 'unknown',
-          model: hw?.model ?? null,
-          volumeId: hw?.volumeId ?? null
-        }
-      })()
-    }))
+    // Not every drive letter is storage. Windows hands out a letter for a SUBST
+    // mapping too, and such a letter enumerates in Win32_LogicalDisk with the
+    // backing volume's name, serial, capacity and free space - because it IS
+    // that volume - while having no Win32_Volume entry of its own. Presenting it
+    // as another drive claims storage the user does not have, and the identical
+    // capacity figures look like an arithmetic bug.
+    //
+    // Resolution is by verified volume identity, never by capacity, label or
+    // letter. See driveIdentity.ts for what is and is not treated as an alias.
+    const resolved = resolveDriveLetters(
+      letters.map((letter) => ({
+        letter,
+        volumeId: driveHardwareCache[letter]?.volumeId ?? null,
+        fsSerial: driveHardwareCache[letter]?.fsSerial ?? null
+      }))
+    )
+    const byLetter = new Map(resolved.map((r) => [r.letter, r]))
+    for (const r of resolved) {
+      if (!r.independent) {
+        diag('drives', `${r.letter} is an alias of ${r.aliasOf} (same volume) - not listed as a drive`)
+      } else if (r.identityUnverified) {
+        diag('drives', `${r.letter} has no verifiable volume identity - listed, but unverified`)
+      }
+    }
+
+    const drivesWithType = drives
+      .filter((d) => byLetter.get(d.name.slice(0, 2).toUpperCase())?.independent !== false)
+      .map((d) => ({
+        ...d,
+        ...(() => {
+          const letter = d.name.slice(0, 2).toUpperCase()
+          const hw = driveHardwareCache[letter]
+          return {
+            connectionType: hw?.connection ?? 'unknown',
+            mediaType: hw?.media ?? 'unknown',
+            model: hw?.model ?? null,
+            volumeId: hw?.volumeId ?? null,
+            // So the card can say "this drive could not be verified" rather than
+            // implying its catalogue state is known.
+            identityUnverified: byLetter.get(letter)?.identityUnverified ?? false
+          }
+        })()
+      }))
+
+    // Only the letters actually presented as drives. An alias must not get its
+    // own file count either - that count belongs to the backing volume's card.
+    knownDriveLetters = new Set(
+      drivesWithType.map((d) => d.name.slice(0, 2).toUpperCase())
+    )
 
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('drives-updated', drivesWithType)
   } catch (err) {
@@ -745,11 +798,35 @@ app.whenReady().then(() => {
   // Per-letter, but the count itself is looked up by the volume currently
   // proven to be at that letter - a stale or foreign catalogue under the same
   // letter is never reported as this drive's count.
-  ipcMain.handle('get-drive-file-counts', () => {
+  // Async, and it primes identity first.
+  //
+  // This is what made every card read "Not indexed yet" on a drive that had
+  // plainly been browsed. The count for a letter is looked up by the volume
+  // proven to be AT that letter, and that identity is resolved by PowerShell
+  // shell-outs during sendDrives(). The renderer mounts and asks long before
+  // those finish, so the answer was computed against an empty volume cache -
+  // every letter resolving to null, every count 0, every card "Not indexed
+  // yet". The renderer asked once, so it never corrected itself. A cold start
+  // therefore reported an empty library for a full one, which is the one thing
+  // the drive screen must never do.
+  ipcMain.handle('get-drive-file-counts', async () => {
+    const letters = [...knownDriveLetters]
+    // Only shell out when something is actually missing, so the 3-second poll
+    // does not run PowerShell forever.
+    if (letters.some((l) => !hasCachedVolumeId(l))) {
+      await refreshVolumeCache(letters)
+    }
     const out: Record<string, number> = {}
-    for (const letter of knownDriveLetters) {
+    for (const letter of letters) {
       out[letter] = getFileCount(getCachedVolumeId(letter))
     }
+    diag(
+      'drives',
+      'file counts: ' +
+        (letters.length === 0
+          ? '(no drives enumerated yet)'
+          : letters.map((l) => `${l}=${out[l]}`).join(' '))
+    )
     return out
   })
 
