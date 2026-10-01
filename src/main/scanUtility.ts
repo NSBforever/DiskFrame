@@ -1,6 +1,7 @@
 import * as fs from 'fs'
 import { join } from 'path'
 import Database from 'better-sqlite3'
+import { isGeneratedAsset } from './validation'
 
 const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.raw', '.cr2', '.nef']
 const videoExts = ['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.wmv', '.webm']
@@ -154,6 +155,7 @@ async function executeScan(drivePath: string, scanPath: string, dbPath: string, 
           if (item.is_dir) continue
           const ext = item.ext ? item.ext.toLowerCase() : ''
           if (!allExts.includes(ext)) continue
+          if (isGeneratedAsset(item.path)) continue
 
           // A missing MFT timestamp used to fall back to Date.now(), which
           // filed the record under today. Records without a usable timestamp
@@ -225,6 +227,14 @@ async function executeScan(drivePath: string, scanPath: string, dbPath: string, 
         if (!allExts.includes(ext)) continue
 
         const fullPath = join(dir, entry.name)
+        // The app's own output is not user media. Only the watcher applied this
+        // predicate; the walk did not, so every generated thumbnail was indexed
+        // as a photo in its own right and each video and photo appeared twice -
+        // once as itself, once as a tile showing its own thumbnail (measured on
+        // a real library: 25,974 such rows, 25,873 of them exactly some other
+        // row's `thumb`). purgeGeneratedAssetRows() cleaned that up at the next
+        // launch; not creating the rows is the actual fix.
+        if (isGeneratedAsset(fullPath)) continue
         try {
           const stat = fs.statSync(fullPath)
           if (photoExts.includes(ext) && stat.size < MIN_PHOTO_SIZE) continue
