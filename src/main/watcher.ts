@@ -19,6 +19,23 @@ const MOVE_CORRELATION_WINDOW_MS = 2000
 // Quiet period before a batch of file events turns into one renderer broadcast.
 const NOTIFY_COALESCE_MS = 1500
 
+/**
+ * Quiet period per path before an add/change is acted on.
+ *
+ * chokidar supplied this as `awaitWriteFinish`. The OS reports every write to a
+ * file as its own notification, so copying a 2 GB video in produces hundreds of
+ * them - and each one would otherwise mean a statSync, a database write and
+ * possibly a thumbnail spawn, on the main process. Waiting for the writes to
+ * stop collapses those into one, and incidentally means the file is finished
+ * before its size and thumbnail are recorded.
+ */
+const WRITE_SETTLE_MS = 400
+
+/** Ceiling on paths being debounced at once, so a pathological burst of
+ *  notifications cannot grow this map without bound. Past it, further paths are
+ *  dropped - reconciliation, not this watcher, is what guarantees completeness. */
+const MAX_SETTLING = 5000
+
 interface PendingRemoval {
   path: string
   driveKey: string
@@ -29,6 +46,7 @@ export class WatcherManager {
   private watchers: Map<string, fs.FSWatcher> = new Map()
   private pendingUnlinks: Map<string, NodeJS.Timeout> = new Map()
   private recentRemovalsByIno: Map<number, PendingRemoval> = new Map()
+  private settling: Map<string, NodeJS.Timeout> = new Map()
   private mainWindow: BrowserWindow | null = null
 
   constructor(mainWindow: BrowserWindow | null = null) {
@@ -98,13 +116,7 @@ export class WatcherManager {
       // traffic on a real machine is not media, and this is also what keeps
       // the app's own thumbnail/cache churn out of the index.
       if (isWatchIgnoredPath(rel) || !isIndexableUserMedia(fullPath)) return
-      // 'rename' covers create, delete and rename alike, so what actually
-      // happened is decided by whether the path exists now.
-      if (fs.existsSync(fullPath)) {
-        void this.handleAddOrChange(fullPath, driveKey)
-      } else {
-        this.handleUnlink(fullPath, driveKey)
-      }
+      this.settle(fullPath, driveKey)
     })
 
     watcher.on('error', (err) => {
@@ -120,6 +132,33 @@ export class WatcherManager {
     })
 
     this.watchers.set(driveKey, watcher)
+  }
+
+  /**
+   * Holds a path until its notifications stop arriving, then decides what
+   * happened once. "rename" from the OS covers create, delete and rename
+   * alike, so the decision is simply whether the path exists when the dust
+   * settles - which is also the only point at which a file's final size is
+   * worth recording.
+   */
+  private settle(fullPath: string, driveKey: string): void {
+    const existing = this.settling.get(fullPath)
+    if (existing) {
+      clearTimeout(existing)
+    } else if (this.settling.size >= MAX_SETTLING) {
+      return
+    }
+    this.settling.set(
+      fullPath,
+      setTimeout(() => {
+        this.settling.delete(fullPath)
+        if (fs.existsSync(fullPath)) {
+          void this.handleAddOrChange(fullPath, driveKey)
+        } else {
+          this.handleUnlink(fullPath, driveKey)
+        }
+      }, WRITE_SETTLE_MS)
+    )
   }
 
   private handleUnlink(filePath: string, driveKey: string): void {
@@ -239,6 +278,8 @@ export class WatcherManager {
   public closeAll(): void {
     for (const watcher of this.watchers.values()) watcher.close()
     this.watchers.clear()
+    for (const timer of this.settling.values()) clearTimeout(timer)
+    this.settling.clear()
     for (const timer of this.pendingUnlinks.values()) clearTimeout(timer)
     this.pendingUnlinks.clear()
     for (const timer of this.notifyTimers.values()) clearTimeout(timer)

@@ -2358,8 +2358,6 @@ export default function App(): React.JSX.Element {
   // the grid's group headers carry raw library keys ("2026-09-10") while this
   // one keyed its groups by formatted labels, so "Select" on a group header
   // matched nothing at all.
-  const favouritesRef = useRef(favourites)
-  favouritesRef.current = favourites
 
   /**
    * Shift-range selection, resolved against the library's own ordering.
