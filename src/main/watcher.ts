@@ -1,20 +1,19 @@
-import chokidar, { FSWatcher } from 'chokidar'
 import * as fs from 'fs'
+import { join, isAbsolute } from 'path'
 import { BrowserWindow } from 'electron'
 import {
   updateFileInPlace,
   removeFileRecord,
-  getGroupedFiles,
   getFileIno,
   relinkMovedFile,
   getCachedVolumeId
 } from './scanner'
-import { isIndexableUserMedia } from './validation'
+import { isIndexableUserMedia, isWatchIgnoredPath } from './validation'
 
 // How long a removed file's inode is remembered as a "possible move" before
 // being treated as a genuine delete. Windows reports a move/rename as a plain
-// unlink+add pair (chokidar has no native rename event), so this is the
-// correlation window used to recognize them as the same file.
+// unlink+add pair, so this is the correlation window used to recognize them as
+// the same file.
 const MOVE_CORRELATION_WINDOW_MS = 2000
 
 // Quiet period before a batch of file events turns into one renderer broadcast.
@@ -27,7 +26,7 @@ interface PendingRemoval {
 }
 
 export class WatcherManager {
-  private watchers: Map<string, FSWatcher> = new Map()
+  private watchers: Map<string, fs.FSWatcher> = new Map()
   private pendingUnlinks: Map<string, NodeJS.Timeout> = new Map()
   private recentRemovalsByIno: Map<number, PendingRemoval> = new Map()
   private mainWindow: BrowserWindow | null = null
@@ -40,15 +39,32 @@ export class WatcherManager {
     this.mainWindow = window
   }
 
-  // Only the drive currently being browsed is watched. Watchers used to
-  // accumulate for every drive opened during a session, and a recursive
-  // chokidar watch over a whole volume holds an OS handle per directory - three
-  // of them left hundreds of thousands of handles live in the main process for
-  // drives nobody was looking at.
+  /**
+   * Watches one drive for live changes, using the OS's own recursive directory
+   * notifications.
+   *
+   * This used to be a recursive chokidar watch. chokidar has no way to attach
+   * without first walking the tree: it readdir+stat's every directory under the
+   * root to build its own state (ignoreInitial only suppresses the *events*,
+   * not the walk), and it does that in the main process. On a cold 2 TB
+   * external HDD that walk is minutes of filesystem I/O on the main process -
+   * started, by runScan(), at the same moment the scan utility is already
+   * saturating the same spindle. That is the confirmed cause of
+   * "DiskFrame (Not Responding)" on a first-time drive: nothing was wrong with
+   * the scan, the window simply had no event loop left to answer with.
+   *
+   * fs.watch with `recursive` maps to ReadDirectoryChangesW on Windows: the
+   * kernel reports changes under the root with no traversal and one handle, so
+   * attaching is O(1) whatever the size of the volume. Dropped events (the
+   * kernel buffer can overflow during a bulk copy) are not a correctness
+   * problem here - explicit "Check for changes" and the periodic
+   * IndexingService are the reconcilers, as they already were.
+   */
   public watchDrive(drivePath: string): void {
     const driveKey = drivePath.slice(0, 2).toUpperCase()
     if (this.watchers.has(driveKey)) return
 
+    // Only the drive currently being browsed is watched.
     for (const [key, watcher] of this.watchers.entries()) {
       if (key === driveKey) continue
       console.log(`[WatcherManager] Releasing watcher for inactive drive: ${key}`)
@@ -61,65 +77,77 @@ export class WatcherManager {
       }
     }
 
-    console.log(`[WatcherManager] Starting chokidar watcher for drive: ${drivePath}`)
+    console.log(`[WatcherManager] Watching ${drivePath} (native recursive)`)
 
-    const watcher = chokidar.watch(drivePath, {
-      ignored: [
-        /(^|[\/\\])\../, // ignore dotfiles
-        '**/node_modules/**',
-        '**/$Recycle.Bin/**',
-        '**/System Volume Information/**',
-        '**/Windows/**',
-        '**/Program Files/**',
-        // AppData is where browsers, mail and the app's own database churn
-        // constantly. Watching it produced a stream of events for files that
-        // are never media, and is what filled the index with things like
-        // "Local State", settings.dat and diskframe.db itself.
-        '**/AppData/**',
-        '**/ProgramData/**'
-      ],
-      persistent: true,
-      ignoreInitial: true,
-      depth: 6,
-      awaitWriteFinish: {
-        stabilityThreshold: 200,
-        pollInterval: 100
+    let watcher: fs.FSWatcher
+    try {
+      watcher = fs.watch(drivePath, { recursive: true, persistent: true })
+    } catch (err) {
+      // A volume that disappears between the scan starting and the watch
+      // attaching, or a filesystem with no change notifications. Browsing the
+      // cached index does not depend on this, so it is not fatal.
+      console.warn(`[WatcherManager] Could not watch ${drivePath}:`, err)
+      return
+    }
+
+    watcher.on('change', (_eventType, filename) => {
+      if (!filename) return
+      const rel = typeof filename === 'string' ? filename : filename.toString()
+      const fullPath = isAbsolute(rel) ? rel : join(drivePath, rel)
+      // Cheap reject before any stat or database work. Most notification
+      // traffic on a real machine is not media, and this is also what keeps
+      // the app's own thumbnail/cache churn out of the index.
+      if (isWatchIgnoredPath(rel) || !isIndexableUserMedia(fullPath)) return
+      // 'rename' covers create, delete and rename alike, so what actually
+      // happened is decided by whether the path exists now.
+      if (fs.existsSync(fullPath)) {
+        void this.handleAddOrChange(fullPath, driveKey)
+      } else {
+        this.handleUnlink(fullPath, driveKey)
       }
     })
 
-    watcher.on('unlink', (filePath) => this.handleUnlink(filePath, driveKey))
-    watcher.on('add', (filePath) => this.handleAddOrChange(filePath, driveKey))
-    watcher.on('change', (filePath) => this.handleAddOrChange(filePath, driveKey))
+    watcher.on('error', (err) => {
+      console.warn(`[WatcherManager] Watch error on ${driveKey}:`, err)
+      try {
+        watcher.close()
+      } catch {
+        /* already gone */
+      }
+      // Deliberately not re-attached in a loop: a drive that was unplugged
+      // would spin here forever. Re-opening the drive re-attaches.
+      this.watchers.delete(driveKey)
+    })
 
     this.watchers.set(driveKey, watcher)
   }
 
   private handleUnlink(filePath: string, driveKey: string): void {
-    if (!isIndexableUserMedia(filePath)) return
-
     if (this.pendingUnlinks.has(filePath)) {
       clearTimeout(this.pendingUnlinks.get(filePath)!)
     }
 
-    // Remember this file's last-known inode so a matching 'add' elsewhere
+    // Remember this file's last-known inode so a matching add elsewhere
     // (same volume) within the correlation window can be recognized as a
     // move/rename instead of a delete + new file.
     const ino = getFileIno(filePath)
     if (ino) {
-      this.recentRemovalsByIno.set(ino, { path: filePath, driveKey, expiresAt: Date.now() + MOVE_CORRELATION_WINDOW_MS })
+      this.recentRemovalsByIno.set(ino, {
+        path: filePath,
+        driveKey,
+        expiresAt: Date.now() + MOVE_CORRELATION_WINDOW_MS
+      })
     }
 
     const timer = setTimeout(() => {
       this.pendingUnlinks.delete(filePath)
       if (ino) this.recentRemovalsByIno.delete(ino)
 
-      // Verify if file truly does not exist on disk
       if (!fs.existsSync(filePath)) {
-        console.log(`[WatcherManager] File genuinely removed from disk after debounce: "${filePath}"`)
         removeFileRecord(filePath, getCachedVolumeId(driveKey))
         this.notifyFilesUpdated(driveKey)
       } else {
-        console.log(`[WatcherManager] File re-appeared during unlink timer (atomic replace): "${filePath}"`)
+        // Atomic replace: the file came back during the debounce.
         updateFileInPlace(filePath).then(() => this.notifyFilesUpdated(driveKey))
       }
     }, 250)
@@ -128,25 +156,19 @@ export class WatcherManager {
   }
 
   private async handleAddOrChange(filePath: string, driveKey: string): Promise<void> {
-    // Cheap reject before any stat or database work - most watcher traffic on a
-    // real machine is not media.
-    if (!isIndexableUserMedia(filePath)) return
-
-    // If pending unlink existed for this path, cancel it (coalesced replacement)
+    // If a pending unlink existed for this path, cancel it (coalesced replacement)
     if (this.pendingUnlinks.has(filePath)) {
-      console.log(`[WatcherManager] Coalescing unlink + add/change event for replaced file: "${filePath}"`)
       clearTimeout(this.pendingUnlinks.get(filePath)!)
       this.pendingUnlinks.delete(filePath)
     }
 
-    if (!fs.existsSync(filePath)) return
-
     try {
       const stat = fs.statSync(filePath)
+      if (!stat.isFile()) return
       const ino = stat.ino ? Number(stat.ino) : null
 
-      // Check whether this add's inode matches a file removed elsewhere in the
-      // last couple seconds - that's a move/rename, not a new file.
+      // Does this add's inode match a file removed elsewhere in the last
+      // couple of seconds? That is a move/rename, not a new file.
       if (ino) {
         const removal = this.recentRemovalsByIno.get(ino)
         if (removal && removal.expiresAt > Date.now() && removal.path !== filePath) {
@@ -157,7 +179,6 @@ export class WatcherManager {
           }
           const relinked = relinkMovedFile(removal.path, filePath, stat)
           if (relinked) {
-            console.log(`[WatcherManager] Detected move: "${removal.path}" -> "${filePath}" (matched by inode)`)
             this.notifyFilesUpdated(removal.driveKey)
             if (driveKey !== removal.driveKey) this.notifyFilesUpdated(driveKey)
             return
@@ -167,24 +188,25 @@ export class WatcherManager {
 
       const updated = await updateFileInPlace(filePath, stat)
       if (updated) {
-        console.log(`[WatcherManager] Successfully updated file record in-place: "${filePath}"`)
         if (this.mainWindow && !this.mainWindow.isDestroyed() && updated.thumb) {
-          this.mainWindow.webContents.send('thumb-ready', { filePath: updated.path, thumbPath: updated.thumb })
+          this.mainWindow.webContents.send('thumb-ready', {
+            filePath: updated.path,
+            thumbPath: updated.thumb
+          })
         }
         this.notifyFilesUpdated(driveKey)
       }
-    } catch (err) {
-      console.error(`[WatcherManager] Error processing add/change for ${filePath}:`, err)
+    } catch {
+      /* vanished again, or unreadable - nothing to record */
     }
   }
 
   // Every add/change/unlink used to re-query and re-broadcast the drive's
-  // entire index (measured: ~17MB of JSON for a 40k-file drive) - structured
-  // cloned across IPC and then re-grouped and re-sorted by the renderer, per
-  // file event. Copying a folder in made that fire hundreds of times back to
-  // back. Events are now coalesced into one broadcast per quiet period, and
-  // tagged as 'background' so the renderer can offer a refresh instead of
-  // rearranging the gallery under the user.
+  // entire index (measured: 682ms of synchronous SQLite + ~40k objects
+  // structured-cloned across IPC for a 41k-file drive) - per file event.
+  // Events are coalesced into one notification per quiet period, and that
+  // notification now carries no rows at all: the renderer re-reads the small
+  // group summary and only the pages it is actually showing.
   private notifyTimers: Map<string, NodeJS.Timeout> = new Map()
 
   private notifyFilesUpdated(driveKey: string): void {
@@ -197,7 +219,6 @@ export class WatcherManager {
         if (this.mainWindow && !this.mainWindow.isDestroyed()) {
           this.mainWindow.webContents.send('files-updated', {
             drive: driveKey,
-            groups: getGroupedFiles(driveKey, getCachedVolumeId(driveKey)),
             reason: 'background'
           })
         }
@@ -216,18 +237,11 @@ export class WatcherManager {
   }
 
   public closeAll(): void {
-    for (const [key, watcher] of this.watchers.entries()) {
-      watcher.close()
-      console.log(`[WatcherManager] Closed watcher for drive: ${key}`)
-    }
+    for (const watcher of this.watchers.values()) watcher.close()
     this.watchers.clear()
-    for (const timer of this.pendingUnlinks.values()) {
-      clearTimeout(timer)
-    }
+    for (const timer of this.pendingUnlinks.values()) clearTimeout(timer)
     this.pendingUnlinks.clear()
-    for (const timer of this.notifyTimers.values()) {
-      clearTimeout(timer)
-    }
+    for (const timer of this.notifyTimers.values()) clearTimeout(timer)
     this.notifyTimers.clear()
     this.recentRemovalsByIno.clear()
   }

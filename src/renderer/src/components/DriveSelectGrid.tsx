@@ -17,7 +17,6 @@ export interface Drive {
 interface DriveSelectGridProps {
   onSelectDrive: (drive: Drive) => void
   drives?: any[]
-  driveFiles?: Record<string, Record<string, any[]>>
 }
 
 // Usage-bar color anchors: flat green through 40%, interpolating to yellow at

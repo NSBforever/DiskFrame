@@ -1101,16 +1101,34 @@ export function getFileCount(volumeId?: string | null): number {
 /** A thumbnail column that does not name a real file on disk. */
 const NO_THUMB_SQL = "(thumb IS NULL OR thumb = '' OR thumb = 'NO_FILE')"
 
-export function getAllFilesWithoutThumbs(): ScannedFile[] {
+/** Ceiling on one backfill pass, so a freshly scanned 2 TB volume cannot pull
+ *  a hundred thousand rows into main-process memory in one query. The pass is
+ *  re-run (newest-first again) when it finishes, so nothing is lost. */
+export const THUMB_BACKFILL_BATCH = 2000
+
+/**
+ * Rows still owing a thumbnail, newest first.
+ *
+ * `volumeId` scopes the pass to the volume the user is actually looking at.
+ * Unscoped, finishing a scan of a large external drive meant the backfill then
+ * worked through every other drive's missing thumbnails too - spending the
+ * machine's two thumbnail slots on files nobody was looking at.
+ */
+export function getAllFilesWithoutThumbs(
+  volumeId?: string | null,
+  limit: number = THUMB_BACKFILL_BATCH
+): ScannedFile[] {
   const thumbable = thumbnailExts
   const placeholders = thumbable.map(() => '?').join(',')
+  const scope = volumeId ? 'AND volume_id = ?' : ''
+  const params: unknown[] = volumeId ? [...thumbable, volumeId] : [...thumbable]
   return db
     .prepare(
       `SELECT * FROM files
-       WHERE ${NO_THUMB_SQL} AND trashed_at IS NULL AND ext IN (${placeholders})
-       ORDER BY date DESC`
+       WHERE ${NO_THUMB_SQL} AND trashed_at IS NULL AND ext IN (${placeholders}) ${scope}
+       ORDER BY date DESC LIMIT ?`
     )
-    .all(...thumbable) as ScannedFile[]
+    .all(...(params as never[]), Math.max(1, Math.floor(limit))) as ScannedFile[]
 }
 
 /**
@@ -2275,6 +2293,30 @@ function runIncrementalSyncWorker(
 }
 
 
+/**
+ * Scan utility processes currently running, by drive.
+ *
+ * A first scan of a large external drive is minutes long. Without a handle on
+ * it there was no way to stop one: switching drives, or deciding the scan was a
+ * mistake, left it walking the volume (and writing rows) with the UI offering
+ * nothing but "wait".
+ */
+const liveScanProcesses = new Map<string, { kill: () => void }>()
+
+/** Stops an in-flight scan of this drive. Rows already committed are kept -
+ *  they are real files that were really found. Returns whether one was running. */
+export function cancelScanUtilityProcess(drivePath: string): boolean {
+  const child = liveScanProcesses.get(drivePath)
+  if (!child) return false
+  liveScanProcesses.delete(drivePath)
+  try {
+    child.kill()
+  } catch {
+    /* already gone */
+  }
+  return true
+}
+
 export function spawnScanUtilityProcess(
   drivePath: string,
   scanPath: string,
@@ -2287,6 +2329,7 @@ export function spawnScanUtilityProcess(
     console.log(`[spawnScanUtilityProcess] Spawning Electron utilityProcess for ${drivePath} (script: ${utilityScript}, volume: ${volumeId ?? 'unresolved'})`)
 
     const child = utilityProcess.fork(utilityScript, [drivePath, scanPath, dbPath, volumeId ?? ''])
+    liveScanProcesses.set(drivePath, { kill: () => child.kill() })
     let finalCount = 0
     let settled = false
 
@@ -2297,6 +2340,7 @@ export function spawnScanUtilityProcess(
     const finish = (fn: () => void): void => {
       if (settled) return
       settled = true
+      liveScanProcesses.delete(drivePath)
       try {
         child.kill()
       } catch {

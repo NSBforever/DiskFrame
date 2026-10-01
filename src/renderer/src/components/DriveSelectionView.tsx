@@ -11,13 +11,11 @@ export interface DriveInfo {
 interface DriveSelectionViewProps {
   drives: DriveInfo[]
   onDriveSelect: (driveName: string) => void
-  driveFiles?: Record<string, Record<string, any[]>>
 }
 
 export function DriveSelectionView({
   drives,
   onDriveSelect,
-  driveFiles
 }: DriveSelectionViewProps) {
   const handleSelectDrive = (drive: Drive) => {
     onDriveSelect(drive.letter)
@@ -40,7 +38,6 @@ export function DriveSelectionView({
       <DriveSelectGrid
         onSelectDrive={handleSelectDrive}
         drives={drives}
-        driveFiles={driveFiles}
       />
     </div>
   )

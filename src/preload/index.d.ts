@@ -60,6 +60,8 @@ declare global {
       scanDrive: (drivePath: string) => void
       openDrive: (drivePath: string) => void
       reconcileDrive: (drivePath: string) => void
+      /** Stops an in-flight drive scan. Rows already found are kept. */
+      cancelScan: (drivePath: string) => Promise<{ cancelled: boolean }>
       onDriveOpened: (
         callback: (data: {
           drive: string
@@ -140,7 +142,6 @@ declare global {
       onFilesUpdated: (
         callback: (payload: {
           drive: string
-          groups: Record<string, ScannedFile[]>
           /** 'initial' = the user asked for this drive. 'background' = a scan or watcher found changes. */
           reason: 'initial' | 'background'
         }) => void

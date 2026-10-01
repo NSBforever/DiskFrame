@@ -48,8 +48,33 @@ export interface Library {
   ensureRange: (start: number, end: number) => void
   /** Row for a path, if it happens to be resident. Used for in-place patches. */
   patchThumb: (path: string, thumb: string) => boolean
+  /**
+   * Index of a path in the current ordering, searching resident pages only.
+   * -1 when it is not resident. Shift-range selection only ever spans what the
+   * user can see, and what the user can see is resident by definition.
+   */
+  indexOfPath: (path: string) => number
+  /**
+   * Rows in an index range, read straight from SQLite and NOT cached.
+   *
+   * For the few things that genuinely need a list rather than a viewport:
+   * select-a-whole-group, shift-range selection, the map and the search
+   * overlay. Capped, because the point of this hook is that the renderer never
+   * holds the whole catalogue - the caller is told when it was truncated so it
+   * can say so rather than present a partial list as complete.
+   */
+  fetchRange: (
+    start: number,
+    count: number,
+    queryOverride?: LibraryQuery
+  ) => Promise<{ rows: ScannedFile[]; truncated: boolean }>
   reload: () => void
 }
+
+/** Ceiling on one fetchRange call. 5000 rows is far more than any of its
+ *  callers can usefully show, and small enough that it cannot reintroduce
+ *  "hold the whole drive in the renderer". */
+export const MAX_RANGE_ROWS = 5000
 
 function sameQuery(a: LibraryQuery | null, b: LibraryQuery | null): boolean {
   if (!a || !b) return a === b
@@ -217,6 +242,42 @@ export function useLibrary(query: LibraryQuery | null): Library {
     [scheduleRender]
   )
 
+  const indexOfPath = useCallback((path: string): number => {
+    for (const [pageIndex, page] of pagesRef.current) {
+      const within = page.findIndex((r) => r.path === path)
+      if (within !== -1) return pageIndex * PAGE_SIZE + within
+    }
+    return -1
+  }, [])
+
+  const fetchRange = useCallback(
+    async (
+      start: number,
+      count: number,
+      queryOverride?: LibraryQuery
+    ): Promise<{ rows: ScannedFile[]; truncated: boolean }> => {
+      const q = queryOverride ?? queryRef.current
+      if (!q || count <= 0) return { rows: [], truncated: false }
+      const generation = generationRef.current
+      const from = Math.max(0, Math.floor(start))
+      const wanted = Math.floor(count)
+      const take = Math.min(wanted, MAX_RANGE_ROWS)
+      const rows: ScannedFile[] = []
+      for (let off = 0; off < take; off += PAGE_SIZE) {
+        const size = Math.min(PAGE_SIZE, take - off)
+        const res = await window.api.libraryPage(q, from + off, size)
+        // The drive or filter changed while this was walking - abandon it
+        // rather than hand back rows from a query nobody is looking at.
+        if (generation !== generationRef.current) return { rows: [], truncated: false }
+        const batch = res.rows as ScannedFile[]
+        rows.push(...batch)
+        if (batch.length < size) break
+      }
+      return { rows, truncated: wanted > take }
+    },
+    []
+  )
+
   const reload = useCallback(() => {
     const q = queryRef.current
     if (!q) return
@@ -230,5 +291,16 @@ export function useLibrary(query: LibraryQuery | null): Library {
     loadSummary(q, generation)
   }, [loadSummary, resetCaches])
 
-  return { groups, total, state, pageVersion, getRow, ensureRange, patchThumb, reload }
+  return {
+    groups,
+    total,
+    state,
+    pageVersion,
+    getRow,
+    ensureRange,
+    patchThumb,
+    indexOfPath,
+    fetchRange,
+    reload
+  }
 }

@@ -122,6 +122,7 @@ import AppearanceSetting from './components/AppearanceSetting'
 import AboutConnect from './components/AboutConnect'
 import GlassSelect from './components/GlassSelect'
 import DateScrubber from './components/DateScrubber'
+import { progressiveUpdateAction, groupSelectionRange } from '../../main/progressiveLibrary'
 import { useLibrary, type LibraryGroup, type LibraryQuery } from './hooks/useLibrary'
 
 /**
@@ -543,8 +544,14 @@ const MainContentArea: React.FC<{
   selectedDrive: string | null
   drives: DriveInfo[]
   handleDriveClick: (name: string) => void
-  driveFiles?: Record<string, Record<string, ScannedFile[]>>
-  allFiles: ScannedFile[]
+  /**
+   * A bounded list of rows, for the few views that need a list rather than a
+   * viewport: the map, the globe and the search overlay. Empty unless one of
+   * them is open. `rowListTruncated` says the library is larger than this, so
+   * those views can say so instead of presenting a slice as the whole drive.
+   */
+  rowList: ScannedFile[]
+  rowListTruncated: boolean
   favourites: Set<string>
   /** Every favourite row across all drives, already filtered by the main process. */
   favRecords: ScannedFile[]
@@ -594,6 +601,8 @@ const MainContentArea: React.FC<{
   aiSearchButtonEnabled: boolean
   onAiSearchButtonChange: (enabled: boolean) => void
   libraryState: 'idle' | 'loading' | 'ready'
+  /** Discovery is still running, so every count on screen is a lower bound. */
+  discovering: boolean
   /** True once the lightweight group summary confirms this drive has files -
    *  long before the full row fetch (driveFiles) completes. Lets the grid
    *  itself appear promptly without waiting on that slower fetch. */
@@ -607,6 +616,7 @@ const MainContentArea: React.FC<{
   } | null
   driveOpened: { drive: string; indexed: number; needsInitialScan: boolean; identityUnresolved: boolean } | null
   onReconcile: () => void
+  onCancelScan: () => void
 }> = React.memo(({
   activeNav,
   activeView,
@@ -615,8 +625,8 @@ const MainContentArea: React.FC<{
   selectedDrive,
   drives,
   handleDriveClick,
-  driveFiles,
-  allFiles,
+  rowList,
+  rowListTruncated,
   favourites,
   favRecords,
   selected,
@@ -659,10 +669,12 @@ const MainContentArea: React.FC<{
   aiSearchButtonEnabled,
   onAiSearchButtonChange,
   libraryState,
+  discovering,
   librarySummaryHasData,
   runtimeMode,
   driveOpened,
-  onReconcile
+  onReconcile,
+  onCancelScan
 }) => {
   const [placesSubView, setPlacesSubView] = useState<'map' | 'globe'>('map')
   const [windowWidth, setWindowWidth] = useState(window.innerWidth)
@@ -1104,15 +1116,12 @@ const MainContentArea: React.FC<{
   // drive falls through to the full-screen "indexing" state further down.
   //
   // The grid itself only ever reads through the paginated library (getRow/
-  // ensureRange), never allFiles - so it does not actually need the full,
-  // unbounded driveFiles fetch to render. Waiting for that fetch anyway was
-  // the gap between "cached index on disk" and "grid on screen": the cheap
-  // summary (librarySummaryHasData) already knows there is something to show,
-  // long before the full row set has been read, serialized and cloned across
-  // IPC. driveFiles keeps loading in the background regardless - group
-  // select-all, shift-range-select, the search overlay and the Places
-  // map/globe still read it, and simply catch up a little after the grid does.
-  const hasFiles = allFiles.length > 0 || librarySummaryHasData
+  // ensureRange), so the group summary knowing there is at least one file is
+  // the whole condition. There is no longer a second, unbounded "all rows for
+  // this drive" fetch to wait on - that fetch was the gap between "cached index
+  // on disk" and "grid on screen", and on a large volume it was also what froze
+  // both processes.
+  const hasFiles = librarySummaryHasData
 
   const isVirtualized =
     (hasFiles || !scanning) &&
@@ -1427,7 +1436,6 @@ const MainContentArea: React.FC<{
         <DriveSelectionView
           drives={drives}
           onDriveSelect={handleDriveClick}
-          driveFiles={driveFiles}
         />
       )}
 
@@ -1437,10 +1445,17 @@ const MainContentArea: React.FC<{
       {scanning && !hasFiles && activeNav !== 'archive' && activeNav !== 'trash' && (
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', gap: '12px' }} className="view-transition-enter">
           <div style={{ fontSize: '13px', color: '#e11d2e', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '1px' }}>Indexing media on {selectedDrive}...</div>
-          <div style={{ fontSize: '10px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{scanCount} files mapped</div>
+          <div style={{ fontSize: '10px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{scanCount.toLocaleString()} files mapped</div>
           <div style={{ width: '200px', height: '2px', background: '#1c1c22', borderRadius: '0px', overflow: 'hidden' }}>
             <div style={{ height: '100%', width: '40%', background: 'linear-gradient(90deg, transparent, #e11d2e, transparent)', animation: 'shimmer 1.4s ease-in-out infinite' }} />
           </div>
+          <div style={{ fontSize: '10px', color: 'var(--app-fg-muted, #52525b)', maxWidth: '380px', textAlign: 'center', lineHeight: 1.6 }}>
+            Files appear here as they are found. An external drive is slow to read, so
+            the whole volume takes a while — you can stop and keep whatever has been found.
+          </div>
+          <button onClick={onCancelScan} className="cred-button" style={{ padding: '6px 14px' }}>
+            Stop scanning
+          </button>
         </div>
       )}
 
@@ -1459,7 +1474,7 @@ const MainContentArea: React.FC<{
         <div style={{ height: 'calc(100vh - 120px)', display: 'flex', flexDirection: 'column', gap: '10px' }} className="view-transition-enter">
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
             <div style={{ fontSize: '10px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700 }}>
-              📍 {allFiles.filter(f => f.lat !== null && f.lng !== null).length} Mapped Coordinates
+              📍 {rowList.length.toLocaleString()}{rowListTruncated || discovering ? '+' : ''} Mapped Coordinates
             </div>
             <div style={{ display: 'flex', background: 'var(--app-surface, var(--app-surface, #111113))', borderRadius: '4px', padding: '2px', border: '1px solid rgba(255,255,255,0.04)' }}>
               <button
@@ -1506,9 +1521,9 @@ const MainContentArea: React.FC<{
           </div>
           <div style={{ flex: 1, minHeight: 0 }}>
             {placesSubView === 'map' ? (
-              <MapView files={allFiles.filter(f => f.lat !== null && f.lng !== null)} onOpen={(f, list, e) => handleTileOpen(f, list, e)} />
+              <MapView files={rowList} onOpen={(f, list, e) => handleTileOpen(f, list, e)} />
             ) : (
-              <GlobeView files={allFiles} onOpen={(f, list) => handleTileOpen(f, list)} />
+              <GlobeView files={rowList} onOpen={(f, list) => handleTileOpen(f, list)} />
             )}
           </div>
         </div>
@@ -1517,7 +1532,7 @@ const MainContentArea: React.FC<{
       {/* Map View tab */}
       {!scanning && activeView === 'Map' && activeNav !== 'places' && activeNav !== 'archive' && activeNav !== 'trash' && (
         <div style={{ height: 'calc(100vh - 120px)' }} className="view-transition-enter">
-          <MapView files={allFiles} onOpen={(f, list, e) => handleTileOpen(f, list, e)} />
+          <MapView files={rowList} onOpen={(f, list, e) => handleTileOpen(f, list, e)} />
         </div>
       )}
     </div>
@@ -1532,8 +1547,6 @@ export default function App(): React.JSX.Element {
   const [scanning, setScanning] = useState(false)
   const [scanCount, setScanCount] = useState(0)
   
-  // Pruned state: keeps ONLY the active drive files to release previous drive allocations
-  const [driveFiles, setDriveFiles] = useState<Record<string, Record<string, ScannedFile[]>>>({})
   const currentDriveRef = useRef<string | null>(null)
 
   // Background changes are parked here rather than applied, so the gallery
@@ -1551,9 +1564,6 @@ export default function App(): React.JSX.Element {
     appVersion: string
     buildCommit: string
   } | null>(null)
-  // Distinguishes "still loading" from "genuinely empty" so the status bar
-  // never reports a confident 0 for data that simply has not arrived.
-  const [libraryState, setLibraryState] = useState<'idle' | 'loading' | 'ready'>('idle')
   // The group key currently under the top edge, and the one to re-anchor to
   // after a grouping change.
   const visibleKeyRef = useRef<string | null>(null)
@@ -1567,14 +1577,25 @@ export default function App(): React.JSX.Element {
     identityUnresolved: boolean
   } | null>(null)
   const [updatesPending, setUpdatesPending] = useState(false)
-  const pendingFilesRef = useRef<{ drive: string; groups: Record<string, ScannedFile[]> } | null>(null)
-  const hasFilesRef = useRef(false)
+  // True once the summary says this drive has something on screen. A background
+  // change is parked rather than applied while that is the case, so the gallery
+  // never rearranges under an active reader.
+  const hasRowsRef = useRef(false)
+  // Set as soon as the grid asks for anything past the first page. Progressive
+  // results during a first-time scan are applied automatically until then;
+  // after it, they are parked behind the "Updates available" button.
+  const scrolledRef = useRef(false)
+  const lastScanReloadRef = useRef(0)
 
   const [favourites, setFavourites] = useState<Set<string>>(new Set())
   // Full favourite rows, across every drive, already filtered of trashed
   // and hidden items by the main process.
   const [favRecords, setFavRecords] = useState<ScannedFile[]>([])
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  // Read by handlers that must not re-create themselves on every selection
+  // change (the grid re-renders every tile when onSelect's identity changes).
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
   // `index` navigates the paged library. `list` is only set by the views that
   // are not the library - favourites, trash - which hold their own arrays.
   const [lightbox, setLightbox] = useState<{ file: ScannedFile; index: number; rect?: DOMRect; list?: ScannedFile[] } | null>(null)
@@ -1714,7 +1735,6 @@ export default function App(): React.JSX.Element {
 
   // Queue to buffer thumbnail ready events, preventing multiple full re-renders
   const thumbQueueRef = useRef<{ filePath: string; thumbPath: string; tries?: number }[]>([])
-  const fileIndexRef = useRef<Map<string, ScannedFile>>(new Map())
   // Held in a ref so the drain interval (created once) always reaches the
   // current library instance without being torn down and rebuilt.
   const patchLibraryThumbRef = useRef<(path: string, thumb: string) => boolean>(() => false)
@@ -1785,27 +1805,21 @@ export default function App(): React.JSX.Element {
 
       const batchMap = new Map(batch.map(item => [item.filePath, item.thumbPath]))
 
-      // Thumbnails don't change grouping or order, so patch the file objects in place and
-      // bump a version counter instead of rebuilding (and re-sorting) the whole library.
-      // Rows live in the library's bounded page cache now, not in a
-      // renderer-wide array. Patching only fileIndexRef meant any thumbnail
-      // that arrived AFTER its page had been fetched never reached the tile -
-      // which is why slower video thumbnails stayed as placeholders while
-      // photos (already thumbed when the page was queried) looked fine.
-      const index = fileIndexRef.current
+      // Thumbnails don't change grouping or order, so patch the resident row in
+      // place and bump a version counter rather than re-querying (which would
+      // re-sort and re-anchor the grid for a picture arriving).
+      //
+      // Rows live only in the library's bounded page cache. A thumbnail for a
+      // row that is not resident has nowhere to go and nothing to repaint, so
+      // it is retried a few times (its page may still be in flight) and then
+      // dropped - the page query will read the thumb from SQLite anyway.
       let patched = false
       const unmatched: { filePath: string; thumbPath: string; tries?: number }[] = []
       for (const item of batch) {
         const thumbPath = batchMap.get(item.filePath)!
-        const inLibrary = patchLibraryThumbRef.current(item.filePath, thumbPath)
-        if (inLibrary) { patched = true; continue }
-        const f = index.get(item.filePath)
-        if (!f) {
-          const tries = (item.tries ?? 0) + 1
-          if (tries <= 10) unmatched.push({ filePath: item.filePath, thumbPath, tries })
-          continue
-        }
-        if (f.thumb !== thumbPath) { f.thumb = thumbPath; patched = true }
+        if (patchLibraryThumbRef.current(item.filePath, thumbPath)) { patched = true; continue }
+        const tries = (item.tries ?? 0) + 1
+        if (tries <= 10) unmatched.push({ filePath: item.filePath, thumbPath, tries })
       }
       if (unmatched.length > 0) thumbQueueRef.current.unshift(...unmatched.slice(0, 2000))
       if (patched) setThumbVersion(v => v + 1)
@@ -1847,33 +1861,64 @@ export default function App(): React.JSX.Element {
     const unsubFavToggle = window.api.onFavouriteToggled
       ? window.api.onFavouriteToggled(() => loadFavourites())
       : () => {}
-    const unsubProgress = window.api.onScanProgress((d) => setScanCount(d.count))
+    // Progressive first-time results.
+    //
+    // The scan utility commits to SQLite every 500 files, so rows are readable
+    // long before the walk finishes - but nothing re-read the summary, so a
+    // 2 TB first scan showed a spinner (and then a stale "0 files" next to a
+    // real group count) until the whole volume had been walked. Re-reading the
+    // cheap summary on a throttle surfaces real entries as they are found.
+    //
+    // Measured: the summary is ~230ms of synchronous main-process work on a
+    // 41k-row volume, so SCAN_RELOAD_MS keeps its duty cycle low rather than
+    // trading the old freeze for a stutter. Once the user has scrolled, updates
+    // are parked instead of applied so the gallery does not move under them.
+    const SCAN_RELOAD_MS = 2500
+    const unsubProgress = window.api.onScanProgress((d) => {
+      if (d.drive && d.drive !== currentDriveRef.current) return
+      setScanCount(d.count)
+      setScanning(true)
+      const action = progressiveUpdateAction({
+        nowMs: Date.now(),
+        lastReadMs: lastScanReloadRef.current,
+        intervalMs: SCAN_RELOAD_MS,
+        scrolled: scrolledRef.current,
+        hasRows: hasRowsRef.current
+      })
+      if (action === 'skip') return
+      lastScanReloadRef.current = Date.now()
+      if (action === 'park') {
+        setUpdatesPending(true)
+        return
+      }
+      libraryRef.current?.reload()
+    })
     const unsubComplete = window.api.onScanComplete((d) => {
       // A scan of some other drive finishing must not take over the view.
       if (d.drive !== currentDriveRef.current) return
       setScanning(false); setScanCount(d.count)
-      window.api.getFiles(d.drive)
+      // The catalogue is now complete. Re-read it unconditionally: this is the
+      // point at which the counts the status bar shows become the real ones.
+      libraryRef.current?.reload()
+      refreshTrash()
     })
-    const unsubFiles = window.api.onFilesUpdated(({ drive, groups, reason }) => {
-      // Payloads are now tagged with the drive they describe. Previously
-      // whichever payload arrived last was filed under whatever drive was on
-      // screen, so a background sync of another volume replaced the open
-      // gallery with a different drive's files.
+    // Carries no rows any more - just "this drive's catalogue changed". The
+    // renderer re-reads the small group summary and the pages it is showing.
+    const unsubFiles = window.api.onFilesUpdated(({ drive, reason }) => {
+      // Tagged with the drive it describes. Previously whichever payload
+      // arrived last was filed under whatever drive was on screen, so a
+      // background sync of another volume replaced the open gallery.
       if (!drive || drive !== currentDriveRef.current) return
 
-      const next = groups as Record<string, ScannedFile[]>
-      if (reason === 'background' && hasFilesRef.current) {
+      if (reason === 'background' && hasRowsRef.current) {
         // Something changed underneath a gallery the user is already reading.
-        // Applying it here would re-sort and re-anchor the grid mid-scroll, so
-        // it is held until they ask for it.
-        pendingFilesRef.current = { drive, groups: next }
+        // Applying it would re-sort and re-anchor the grid mid-scroll, so it is
+        // held until they ask for it.
         setUpdatesPending(true)
         return
       }
-      pendingFilesRef.current = null
       setUpdatesPending(false)
-      setDriveFiles({ [drive]: next })
-      setLibraryState('ready')
+      libraryRef.current?.reload()
       refreshTrash()
     })
     const unsubThumb = window.api.onThumbReady((d) => {
@@ -1911,9 +1956,13 @@ export default function App(): React.JSX.Element {
           if (d.drive !== currentDriveRef.current) return
           setDriveOpened(d)
           setScanning(false)
-          // A cached open is complete the moment the records land. If there are
-          // none, that is a real answer, not a loading state.
-          if (d.indexed === 0) setLibraryState('ready')
+          // The summary fired the moment the drive was selected, which can be
+          // before open-drive has resolved and cached this letter's volume
+          // identity - and a summary with no identity honestly returns nothing.
+          // Nothing re-ran it, which is exactly how the status bar came to read
+          // "0 files" beside "1,007 groupings" on a drive with 40,960 records.
+          // Identity is primed by the time this event exists, so re-read.
+          libraryRef.current?.reload()
         })
       : () => {}
 
@@ -1990,13 +2039,17 @@ export default function App(): React.JSX.Element {
 
   const handleDriveClick = (name: string): void => {
     setSelectedDrive(name); currentDriveRef.current = name
-    setScanning(true); setScanCount(0); setActiveNav('all'); setActiveView('Grid')
+    // Opening is not scanning. Flagging it as a scan made every cached open
+    // show the full-screen "Indexing media" panel for a frame, and now also
+    // flagged the catalogue as incomplete when it is not. A real scan announces
+    // itself through scan-progress below.
+    setScanning(false); setScanCount(0); setActiveNav('all'); setActiveView('Grid')
     setSelected(new Set())
     // Switching drives discards anything parked for the previous one.
-    pendingFilesRef.current = null
     setUpdatesPending(false)
-    hasFilesRef.current = false
-    setLibraryState('loading')
+    hasRowsRef.current = false
+    scrolledRef.current = false
+    lastScanReloadRef.current = 0
 
     setDriveOpened(null)
     // Favourites and trash are scoped to the drive just left - cleared here,
@@ -2016,6 +2069,15 @@ export default function App(): React.JSX.Element {
     // "Check for changes" action to reconcile.
     window.api.openDrive(name)
   }
+
+  const handleCancelScan = useCallback((): void => {
+    const drive = currentDriveRef.current
+    if (!drive) return
+    // Optimistic: the scan is over as far as the UI is concerned either way, and
+    // whatever was already committed stays browsable.
+    setScanning(false)
+    void window.api.cancelScan(drive).then(() => libraryRef.current?.reload())
+  }, [])
 
   const handleReconcile = useCallback((): void => {
     if (!selectedDrive) return
@@ -2074,6 +2136,54 @@ export default function App(): React.JSX.Element {
     [selectedDrive, galleryNav, searchQuery, groupBy, viewOrder]
   )
   const library = useLibrary(libraryQuery)
+  // Derived, not a second source of truth. It used to be its own state, set
+  // when the full-catalogue payload landed - so it said "ready" based on one
+  // query while the counts beside it came from another, which is how the status
+  // bar managed to show "0 files" and "1,007 groupings" at the same time.
+  const libraryState: 'idle' | 'loading' | 'ready' = !selectedDrive
+    ? 'idle'
+    : library.state === 'ready'
+      ? 'ready'
+      : 'loading'
+  hasRowsRef.current = library.total > 0
+
+  // Everything past the first page counts as "the user has scrolled", after
+  // which progressive scan results are parked rather than applied.
+  const libraryEnsureRange = library.ensureRange
+  const ensureRange = useCallback(
+    (start: number, end: number): void => {
+      if (start > 0) scrolledRef.current = true
+      libraryEnsureRange(start, end)
+    },
+    [libraryEnsureRange]
+  )
+
+  // The map, the globe and the search overlay are the only views that need a
+  // list of rows rather than a viewport. They get a bounded one, read on demand
+  // and only while one of them is open - never a standing copy of the drive.
+  const needsRowList = activeNav === 'places' || activeView === 'Map' || showAiOverlay
+  const geoOnly = activeNav === 'places' || activeView === 'Map'
+  const [rowList, setRowList] = useState<{ rows: ScannedFile[]; truncated: boolean }>({
+    rows: [],
+    truncated: false
+  })
+  const libraryFetchRange = library.fetchRange
+  useEffect(() => {
+    if (!needsRowList || !libraryQuery || library.state !== 'ready' || library.total === 0) {
+      setRowList({ rows: [], truncated: false })
+      return
+    }
+    let cancelled = false
+    // Places and the map want files that actually have coordinates; the search
+    // overlay wants whatever the current filter holds.
+    const q = geoOnly ? { ...libraryQuery, nav: 'places' } : libraryQuery
+    void libraryFetchRange(0, library.total, q).then((res) => {
+      if (!cancelled) setRowList(res)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [needsRowList, geoOnly, libraryQuery, libraryFetchRange, library.state, library.total])
   // The cheap summary knowing there is at least one file is enough to show
   // the grid - it does not need to wait for the slower full-row driveFiles
   // fetch. total === 0 is left alone here (falls through to the existing
@@ -2140,25 +2250,12 @@ export default function App(): React.JSX.Element {
   patchLibraryThumbRef.current = library.patchThumb
 
 
-  const groupedFiles = useMemo<Record<string, ScannedFile[]>>(
-    () => (selectedDrive && driveFiles[selectedDrive]) || {},
-    [selectedDrive, driveFiles]
-  )
-  const allFiles = useMemo(() => Object.values(groupedFiles).flat(), [groupedFiles])
-  useEffect(() => {
-    fileIndexRef.current = new Map(allFiles.map(f => [f.path, f]))
-    hasFilesRef.current = allFiles.length > 0
-  }, [allFiles])
 
   const applyPendingUpdates = useCallback((): void => {
-    const pending = pendingFilesRef.current
-    pendingFilesRef.current = null
     setUpdatesPending(false)
-    if (!pending || pending.drive !== currentDriveRef.current) return
-    setDriveFiles({ [pending.drive]: pending.groups })
+    libraryRef.current?.reload()
     refreshTrash()
   }, [refreshTrash])
-  const allFavFiles = useMemo(() => allFiles.filter(f => favourites.has(f.path)), [allFiles, favourites])
   const totalFiles = library.total
 
   // Stable reference so MagneticDock (not memoized against unrelated App
@@ -2254,99 +2351,54 @@ export default function App(): React.JSX.Element {
     else zoomTicksRef.current = 0
   }, [activeView, transitioning, switchView])
 
-  // Grouping the library is O(n log n) over every file on the drive, and it used
-  // to re-run whenever `favourites` changed - so hearting a single photo
-  // re-filtered, re-grouped and re-sorted all 40k of them before the heart even
-  // filled in. Favourites only actually affect the result in the few modes
-  // below, so the set is read through a ref and only those modes take it as a
-  // dependency.
+  // Filtering, grouping, ordering and counting all happen in SQLite now
+  // (see libraryQuery.ts). A second implementation used to live here, over a
+  // full in-renderer copy of the drive's catalogue - that copy was the thing
+  // that had to be deleted, and the two implementations had already drifted:
+  // the grid's group headers carry raw library keys ("2026-09-10") while this
+  // one keyed its groups by formatted labels, so "Select" on a group header
+  // matched nothing at all.
   const favouritesRef = useRef(favourites)
   favouritesRef.current = favourites
-  const favouritesAffectGrouping =
-    activeNav === 'favourites' ||
-    groupBy === 'favorites' ||
-    ['is:fav', 'fav:true'].includes(searchQuery.trim().toLowerCase())
-  const favouritesDep = favouritesAffectGrouping ? favourites : null
 
-  const getFiltered = useCallback((files: ScannedFile[]): ScannedFile[] => {
-    const favourites = favouritesRef.current
-    let filtered = files
-
-    // Category routing
-    if (activeNav === 'photos') {
-      filtered = filtered.filter(f => photoExts.includes(f.ext.toLowerCase()))
-    } else if (activeNav === 'videos') {
-      filtered = filtered.filter(f => videoExts.includes(f.ext.toLowerCase()))
-    } else if (activeNav === 'docs') {
-      filtered = filtered.filter(f => docExts.includes(f.ext.toLowerCase()))
-    } else if (activeNav === 'screenshots') {
-      filtered = filtered.filter(f => f.path.toLowerCase().includes('screenshot') || f.path.toLowerCase().includes('screen shot'))
-    } else if (activeNav === 'places') {
-      filtered = filtered.filter(f => f.lat !== null && f.lng !== null)
-    } else if (activeNav === 'favourites') {
-      filtered = filtered.filter(f => favourites.has(f.path))
-    } else if (activeNav === 'archive' || activeNav === 'trash') {
-      return []
-    }
-
-    // Advanced search query
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase().trim()
-      if (q === 'is:fav' || q === 'fav:true') {
-        filtered = filtered.filter(f => favourites.has(f.path))
-      } else if (q.startsWith('ext:')) {
-        const targetExt = q.slice(4).trim()
-        filtered = filtered.filter(f => f.ext.toLowerCase() === targetExt || f.ext.toLowerCase() === '.' + targetExt)
-      } else if (q.startsWith('date:')) {
-        const targetDate = q.slice(5).trim()
-        filtered = filtered.filter(f => {
-          const d = new Date(f.date)
-          const year = d.getFullYear().toString()
-          const month = d.toLocaleString('default', { month: 'long' }).toLowerCase()
-          const day = d.getDate().toString()
-          return year.includes(targetDate) || month.includes(targetDate) || day === targetDate
-        })
-      } else if (q.startsWith('camera:')) {
-        const targetCamera = q.slice(7).trim()
-        filtered = filtered.filter(f => f.path.toLowerCase().includes(targetCamera))
-      } else if (q.startsWith('loc:')) {
-        const targetLoc = q.slice(4).trim()
-        filtered = filtered.filter(f => f.path.toLowerCase().includes(targetLoc))
-      } else {
-        filtered = filtered.filter(f => f.name.toLowerCase().includes(q) || f.path.toLowerCase().includes(q))
-      }
-    }
-
-    return filtered
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeNav, favouritesDep, searchQuery])
-
-  const orderedGroupsRef = useRef<{ keys: string[]; data: Record<string, ScannedFile[]> }>({ keys: [], data: {} })
+  /**
+   * Shift-range selection, resolved against the library's own ordering.
+   *
+   * This used to index into a flattened in-renderer copy of the whole drive.
+   * The anchor and the clicked tile are both on screen, so both are in the
+   * library's resident pages; everything between them is read from SQLite in
+   * the query's order, which is the order the grid is actually showing.
+   */
   const handleSelect = useCallback((file: ScannedFile, e: React.MouseEvent): void => {
+    const anchor = lastSelectedPathRef.current
+    lastSelectedPathRef.current = file.path
+
+    if (e.shiftKey && anchor && anchor !== file.path) {
+      const lib = libraryRef.current
+      const lastIdx = lib?.indexOfPath(anchor) ?? -1
+      const currentIdx = lib?.indexOfPath(file.path) ?? -1
+      if (lib && lastIdx !== -1 && currentIdx !== -1) {
+        const shouldSelect = !selectedRef.current.has(file.path)
+        const start = Math.min(lastIdx, currentIdx)
+        const end = Math.max(lastIdx, currentIdx)
+        void lib.fetchRange(start, end - start + 1).then(({ rows }) => {
+          setSelected(prev => {
+            const next = new Set(prev)
+            for (const r of rows) {
+              if (shouldSelect) next.add(r.path); else next.delete(r.path)
+            }
+            return next
+          })
+        })
+        return
+      }
+      // The anchor has been evicted from the page cache (scrolled a long way
+      // since). Fall through to a plain toggle rather than guess a range.
+    }
+
     setSelected(prev => {
       const next = new Set(prev)
-      const isSelected = next.has(file.path)
-
-      if (e.shiftKey && lastSelectedPathRef.current) {
-        const { keys, data } = orderedGroupsRef.current
-        const allGridFiles = keys.flatMap(k => data[k] || [])
-        const lastIdx = allGridFiles.findIndex(f => f.path === lastSelectedPathRef.current)
-        const currentIdx = allGridFiles.findIndex(f => f.path === file.path)
-
-        if (lastIdx !== -1 && currentIdx !== -1) {
-          const start = Math.min(lastIdx, currentIdx)
-          const end = Math.max(lastIdx, currentIdx)
-          const rangeFiles = allGridFiles.slice(start, end + 1)
-          const shouldSelect = !isSelected
-          for (const f of rangeFiles) {
-            if (shouldSelect) next.add(f.path); else next.delete(f.path)
-          }
-        }
-      } else {
-        if (isSelected) next.delete(file.path); else next.add(file.path)
-      }
-
-      lastSelectedPathRef.current = file.path
+      if (next.has(file.path)) next.delete(file.path); else next.add(file.path)
       return next
     })
   }, [])
@@ -2456,102 +2508,41 @@ export default function App(): React.JSX.Element {
     return () => window.removeEventListener('keydown', handleGlobalKeyDown)
   }, [selected, handleBatchDelete])
 
-  // Custom Grouping Logic (Year, Month, Day, Location, Favorites)
-  const sortedGroupedData = useMemo(() => {
-    const filtered = getFiltered(allFiles)
-    const dayFmt = new Intl.DateTimeFormat(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
-    const dayKeyCache = new Map<number, string>()
-    const time = (f: ScannedFile): number => {
-      const t = Date.parse(f.date)
-      return Number.isNaN(t) ? -Infinity : t
-    }
-
-    const groups: Record<string, ScannedFile[]> = {}
-    const newest: Record<string, number> = {}
-    for (const file of filtered) {
-      let key: string
-      const t = time(file)
-      if (groupBy === 'day') {
-        if (t === -Infinity) key = 'Unknown Date'
-        else {
-          const d = new Date(t)
-          const day = d.getFullYear() * 10000 + d.getMonth() * 100 + d.getDate()
-          key = dayKeyCache.get(day) ?? ''
-          if (!key) { key = dayFmt.format(t); dayKeyCache.set(day, key) }
-        }
-      } else if (groupBy === 'month') {
-        key = `${file.month || 'Unknown'} ${file.year || ''}`.trim()
-      } else if (groupBy === 'year') {
-        key = file.year || 'Unknown Year'
-      } else if (groupBy === 'location') {
-        key = file.lat != null && file.lng != null
-          ? `📍 Coords (${Math.round(file.lat * 2) / 2}, ${Math.round(file.lng * 2) / 2})`
-          : 'No Location Info'
-      } else {
-        key = favouritesRef.current.has(file.path) ? '❤️ Favourites' : 'Other Files'
-      }
-      const g = groups[key]
-      if (g) g.push(file); else groups[key] = [file]
-      if (!(key in newest) || t > newest[key]) newest[key] = t
-    }
-
-    // Newest first, inside and across groups; undated groups go last.
-    for (const key in groups) {
-      if (groups[key].length > 1) groups[key].sort((a, b) => time(b) - time(a) || a.name.localeCompare(b.name))
-    }
-    const keys = Object.keys(groups).sort((a, b) => {
-      const d = newest[b] - newest[a]
-      return Number.isNaN(d) ? 0 : d || a.localeCompare(b)
-    })
-
-    // Reverse (both group order and items within each group) rather than
-    // re-deriving a separate comparator - the tie-break above is already
-    // deterministic, so reversing it stays deterministic.
-    if (viewOrder === 'reverse') {
-      keys.reverse()
-      for (const key in groups) groups[key].reverse()
-    }
-
-    return { keys, data: groups }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allFiles, groupBy, favouritesDep, getFiltered, viewOrder])
-  orderedGroupsRef.current = sortedGroupedData
-
   // Day bulk select & contiguous shift click
   const lastSelectedGroupRef = useRef<string | null>(null)
 
+  /**
+   * "Select" on a group header, resolved from the library summary.
+   *
+   * Each summary group carries its offset and count in the current ordering, so
+   * the group's rows are one bounded range read - no in-renderer copy of the
+   * catalogue, and the keys now match: the header hands back the library's own
+   * group key, which is what this looks up. (The previous version looked raw
+   * keys up in a map keyed by formatted labels, so it selected nothing.)
+   */
   const handleGroupCheckboxClick = useCallback((groupKey: string, e: React.MouseEvent) => {
-    const groupFiles = sortedGroupedData.data[groupKey] || []
-    const allSel = groupFiles.every(f => selected.has(f.path))
-    const targetState = !allSel
-
-    setSelected(prev => {
-      const next = new Set(prev)
-
-      if (e.shiftKey && lastSelectedGroupRef.current) {
-        const startIdx = sortedGroupedData.keys.indexOf(lastSelectedGroupRef.current)
-        const endIdx = sortedGroupedData.keys.indexOf(groupKey)
-        if (startIdx !== -1 && endIdx !== -1) {
-          const min = Math.min(startIdx, endIdx)
-          const max = Math.max(startIdx, endIdx)
-          const keysInRange = sortedGroupedData.keys.slice(min, max + 1)
-          for (const key of keysInRange) {
-            const filesInRange = sortedGroupedData.data[key] || []
-            for (const f of filesInRange) {
-              if (targetState) next.add(f.path); else next.delete(f.path)
-            }
-          }
-        }
-      } else {
-        for (const f of groupFiles) {
-          if (targetState) next.add(f.path); else next.delete(f.path)
-        }
-      }
-
-      return next
-    })
+    const lib = libraryRef.current
+    if (!lib) return
+    const range = groupSelectionRange(lib.groups, groupKey, lastSelectedGroupRef.current, e.shiftKey)
+    if (!range) return
     lastSelectedGroupRef.current = groupKey
-  }, [sortedGroupedData, selected])
+    const { start, count } = range
+
+    void lib.fetchRange(start, count).then(({ rows, truncated }) => {
+      if (truncated) setToastMsg(`Selected the first ${rows.length.toLocaleString()} of ${count.toLocaleString()} files`)
+      setSelected(prev => {
+        // "All of this group already selected" has to be decided from the rows
+        // actually read, not from a count - a truncated read must not report
+        // the whole group as selected.
+        const allSel = rows.length > 0 && rows.every(r => prev.has(r.path))
+        const next = new Set(prev)
+        for (const r of rows) {
+          if (allSel) next.delete(r.path); else next.add(r.path)
+        }
+        return next
+      })
+    })
+  }, [])
 
   // Drag and Drop tiles
   const handleDragStart = useCallback((file: ScannedFile, e: React.DragEvent) => {
@@ -2782,8 +2773,8 @@ export default function App(): React.JSX.Element {
               <div key={item.id} onClick={() => setActiveNav(item.id)} className={`snav ${activeNav === item.id ? 'active' : ''}`}>
                 <span style={{ display: 'flex', alignItems: 'center', marginRight: '12px', color: activeNav === item.id ? '#e11d2e' : 'var(--app-fg-dim, #8a8a8f)' }}>{item.icon}</span>
                 <span style={{ flex: 1, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{item.label}</span>
-                {item.id === 'favourites' && allFavFiles.length > 0 && (
-                  <span style={{ fontSize: '9px', color: 'var(--app-fg, #f2f2f0)', background: 'rgba(225, 29, 46, 0.25)', borderRadius: '2px', padding: '2px 5px', fontWeight: 700 }}>{allFavFiles.length}</span>
+                {item.id === 'favourites' && favCount > 0 && (
+                  <span style={{ fontSize: '9px', color: 'var(--app-fg, #f2f2f0)', background: 'rgba(225, 29, 46, 0.25)', borderRadius: '2px', padding: '2px 5px', fontWeight: 700 }}>{favCount}</span>
                 )}
                 {item.id === 'trash' && trashCount > 0 && (
                   <span style={{ fontSize: '9px', color: 'var(--app-fg, #f2f2f0)', background: '#e11d2e', borderRadius: '2px', padding: '2px 5px', fontWeight: 700 }}>{trashCount}</span>
@@ -2951,8 +2942,8 @@ export default function App(): React.JSX.Element {
           selectedDrive={selectedDrive}
           drives={drives}
           handleDriveClick={handleDriveClick}
-          driveFiles={driveFiles}
-          allFiles={allFiles}
+          rowList={rowList.rows}
+          rowListTruncated={rowList.truncated}
           favourites={favourites}
           selected={selected}
           deletingPaths={deletingPaths}
@@ -2974,7 +2965,7 @@ export default function App(): React.JSX.Element {
           libraryGroups={library.groups}
           getRow={library.getRow}
           pageVersion={library.pageVersion}
-          ensureRange={library.ensureRange}
+          ensureRange={ensureRange}
           yearPreviews={yearPreviews}
           libraryQuery={libraryQuery}
           onFoldersRelinked={handleFoldersRelinked}
@@ -2996,10 +2987,12 @@ export default function App(): React.JSX.Element {
           aiSearchButtonEnabled={aiSearchButtonEnabled}
           onAiSearchButtonChange={handleAiSearchButtonChange}
           libraryState={libraryState}
+          discovering={scanning}
           librarySummaryHasData={librarySummaryHasData}
           runtimeMode={runtimeMode}
           driveOpened={driveOpened}
           onReconcile={handleReconcile}
+          onCancelScan={handleCancelScan}
         />
 
         {/* Status bar - only rendered after a drive is selected */}
@@ -3009,9 +3002,9 @@ export default function App(): React.JSX.Element {
             {/* While the library is still arriving these counts are unknown, not
                 zero. Printing 0 made a loading gallery indistinguishable from an
                 empty one - and from a diagnostic database with nothing in it. */}
-            <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: 'var(--app-fg, #f2f2f0)', fontWeight: 700 }}>{libraryState === 'ready' ? totalFiles.toLocaleString() : '—'}</span> files</div>
+            <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: 'var(--app-fg, #f2f2f0)', fontWeight: 700 }}>{libraryState === 'ready' ? totalFiles.toLocaleString() + (scanning ? '+' : '') : '—'}</span> files</div>
             {isGalleryPage && (
-            <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: 'var(--app-fg, #f2f2f0)', fontWeight: 700 }}>{libraryState === 'ready' ? sortedGroupedData.keys.length : '—'}</span> groupings</div>
+            <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: 'var(--app-fg, #f2f2f0)', fontWeight: 700 }}>{libraryState === 'ready' ? library.groups.length.toLocaleString() + (scanning ? '+' : '') : '—'}</span> groupings</div>
             )}
             <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px' }}><span style={{ color: '#e11d2e', fontWeight: 700 }}><Heart size={8} fill="#e11d2e" style={{ display: 'inline', verticalAlign: 'middle', marginRight: '3px' }} /> {libraryState === 'ready' ? favCount : '—'}</span> favourites{offlineFavCount > 0 && (
                 <span title="Favourites on a drive that is not connected. They are kept and counted, not deleted."> ({offlineFavCount} offline)</span>
@@ -3052,6 +3045,18 @@ export default function App(): React.JSX.Element {
             )}
             {/* Reconciliation is a deliberate action now. Opening a drive only
                 reads the cached index. */}
+            {scanning && isGalleryPage && (
+              <div
+                title="Still discovering files on this drive. Counts and ordering are a partial view and will change as more are found."
+                style={{
+                  fontSize: '9px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px',
+                  color: 'var(--app-bg, #0a0a0c)', background: '#f5c542', borderRadius: '2px',
+                  padding: '3px 10px', whiteSpace: 'nowrap'
+                }}
+              >
+                Incomplete — discovering
+              </div>
+            )}
             {selectedDrive && !scanning && isGalleryPage && (
               <button
                 onClick={handleReconcile}
@@ -3240,7 +3245,7 @@ export default function App(): React.JSX.Element {
             {/* Search Agent content */}
             <div style={{ flex: 1, minHeight: 0, padding: '20px', overflowY: 'auto' }}>
               <SearchAgent
-                files={allFiles}
+                files={rowList.rows}
                 favourites={favourites}
                 onOpen={(f, list) => {
                   setShowAiOverlay(false)

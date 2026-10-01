@@ -17,6 +17,7 @@ const api = {
   openDrive: (p: string) => ipcRenderer.send('open-drive', p),
   /** Explicit reconciliation, separate from opening. */
   reconcileDrive: (p: string) => ipcRenderer.send('reconcile-drive', p),
+  cancelScan: (p: string): Promise<{ cancelled: boolean }> => ipcRenderer.invoke('cancel-scan', p),
   onDriveOpened: (
     cb: (d: { drive: string; indexed: number; needsInitialScan: boolean; identityUnresolved: boolean }) => void
   ) => {
@@ -60,7 +61,9 @@ const api = {
       ipcRenderer.removeListener('scan-complete', listener)
     }
   },
-  onFilesUpdated: (cb: (payload: { drive: string; groups: Record<string, unknown[]>; reason: string }) => void) => {
+  // Carries no rows - just which drive changed and why. The renderer re-reads
+  // the library through librarySummary/libraryPage.
+  onFilesUpdated: (cb: (payload: { drive: string; reason: string }) => void) => {
     const listener = (_e: unknown, g: any) => cb(g)
     ipcRenderer.on('files-updated', listener)
     return () => {

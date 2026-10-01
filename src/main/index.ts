@@ -8,12 +8,13 @@ import { getDiskInfo } from 'node-disk-info'
 import ffmpegPath from 'ffmpeg-static'
 import {
   spawnScanUtilityProcess,
+  cancelScanUtilityProcess,
   ScannedFile,
-  getGroupedFiles,
   toggleFavourite,
   getFavourites,
   getFileCount,
   getAllFilesWithoutThumbs,
+  THUMB_BACKFILL_BATCH,
   generateThumbForFile,
   updateThumb,
   hideFile,
@@ -140,6 +141,36 @@ let memoryLogInterval: ReturnType<typeof setInterval> | null = null
 // stop promptly on quit instead of holding the process alive mid-file.
 let isQuitting = false
 
+/**
+ * How much on-screen thumbnail work is outstanding.
+ *
+ * Set once the viewport thumbnail pump is constructed (inside whenReady). The
+ * drive-wide backfill polls it and yields, so the two thumbnail slots always go
+ * to tiles the user is looking at before they go to the rest of the volume -
+ * on a first-time 2 TB drive the backfill otherwise holds both slots for the
+ * entire pass and visible tiles stay as placeholders.
+ */
+let viewportThumbsOutstanding = (): number => 0
+
+/**
+ * Worst main-process event-loop delay seen since the last report.
+ *
+ * "Not Responding" is an event-loop property, not a memory or query-time one:
+ * Windows paints that title bar when the window stops pumping messages. A
+ * timer that should fire every 250ms and fires late by N tells us directly how
+ * long the main process was unavailable, which is the number this fix is
+ * actually about - a fast query that blocks for 700ms still freezes the window.
+ */
+let worstLoopLagMs = 0
+let lastLoopTick = Date.now()
+const LOOP_TICK_MS = 250
+setInterval(() => {
+  const now = Date.now()
+  const lag = now - lastLoopTick - LOOP_TICK_MS
+  lastLoopTick = now
+  if (lag > worstLoopLagMs) worstLoopLagMs = lag
+}, LOOP_TICK_MS).unref()
+
 // Per-process memory, logged periodically so a reported "app uses N GB" can be
 // traced to a specific process (renderer/GPU/main/utility) instead of guessed at.
 function logMemoryMetrics(): void {
@@ -148,19 +179,31 @@ function logMemoryMetrics(): void {
     .map((m) => `${m.type}${m.type === 'Utility' ? `(${m.name ?? m.serviceName ?? '?'})` : ''}=${Math.round(m.memory.workingSetSize / 1024)}MB`)
     .join(' ')
   const total = metrics.reduce((sum, m) => sum + m.memory.workingSetSize, 0)
-  console.log(`[memory] total=${Math.round(total / 1024)}MB | ${parts}`)
+  const lag = Math.max(0, worstLoopLagMs)
+  worstLoopLagMs = 0
+  console.log(`[memory] total=${Math.round(total / 1024)}MB | ${parts} | main-loop-worst-stall=${lag}ms`)
 }
 
 // Every files-updated payload says which drive it describes and whether the
 // user asked for it. The renderer applies 'initial' immediately and offers
 // 'background' as a refresh, so an unrelated drive's sync can neither replace
 // the open gallery nor rearrange it mid-scroll.
+/**
+ * Tells the renderer that this drive's catalogue has changed. Carries no rows.
+ *
+ * It used to carry getGroupedFiles(drive) - every row for the volume, grouped.
+ * Measured on the reporter's 2 TB drive (41k indexed files): 682ms of
+ * synchronous SQLite work on the main process, then ~41k objects
+ * structured-cloned across IPC, then flattened into an array and a Map in the
+ * renderer. That fired on every open, every scan completion, every background
+ * sync and every watcher quiet period, and it froze both processes for the
+ * duration. The renderer reads the library through the paginated
+ * library-summary/library-page handlers; this only needs to say "re-read".
+ */
 function sendFilesUpdated(drive: string, reason: 'initial' | 'background' | 'index-folder'): void {
   if (!mainWindow || mainWindow.isDestroyed()) return
-  const volumeId = drive === SAMPLE_DRIVE_KEY ? null : getCachedVolumeId(drive)
   mainWindow.webContents.send('files-updated', {
     drive,
-    groups: getGroupedFiles(drive, volumeId),
     reason
   })
 }
@@ -438,14 +481,14 @@ async function sendDrives(): Promise<void> {
   }
 }
 
-async function generateThumbsForDrive(_drivePath: string): Promise<void> {
-  await backfillAllMissingThumbnails()
+async function generateThumbsForDrive(drivePath: string): Promise<void> {
+  await backfillAllMissingThumbnails(getCachedVolumeId(drivePath))
 }
 
-async function backfillAllMissingThumbnails(): Promise<void> {
+async function backfillAllMissingThumbnails(volumeId?: string | null): Promise<void> {
   let files: ScannedFile[] = []
   try {
-    files = getAllFilesWithoutThumbs()
+    files = getAllFilesWithoutThumbs(volumeId)
   } catch (err) {
     console.error('[thumb:backfill:error] Failed to fetch missing thumbnail rows:', err)
     return
@@ -470,6 +513,13 @@ async function backfillAllMissingThumbnails(): Promise<void> {
   async function worker() {
     while (idx < files.length) {
       if (isQuitting) return
+      // What is on screen comes first. Without this the backfill holds both
+      // thumbnail slots for the whole pass and a tile the user is looking at
+      // waits behind tens of thousands of offscreen files.
+      while (viewportThumbsOutstanding() > 0) {
+        if (isQuitting) return
+        await new Promise((r) => setTimeout(r, 150))
+      }
       const file = files[idx++]
       if (!file) break
 
@@ -511,6 +561,15 @@ async function backfillAllMissingThumbnails(): Promise<void> {
   console.log(
     `[thumb:backfill:complete] Summary: ${successCount} succeeded, ${failCount} failed, ${skipCount} skipped (file not found on disk).`
   )
+
+  // The query is capped (THUMB_BACKFILL_BATCH) so a large volume cannot pull
+  // its whole backlog into memory at once. A full batch means there is more
+  // behind it: continue, newest-first again, until a short batch comes back.
+  // Nothing progressed (every row skipped or failed) ends the pass instead of
+  // re-reading the same rows forever.
+  if (files.length >= THUMB_BACKFILL_BATCH && successCount > 0 && !isQuitting) {
+    await backfillAllMissingThumbnails(volumeId)
+  }
 }
 
 app.whenReady().then(() => {
@@ -1007,6 +1066,16 @@ app.whenReady().then(() => {
     runScan(drivePath, { forceFull: false }).catch((err) => console.error('[scan-drive]', err))
   })
 
+  // Discovery has to be stoppable, not just waitable. Rows already committed
+  // are kept: they are files that were really found.
+  ipcMain.handle('cancel-scan', (_event, drivePath: unknown) => {
+    const drive = normalizeDrive(drivePath)
+    if (!drive) return { cancelled: false }
+    const cancelled = cancelScanUtilityProcess(drive)
+    diag('scan', `${drive}: cancel requested (${cancelled ? 'stopped' : 'nothing running'})`)
+    return { cancelled }
+  })
+
   ipcMain.on('rescan-drive', (_event, drivePath: string) => {
     runScan(drivePath, { forceFull: true }).catch((err) => console.error('[rescan-drive]', err))
   })
@@ -1174,6 +1243,9 @@ app.whenReady().then(() => {
   //     between files rather than finishing work nobody is looking at
   const thumbInFlight = new Set<string>()
   const thumbFailed = new Set<string>()
+  // Published so the drive-wide backfill can stand aside while any of this is
+  // outstanding (see viewportThumbsOutstanding).
+  viewportThumbsOutstanding = () => thumbPending.length + thumbInFlight.size
   // Pending viewport work. A new request REPLACES this - work for a screen the
   // user has scrolled past is dropped - but never touches what is already
   // being generated.

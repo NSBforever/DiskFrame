@@ -73,6 +73,40 @@ export function isIndexableUserMedia(filePath: string): boolean {
   return isIndexableMedia(filePath) && !isGeneratedAsset(filePath)
 }
 
+/**
+ * Directories whose churn is never user media, however media-shaped the
+ * filenames look.
+ *
+ * The filesystem watcher used to get this from chokidar's `ignored` globs. It
+ * now watches through the OS's own recursive notifications (which have no
+ * filtering of their own), so the same exclusions live here - as a plain
+ * segment match rather than a glob, because this runs once per notification.
+ * AppData in particular is where browsers, mail clients and this app's own
+ * database churn constantly, and it is full of .png and .jpg cache entries.
+ */
+const WATCH_IGNORED_SEGMENTS = [
+  'appdata',
+  'programdata',
+  'windows',
+  'program files',
+  'program files (x86)',
+  '$recycle.bin',
+  'system volume information',
+  'node_modules'
+]
+
+export function isWatchIgnoredPath(filePath: string): boolean {
+  if (typeof filePath !== 'string' || !filePath) return true
+  const segments = filePath.toLowerCase().replace(/\//g, '\\').split('\\')
+  for (const seg of segments) {
+    // Dotfiles and dot-directories (.git, .cache) are skipped the same way the
+    // scan pass skips them.
+    if (seg.startsWith('.') && seg.length > 1) return true
+    if (WATCH_IGNORED_SEGMENTS.includes(seg)) return true
+  }
+  return false
+}
+
 /** Absolute local paths only - no UNC shares, no relative or traversal input. */
 export function isSafeLocalPath(value: unknown): value is string {
   if (typeof value !== 'string' || value.length === 0 || value.length > 4096) return false
