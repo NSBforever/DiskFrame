@@ -1240,12 +1240,41 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
     }
   }
 
-  // Ask for exactly the pages covering what is on screen. Requests for a
-  // superseded query are dropped by the library hook, so fast scrolling and
-  // drive switches cannot paint stale rows.
+  // ── Prefetch band ──
+  //
+  // A band of PREFETCH_ROWS rows above and below the mounted range. Nothing in
+  // it is mounted - the mount overscan stays at 2 rows, because every mounted
+  // tile is a decoded bitmap the renderer holds - but its rows are made
+  // resident and its thumbnails are generated at lower priority, so scrolling
+  // into them finds pictures rather than placeholders.
+  const PREFETCH_ROWS = 30
+  const bandCells = PREFETCH_ROWS * layout.cols
+  const prefetchStart = Math.max(0, rangeStart - bandCells)
+  const prefetchEnd = rangeEnd + bandCells
+
+  // Ask for the pages covering the band, not just what is on screen. Eviction
+  // is distance-based against this same window, so a page about to be read is
+  // never the one dropped. Requests for a superseded query are discarded by the
+  // library hook, so fast scrolling and drive switches cannot paint stale rows.
   useEffect(() => {
-    if (rangeEnd >= rangeStart) ensureRange(rangeStart, rangeEnd)
-  }, [rangeStart, rangeEnd, ensureRange])
+    if (rangeEnd >= rangeStart) ensureRange(prefetchStart, prefetchEnd)
+  }, [prefetchStart, prefetchEnd, rangeStart, rangeEnd, ensureRange])
+
+  // Thumbless paths in the band, excluding what is already on screen (those are
+  // the visible tier). Reads only resident rows - a row whose page has not
+  // arrived simply is not asked for yet, and the next pass picks it up.
+  const prefetchThumblessRef = useRef<string[]>([])
+  prefetchThumblessRef.current = (() => {
+    if (rangeEnd < rangeStart) return []
+    const onScreen = new Set(visibleThumblessPaths)
+    const out: string[] = []
+    for (let i = prefetchStart; i <= prefetchEnd; i++) {
+      if (i >= rangeStart && i <= rangeEnd) continue
+      const r = getRow(i)
+      if (r && !r.thumb && !onScreen.has(r.path)) out.push(r.path)
+    }
+    return out
+  })()
 
   // Bump thumbnail generation for whatever's on screen right now ahead of the
   // background backfill queue, instead of waiting for it to reach these files
@@ -1266,8 +1295,11 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
     const t = window.setTimeout(() => {
       // Read at fire time: thumbnails that landed during the debounce are
       // already excluded, without that exclusion re-triggering the effect.
-      const paths = visibleThumblessRef.current
-      if (paths.length) window.api.prioritizeThumbnails(paths).catch(() => {})
+      const visible = visibleThumblessRef.current
+      const prefetch = prefetchThumblessRef.current
+      if (visible.length || prefetch.length) {
+        window.api.prioritizeThumbnails({ visible, prefetch }).catch(() => {})
+      }
     }, 250)
     return () => window.clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps

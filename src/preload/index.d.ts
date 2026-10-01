@@ -186,7 +186,12 @@ declare global {
       overlayAction: (action: string) => void
       setOverlayInteractive: (on: boolean) => void
       onOverlayAction: (cb: (action: string) => void) => () => void
-      prioritizeThumbnails: (filePaths: string[]) => Promise<(string | null)[]>
+      prioritizeThumbnails: (req: {
+        /** Tiles on screen now (plus the mount overscan). Generated first. */
+        visible: string[]
+        /** A wider band above and below, not mounted. Generated after `visible`. */
+        prefetch: string[]
+      }) => Promise<string[]>
       pickFolder: () => Promise<string | null>
       indexFolder: (
         folder: string,

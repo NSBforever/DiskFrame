@@ -140,7 +140,10 @@ const api = {
   setHoverPreviews: (enabled: boolean) => ipcRenderer.invoke('set-hover-previews', enabled),
   getAiSearchButton: () => ipcRenderer.invoke('get-ai-search-button'),
   setAiSearchButton: (enabled: boolean) => ipcRenderer.invoke('set-ai-search-button', enabled),
-  prioritizeThumbnails: (filePaths: string[]) => ipcRenderer.invoke('prioritize-thumbnails', filePaths),
+  // Two tiers: tiles on screen, then the band being scrolled towards. The band
+  // must never be able to displace what is visible - see thumbQueue.ts.
+  prioritizeThumbnails: (req: { visible: string[]; prefetch: string[] }) =>
+    ipcRenderer.invoke('prioritize-thumbnails', req),
   pickFolder: () => ipcRenderer.invoke('pick-folder'),
   indexFolder: (folder: string, maxFiles?: number) => ipcRenderer.invoke('index-folder', folder, maxFiles),
   cancelIndexFolder: () => ipcRenderer.invoke('cancel-index-folder'),

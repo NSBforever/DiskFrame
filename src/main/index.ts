@@ -87,6 +87,13 @@ import {
   THUMB_NO_ACCESS
 } from './validation'
 import { parseSafeMode, subsystemEnabled } from './runtimeMode'
+import {
+  EMPTY_QUEUE,
+  mergeThumbRequest,
+  nextThumb,
+  queuedCount,
+  type ThumbQueueState
+} from './thumbQueue'
 
 const safeMode = parseSafeMode(process.argv, process.env)
 
@@ -880,19 +887,35 @@ app.whenReady().then(() => {
       // expensive and almost all of it is system files we skip anyway.
       const scanPath = drivePath === 'C:' ? homedir() : `${drivePath}\\`
 
-      // Resolved and cached BEFORE the watcher starts, not after: a chokidar
-      // event can fire the instant watchDrive() returns, and it reads this
-      // same cache to stamp volume_id on whatever it sees. Priming it first
-      // closes the gap where an add/change could tag a brand new device's
-      // file with a previous device's identity.
+      // Resolved and cached before anything can record a row for this drive.
+      // The scan utility is handed this identity directly, and the watcher
+      // (attached further down, after discovery) reads it from this same cache
+      // to stamp volume_id on whatever it sees. Priming it first closes the gap
+      // where a row could be tagged with a previous device's identity.
       const liveVolumeId = await getVolumeId(drivePath)
       primeVolumeCache(drivePath, liveVolumeId)
       if (liveVolumeId) reconcileDriveLetterForVolume(liveVolumeId, drivePath)
 
-      if (subsystemEnabled(safeMode, 'watcher')) {
+      /**
+       * Live change notifications, attached only once discovery is done.
+       *
+       * Nothing about browsing a drive needs a watcher: opening one has never
+       * attached it, and during a first scan the walk that is happening right
+       * now is what finds the files, so a watcher would at best duplicate it.
+       * Attaching it first was how a minutes-long chokidar traversal of the
+       * volume root got in front of the first results; it is cheap now
+       * (fs.watch attaches through the kernel in single-digit milliseconds),
+       * but "cheap" is not a reason to put anything at all ahead of showing
+       * the user their files. It runs after, and never blocks first results.
+       */
+      const attachWatcher = (): void => {
+        if (!subsystemEnabled(safeMode, 'watcher')) {
+          diag('safe-mode', `watcher suppressed for ${scanPath}`)
+          return
+        }
+        const t = Date.now()
         watcherManager.watchDrive(scanPath)
-      } else {
-        diag('safe-mode', `watcher suppressed for ${scanPath}`)
+        diag('watcher', `attached to ${scanPath} in ${Date.now() - t}ms`)
       }
 
       if (!opts.forceFull && liveVolumeId && getFileCount(liveVolumeId) > 0) {
@@ -902,6 +925,7 @@ app.whenReady().then(() => {
           }
         })
         if (!incResult.fullScanNeeded) {
+          attachWatcher()
           if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('scan-complete', { count: incResult.count, drive: drivePath })
           }
@@ -928,6 +952,7 @@ app.whenReady().then(() => {
           }
         }
       )
+      attachWatcher()
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('scan-complete', { count, drive: drivePath })
       }
@@ -1279,11 +1304,10 @@ app.whenReady().then(() => {
   const thumbFailed = new Set<string>()
   // Published so the drive-wide backfill can stand aside while any of this is
   // outstanding (see viewportThumbsOutstanding).
-  viewportThumbsOutstanding = () => thumbPending.length + thumbInFlight.size
-  // Pending viewport work. A new request REPLACES this - work for a screen the
-  // user has scrolled past is dropped - but never touches what is already
-  // being generated.
-  let thumbPending: string[] = []
+  viewportThumbsOutstanding = () => queuedCount(thumbQueue) + thumbInFlight.size
+  // Pending viewport work, in two tiers - what is on screen, then the band the
+  // user is scrolling towards. See thumbQueue.ts for why they are not one list.
+  let thumbQueue: ThumbQueueState = EMPTY_QUEUE
   let thumbPumping = false
 
   /**
@@ -1305,7 +1329,7 @@ app.whenReady().then(() => {
       const workers = Array.from({ length: CONCURRENCY }, async () => {
         for (;;) {
           if (isQuitting) return
-          const p = thumbPending.shift()
+          const p = nextThumb(thumbQueue)
           if (p === undefined) return
           if (thumbInFlight.has(p) || thumbFailed.has(p)) continue
           thumbInFlight.add(p)
@@ -1372,24 +1396,27 @@ app.whenReady().then(() => {
       thumbPumping = false
       // A request that arrived while the last worker was finishing would have
       // seen thumbPumping true and returned; pick that work up now.
-      if (thumbPending.length > 0) void pumpThumbs()
+      if (queuedCount(thumbQueue) > 0) void pumpThumbs()
     }
   }
 
-  /** Newest viewport first, everything still owed behind it, nothing dropped. */
-  const MAX_PENDING = 600
-  ipcMain.handle('prioritize-thumbnails', async (_event, rawPaths: string[]) => {
-    // One screen plus a small buffer. A caller asking for thousands is not
-    // describing anything that is actually visible.
-    const paths = safePathList(rawPaths, 200)
+  /**
+   * What the grid wants thumbnails for: the tiles on screen, and the band it is
+   * scrolling towards. Ordering and bounds live in thumbQueue.ts.
+   *
+   * Accepts the older bare-array form too, so a renderer from a previous build
+   * talking to this main process still gets its visible tiles.
+   */
+  ipcMain.handle('prioritize-thumbnails', async (_event, raw: unknown) => {
     if (thumbFailed.size > 5000) thumbFailed.clear()
-    // Merge rather than replace. Replacing meant a later request silently
-    // discarded whatever it displaced, and since the grid only re-requests
-    // when the visible set *changes*, those tiles were never asked for again -
-    // measured as a plateau with 52 tiles still pending on a settled screen.
-    const wanted = paths.filter((p) => !thumbInFlight.has(p) && !thumbFailed.has(p))
-    const merged = [...wanted, ...thumbPending.filter((p) => !wanted.includes(p))]
-    thumbPending = merged.slice(0, MAX_PENDING)
+    const payload = Array.isArray(raw)
+      ? { visible: raw, prefetch: [] }
+      : ((raw ?? {}) as { visible?: unknown; prefetch?: unknown })
+    const request = {
+      visible: safePathList(payload.visible, 300),
+      prefetch: safePathList(payload.prefetch, 900)
+    }
+    thumbQueue = mergeThumbRequest(thumbQueue, request, (p) => thumbInFlight.has(p) || thumbFailed.has(p))
     void pumpThumbs()
     return []
   })
