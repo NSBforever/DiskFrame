@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ScannedFile } from '../App'
-import { pickEvictionVictim } from '../../../main/pageCache'
+import { pickEvictionVictim, reconcileCacheVersion } from '../../../main/pageCache'
 
 /**
  * Reads the library through SQLite instead of holding it in memory.
@@ -96,6 +96,10 @@ export function useLibrary(query: LibraryQuery | null): Library {
   const generationRef = useRef(0)
   const pagesRef = useRef(new Map<number, ScannedFile[]>())
   const inFlightRef = useRef(new Set<number>())
+  // Catalogue fingerprint the resident pages were read at. Pages read against a
+  // different one are from a different snapshot and may overlap, so the cache is
+  // emptied rather than mixed - see reconcileCacheVersion.
+  const cacheVersionRef = useRef<string | null>(null)
   // Page window the grid last asked for. Drives eviction so a page that is
   // on screen is never the one thrown away.
   const wantRef = useRef({ first: 0, last: 0 })
@@ -121,6 +125,9 @@ export function useLibrary(query: LibraryQuery | null): Library {
   const resetCaches = useCallback(() => {
     pagesRef.current.clear()
     inFlightRef.current.clear()
+    // Nothing is resident, so the next page to arrive sets the version rather
+    // than being compared against the version of pages that no longer exist.
+    cacheVersionRef.current = null
   }, [])
 
   const loadSummary = useCallback(
@@ -174,6 +181,14 @@ export function useLibrary(query: LibraryQuery | null): Library {
           inFlightRef.current.delete(pageIndex)
           // A page requested before the query changed is not useful any more.
           if (generation !== generationRef.current) return
+          // Keep the resident set to one snapshot of the catalogue. Without
+          // this, a page read before a discovery commit and one read after it
+          // can both hold the same file, and the grid draws it twice.
+          cacheVersionRef.current = reconcileCacheVersion(
+            pagesRef.current,
+            cacheVersionRef.current,
+            res.version
+          )
           pagesRef.current.set(pageIndex, res.rows as ScannedFile[])
           // Evict whatever is furthest from the window the grid last asked for.
           //

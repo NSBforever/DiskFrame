@@ -70,7 +70,7 @@ import {
   getFavouritePaths
 } from './scanner'
 import type { LibraryQuery } from './libraryQuery'
-import { getMapClusters } from './scanner'
+import { getMapClusters, getCatalogueVersion } from './scanner'
 
 import { initStreamServer, probeMedia, killActiveStream, closeStreamServer, authorizeStreamPath } from './streamServer'
 import { initMpv, sendMpvCommand, updateMpvBounds, closeMpv, refreshMpvBounds, setOverlayInteractive, sendToOverlay } from './mpvManager'
@@ -1073,11 +1073,15 @@ app.whenReady().then(() => {
 
   ipcMain.handle('library-summary', (_event, raw) => {
     const q = normalizeQuery(raw)
-    if (!q) return { total: 0, groups: [] }
+    if (!q) return { total: 0, groups: [], version: getCatalogueVersion() }
     const t0 = Date.now()
+    // Read BEFORE the rows it describes, so the version can never be newer than
+    // them. A version read afterwards would miss a write that landed during the
+    // query, and the renderer would then trust pages it should have dropped.
+    const version = getCatalogueVersion()
     const res = getLibrarySummary(q)
     diag('library', `summary ${q.drive}/${q.nav}/${q.groupBy}: ${res.total} files in ${res.groups.length} groups (${Date.now() - t0}ms)`)
-    return res
+    return { ...res, version }
   })
 
   ipcMain.handle('library-map-clusters', (_event, raw) => {
@@ -1109,11 +1113,13 @@ app.whenReady().then(() => {
   ipcMain.handle('library-page', (_event, raw) => {
     const { query, offset, limit } = (raw ?? {}) as { query?: unknown; offset?: number; limit?: number }
     const q = normalizeQuery(query)
-    if (!q) return { offset: 0, rows: [] }
+    if (!q) return { offset: 0, rows: [], version: getCatalogueVersion() }
     const from = Math.max(0, Math.floor(Number(offset) || 0))
     const size = Math.max(1, Math.min(Math.floor(Number(limit) || 100), MAX_PAGE_SIZE))
+    // Same ordering as the summary: the version, then the rows it describes.
+    const version = getCatalogueVersion()
     const rows = getLibraryPage(q, from, size)
-    return { offset: from, rows }
+    return { offset: from, rows, version }
   })
 
   // Explicit reconciliation. Never triggered by opening a drive.

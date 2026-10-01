@@ -81,6 +81,12 @@ declare global {
           maxDate: string
           offset: number
         }[]
+        /**
+         * Fingerprint of the catalogue these groups were read from. Pages
+         * carry it too; the renderer keeps only pages that agree, so a file
+         * cannot end up resident at two indices while discovery is committing.
+         */
+        version: string
       }>
       /** Folders the index expects that are not on the drive right now. */
       listUnresolvedRoots: (drive: string) => Promise<{
@@ -116,7 +122,7 @@ declare global {
         query: LibraryQueryLike,
         offset: number,
         limit: number
-      ) => Promise<{ offset: number; rows: ScannedFile[] }>
+      ) => Promise<{ offset: number; rows: ScannedFile[]; version: string }>
       /** Counts and bounds per cluster cell for one map viewport and zoom. */
       mapClusters: (
         query: LibraryQueryLike,

@@ -1754,6 +1754,24 @@ export function getLibrarySummary(q: LibraryQuery): {
   }
 }
 
+/**
+ * A fingerprint of the catalogue's current contents.
+ *
+ * Changes whenever anything writes to `files`, from any connection:
+ * PRAGMA data_version moves when ANOTHER connection commits (the scan utility
+ * is a separate process with its own connection, which is the case that matters
+ * during discovery), and total_changes() moves when this connection writes (the
+ * watcher, favourites, trash). Either is enough to tell the renderer that the
+ * pages it already holds were read against a different set of rows.
+ *
+ * Two cheap reads, no table scan - this is called once per summary/page request.
+ */
+export function getCatalogueVersion(): string {
+  const dv = db.prepare('PRAGMA data_version').get() as { data_version?: number } | undefined
+  const tc = db.prepare('SELECT total_changes() AS n').get() as { n?: number } | undefined
+  return `${dv?.data_version ?? 0}:${tc?.n ?? 0}`
+}
+
 export function getLibraryPage(q: LibraryQuery, offset: number, limit: number): ScannedFile[] {
   const bounded = Math.max(1, Math.min(Math.floor(limit) || 1, MAX_PAGE_SIZE))
   const from = Math.max(0, Math.floor(offset) || 0)

@@ -184,6 +184,16 @@ function mediaUrl(p: string): string {
 }
 
 /**
+ * The folder a file sits in, which is what distinguishes two copies of the same
+ * camera file living in different trees on one drive. Returns the whole path if
+ * there is no separator, so a malformed path still says something useful.
+ */
+function parentFolder(p: string): string {
+  const cut = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'))
+  return cut > 0 ? p.slice(0, cut) : p
+}
+
+/**
  * Hover previews load over file: rather than the app's media: scheme.
  *
  * Chromium's media pipeline refuses a custom scheme as a video data source
@@ -271,8 +281,8 @@ const CompactCell = memo(function CompactCell({
               (isSel ? ' is-selected' : '') +
               (deletingPaths.has(f.path) ? ' is-deleting' : '')
             }
-            title={f.name}
-            aria-label={f.name}
+            title={`${f.name}\n${parentFolder(f.path)}`}
+            aria-label={`${f.name} in ${parentFolder(f.path)}`}
             aria-pressed={isSel}
             onClick={(e) => {
               // Same modifier rules as a full tile: plain click opens, a
@@ -483,9 +493,14 @@ const GridTile = memo(function GridTile({
               ? file.path + '\n\nNot found at this path.'
               : volumeOffline
                 ? file.path + '\n\nThe drive holding this file is not connected.'
-                : compact
-                  ? file.name
-                  : undefined
+                : // A healthy tile used to carry no tooltip at all, which is
+                  // fine until two of them are genuinely different files. A
+                  // drive can hold the same filename, size, duration and frame
+                  // in two folders - a camera transfer copied twice, say - and
+                  // the grid then showed two identical tiles with nothing to
+                  // tell them apart and no way to ask. The containing folder is
+                  // what distinguishes them, so it is always available.
+                  `${file.name}\n${parentFolder(file.path)}`
       }
     >
       <div className="pg-tile-inner">
