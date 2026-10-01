@@ -481,11 +481,29 @@ async function sendDrives(): Promise<void> {
   }
 }
 
+/**
+ * Guards against stacked backfill passes. Opening a drive schedules one, and
+ * opening the same drive twice (or a scan finishing while one is already
+ * running) would otherwise start a second pass with its own two sharp/ffmpeg
+ * slots - four spawns competing for the same CPU the renderer needs.
+ */
+let thumbBackfillRunning = false
+
 async function generateThumbsForDrive(drivePath: string): Promise<void> {
   await backfillAllMissingThumbnails(getCachedVolumeId(drivePath))
 }
 
 async function backfillAllMissingThumbnails(volumeId?: string | null): Promise<void> {
+  if (thumbBackfillRunning) return
+  thumbBackfillRunning = true
+  try {
+    await runThumbBackfill(volumeId)
+  } finally {
+    thumbBackfillRunning = false
+  }
+}
+
+async function runThumbBackfill(volumeId?: string | null): Promise<void> {
   let files: ScannedFile[] = []
   try {
     files = getAllFilesWithoutThumbs(volumeId)
@@ -568,7 +586,7 @@ async function backfillAllMissingThumbnails(volumeId?: string | null): Promise<v
   // Nothing progressed (every row skipped or failed) ends the pass instead of
   // re-reading the same rows forever.
   if (files.length >= THUMB_BACKFILL_BATCH && successCount > 0 && !isQuitting) {
-    await backfillAllMissingThumbnails(volumeId)
+    await runThumbBackfill(volumeId)
   }
 }
 
@@ -926,9 +944,14 @@ app.whenReady().then(() => {
   // folder. That is minutes of I/O on a large library and it ran before the
   // user had even decided to stay. Opening now reads the cached index and
   // nothing else; reconciliation is a separate, explicitly requested job.
+  // Which drive the user is actually looking at. A deferred job started for one
+  // drive must not run after the user has moved to another.
+  let currentOpenDrive: string | null = null
+
   ipcMain.on('open-drive', (_event, drivePath: string) => {
     const drive = normalizeDrive(drivePath)
     if (!drive) return
+    currentOpenDrive = drive
     ;(async () => {
       const t0 = Date.now()
       // The drive-select grid already primed this letter's identity before
@@ -956,6 +979,17 @@ app.whenReady().then(() => {
           `(${fromCache ? 'cache' : 'live'}) - identity ${tIdentity - t0}ms, reconcile ${tReconcile - tIdentity}ms, ` +
           `count ${tCount - tReconcile}ms, full fetch ${tFiles - tCount}ms, total ${tFiles - t0}ms`
       )
+      // Backfill the rest of this volume's thumbnails, now that we know which
+      // volume it is - scoped to it, re-entrancy guarded, yielding to anything
+      // the viewport asks for, and delayed so it cannot compete with getting
+      // the first page of the gallery on screen. Reading the cached index is
+      // still all that opening a drive does to the drive itself.
+      if (indexed > 0 && subsystemEnabled(safeMode, 'thumbnails')) {
+        setTimeout(() => {
+          if (isQuitting || currentOpenDrive !== drive) return
+          void generateThumbsForDrive(drive)
+        }, 3000)
+      }
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('drive-opened', {
           drive,
@@ -1762,7 +1796,15 @@ app.whenReady().then(() => {
   mainWindow.webContents.once('did-finish-load', () => {
     setTimeout(() => {
       if (isQuitting) return
-      const runThumbs = subsystemEnabled(safeMode, 'thumbnails')
+      // Thumbnails are no longer generated drive-wide at launch. That pass ran
+      // across EVERY indexed drive two seconds after the window loaded -
+      // before the user had even picked a drive - and spawned sharp/ffmpeg into
+      // the exact window the "show cached files fast" target is measured in
+      // (measured on this machine: a 475ms main-process stall at launch).
+      // Thumbnails for what is on screen come from the viewport pump, and the
+      // rest of a volume is backfilled when that volume is opened - scoped to
+      // it, and yielding to the viewport. See the open-drive handler.
+      const runThumbs = false
       // The capture-date backfill reads every indexed photo and spawns ffprobe
       // for every video - on a 110k-file library that is hours of sustained
       // I/O. It corrects real data, but starting it unannounced on every launch
@@ -1774,7 +1816,6 @@ app.whenReady().then(() => {
       diag('startup', `background passes: thumbnails=${runThumbs} exif=${runExif}`)
       if (!runThumbs && !runExif) return
       Promise.resolve()
-        .then(() => (runThumbs ? backfillAllMissingThumbnails() : undefined))
         .then(() => (runExif && !isQuitting ? enrichExifBackfill(() => isQuitting) : undefined))
         .catch((err) => diag('startup', `background pass failed: ${err}`))
     }, 2000)
