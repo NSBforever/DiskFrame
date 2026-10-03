@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { ThumbStageStats, type StageSample } from './thumbStages.ts'
 
 const sample = (o: Partial<StageSample> = {}): StageSample => ({
-  waitMs: 0, lookupMs: 0, generateMs: 0, deliverMs: 0,
+  waitMs: 0, lookupMs: 0, generateMs: 0, writeMs: 0, deliverMs: 0,
   cacheHit: false, failed: false, video: false, ...o
 })
 
@@ -36,7 +36,7 @@ test('a cache hit is not counted as generation', () => {
   s.add(sample({ cacheHit: true, lookupMs: 2, deliverMs: 1 }))
   const r = s.report()
   has(r, 'generated=0')
-  has(r, 'cached=1 (wait 0ms, lookup 2ms, gen 0ms, deliver 1ms)')
+  has(r, 'cached=1 (wait 0ms, lookup 2ms, gen 0ms, write 0ms, deliver 1ms)')
 })
 
 test('video generation is reported on its own', () => {
@@ -65,9 +65,17 @@ test('means are per category, not over everything', () => {
 test('the worst single wait and generation survive averaging', () => {
   // A mean hides the one tile that took two seconds - the one actually noticed.
   const s = new ThumbStageStats()
-  s.add(sample({ waitMs: 10, generateMs: 10 }))
-  s.add(sample({ waitMs: 2000, generateMs: 1500 }))
-  has(s.report(), 'worst wait 2000ms, worst gen 1500ms')
+  s.add(sample({ waitMs: 10, generateMs: 10, writeMs: 2 }))
+  s.add(sample({ waitMs: 2000, generateMs: 1500, writeMs: 57 }))
+  has(s.report(), 'worst wait 2000ms, worst gen 1500ms, worst write 57ms')
+})
+
+test('the catalogue write is a stage of its own', () => {
+  // It was in no bucket at all, which is how a 57ms-per-tile UPDATE on an
+  // unindexed column hid behind a report that said "gen 3ms".
+  const s = new ThumbStageStats()
+  s.add(sample({ generateMs: 3, writeMs: 57 }))
+  has(s.report(), 'generated=1 (wait 0ms, lookup 0ms, gen 3ms, write 57ms, deliver 0ms)')
 })
 
 test('reset clears every category', () => {

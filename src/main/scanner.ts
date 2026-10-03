@@ -486,6 +486,25 @@ db.exec(`
   -- is what makes deep OFFSET queries degrade on a large library.
   CREATE INDEX IF NOT EXISTS idx_files_page ON files (drive, hidden, trashed_at, date DESC, path ASC);
   CREATE INDEX IF NOT EXISTS idx_files_volume_page ON files (volume_id, hidden, trashed_at, date DESC, path ASC);
+  -- Lookups by path alone, which is most of what the app does to one file at a
+  -- time: the media protocol's volume check (once per image, video and
+  -- preview request), the thumbnail write, the viewport's skip-list, the
+  -- scan's per-file existence check, favourite/trash/hide/relink.
+  --
+  -- idx_files_identity is (volume_id, path), so path is not its leading column
+  -- and none of those could seek: every one was a scan of the whole table.
+  -- Measured on this catalogue (85,330 rows), before -> after:
+  --   SELECT volume_id WHERE path=?      7.15ms -> 0.08ms   per media request
+  --   UPDATE ... WHERE path=?           56.85ms -> 0.15ms   per thumbnail
+  --   SELECT ... WHERE path IN (400)      271ms -> 2.8ms    per viewport
+  --   SELECT 1 WHERE path=?              7.22ms -> 0.20ms   per file scanned
+  -- The thumbnail write is the one that mattered most: it is a scan plus index
+  -- maintenance, it ran once per tile even when the thumbnail was already
+  -- cached, and at 57ms it capped the whole on-demand pump at ~27 tiles a
+  -- second. That is what left visible tiles waiting 20+ seconds on a drive
+  -- whose thumbnails were all on disk already.
+  -- Costs ~6MB here and 342ms to build once.
+  CREATE INDEX IF NOT EXISTS idx_files_path ON files (path);
 `)
 
 // favourite_paths needs the same (path, volume_id) identity as files, for the
@@ -1186,57 +1205,57 @@ function makeHash(fullPath: string): string {
 const sharpExts = ['.jpg', '.jpeg', '.png', '.webp']
 
 // ─── THUMBNAIL GENERATION ─────────────────────────────────────────────────────
-/**
- * Where this file's thumbnail lives, and the legacy location to adopt from.
- *
- * The key used to be md5(path) alone. A drive letter is a mount point, not an
- * identity - this machine has had two different volumes as D: - so two files
- * at the same path on different volumes hashed to the same thumbnail, and
- * whichever was generated first was shown for both.
- *
- * The key is now scoped by the verified volume when one is known. The old key
- * is still checked, and a thumbnail found there is RENAMED into the scoped
- * key rather than regenerated: the existing cache (654MB, 42,231 files here)
- * stays useful and migrates as files are browsed, at the cost of one rename.
- * With no verified volume the legacy key is used unchanged - inventing a
- * scope would be asserting an identity that was never established.
- */
-function thumbKeyFor(fullPath: string, volumeId?: string | null): { scoped: string; legacy: string } {
-  const legacy = join(thumbDir, `${makeHash(fullPath)}.jpg`)
-  if (!volumeId) return { scoped: legacy, legacy }
-  // NUL cannot appear in either a volume GUID or a Windows path, so it is an
-  // unambiguous separator - "A" + "BC" can never collide with "AB" + "C".
-  return { scoped: join(thumbDir, `${makeHash(volumeId + String.fromCharCode(0) + fullPath)}.jpg`), legacy }
-}
-
-/** An existing thumbnail for this file, adopting the legacy key if that is
- *  where it is. Returns null when nothing is cached. */
-function existingThumb(fullPath: string, volumeId?: string | null): string | null {
-  const { scoped, legacy } = thumbKeyFor(fullPath, volumeId)
-  try {
-    if (fs.existsSync(scoped) && fs.statSync(scoped).size > 0) return scoped
-    if (scoped !== legacy && fs.existsSync(legacy) && fs.statSync(legacy).size > 0) {
-      // Migrate in place. If another volume adopted it first the rename
-      // fails, and that volume simply generates its own.
-      try {
-        fs.renameSync(legacy, scoped)
-        return scoped
-      } catch {
-        return legacy
-      }
-    }
-  } catch {
-    /* unreadable cache entry - treat as absent */
-  }
-  return null
-}
-
-export async function generateThumbForFile(
-  fullPath: string,
-  ext: string,
-  volumeId?: string | null
-): Promise<string | null> {
-  const cached = existingThumb(fullPath, volumeId)
+/**
+ * Where this file's thumbnail lives, and the legacy location to adopt from.
+ *
+ * The key used to be md5(path) alone. A drive letter is a mount point, not an
+ * identity - this machine has had two different volumes as D: - so two files
+ * at the same path on different volumes hashed to the same thumbnail, and
+ * whichever was generated first was shown for both.
+ *
+ * The key is now scoped by the verified volume when one is known. The old key
+ * is still checked, and a thumbnail found there is RENAMED into the scoped
+ * key rather than regenerated: the existing cache (654MB, 42,231 files here)
+ * stays useful and migrates as files are browsed, at the cost of one rename.
+ * With no verified volume the legacy key is used unchanged - inventing a
+ * scope would be asserting an identity that was never established.
+ */
+function thumbKeyFor(fullPath: string, volumeId?: string | null): { scoped: string; legacy: string } {
+  const legacy = join(thumbDir, `${makeHash(fullPath)}.jpg`)
+  if (!volumeId) return { scoped: legacy, legacy }
+  // NUL cannot appear in either a volume GUID or a Windows path, so it is an
+  // unambiguous separator - "A" + "BC" can never collide with "AB" + "C".
+  return { scoped: join(thumbDir, `${makeHash(volumeId + String.fromCharCode(0) + fullPath)}.jpg`), legacy }
+}
+
+/** An existing thumbnail for this file, adopting the legacy key if that is
+ *  where it is. Returns null when nothing is cached. */
+function existingThumb(fullPath: string, volumeId?: string | null): string | null {
+  const { scoped, legacy } = thumbKeyFor(fullPath, volumeId)
+  try {
+    if (fs.existsSync(scoped) && fs.statSync(scoped).size > 0) return scoped
+    if (scoped !== legacy && fs.existsSync(legacy) && fs.statSync(legacy).size > 0) {
+      // Migrate in place. If another volume adopted it first the rename
+      // fails, and that volume simply generates its own.
+      try {
+        fs.renameSync(legacy, scoped)
+        return scoped
+      } catch {
+        return legacy
+      }
+    }
+  } catch {
+    /* unreadable cache entry - treat as absent */
+  }
+  return null
+}
+
+export async function generateThumbForFile(
+  fullPath: string,
+  ext: string,
+  volumeId?: string | null
+): Promise<string | null> {
+  const cached = existingThumb(fullPath, volumeId)
   if (cached) return cached
   const lowerExt = ext.toLowerCase()
 

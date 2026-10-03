@@ -11,7 +11,15 @@
  *   lookup   resolving the path and checking availability before any work.
  *   cacheHit a thumbnail already existed on disk; no generation at all.
  *   generate ffmpeg/sharp actually producing the image.
+ *   write    recording the result in the catalogue.
  *   deliver  handing the result to the renderer.
+ *
+ * Every stage between enqueue and delivery has to be in one of these buckets.
+ * The database write was previously in none of them, and it was the stage that
+ * actually capped throughput: an UPDATE keyed on an unindexed column, 57ms per
+ * tile, invisible in a report that showed "gen 3ms" and left the 20-second
+ * queue waits beside it unexplained. An unmeasured stage is where the next
+ * bottleneck hides, so there are no gaps here.
  *
  * Successes and failures are kept apart: averaging a 130ms undecodable stub into
  * a 300ms real decode flatters both and explains neither.
@@ -23,6 +31,7 @@ export interface StageSample {
   waitMs: number
   lookupMs: number
   generateMs: number
+  writeMs: number
   deliverMs: number
   cacheHit: boolean
   failed: boolean
@@ -34,10 +43,18 @@ export interface StageTotals {
   waitMs: number
   lookupMs: number
   generateMs: number
+  writeMs: number
   deliverMs: number
 }
 
-const empty = (): StageTotals => ({ count: 0, waitMs: 0, lookupMs: 0, generateMs: 0, deliverMs: 0 })
+const empty = (): StageTotals => ({
+  count: 0,
+  waitMs: 0,
+  lookupMs: 0,
+  generateMs: 0,
+  writeMs: 0,
+  deliverMs: 0
+})
 
 export class ThumbStageStats {
   private ok = empty()
@@ -47,6 +64,7 @@ export class ThumbStageStats {
   /** Worst single wait seen, which is what a user actually notices. */
   private maxWaitMs = 0
   private maxGenerateMs = 0
+  private maxWriteMs = 0
 
   add(s: StageSample): void {
     const into = s.failed ? this.failed : s.cacheHit ? this.cacheHits : this.ok
@@ -54,6 +72,7 @@ export class ThumbStageStats {
     into.waitMs += s.waitMs
     into.lookupMs += s.lookupMs
     into.generateMs += s.generateMs
+    into.writeMs += s.writeMs
     into.deliverMs += s.deliverMs
     if (!s.failed && !s.cacheHit && s.video) {
       this.videoOk.count++
@@ -62,6 +81,7 @@ export class ThumbStageStats {
     }
     if (s.waitMs > this.maxWaitMs) this.maxWaitMs = s.waitMs
     if (s.generateMs > this.maxGenerateMs) this.maxGenerateMs = s.generateMs
+    if (s.writeMs > this.maxWriteMs) this.maxWriteMs = s.writeMs
   }
 
   get total(): number {
@@ -77,7 +97,7 @@ export class ThumbStageStats {
       `${label}=${t.count}` +
       (t.count === 0
         ? ''
-        : ` (wait ${mean(t, 'waitMs')}, lookup ${mean(t, 'lookupMs')}, gen ${mean(t, 'generateMs')}, deliver ${mean(t, 'deliverMs')})`)
+        : ` (wait ${mean(t, 'waitMs')}, lookup ${mean(t, 'lookupMs')}, gen ${mean(t, 'generateMs')}, write ${mean(t, 'writeMs')}, deliver ${mean(t, 'deliverMs')})`)
     return [
       line('generated', this.ok),
       line('cached', this.cacheHits),
@@ -85,7 +105,7 @@ export class ThumbStageStats {
       this.videoOk.count > 0
         ? `video-gen=${this.videoOk.count} (gen ${mean(this.videoOk, 'generateMs')})`
         : 'video-gen=0',
-      `worst wait ${Math.round(this.maxWaitMs)}ms, worst gen ${Math.round(this.maxGenerateMs)}ms`
+      `worst wait ${Math.round(this.maxWaitMs)}ms, worst gen ${Math.round(this.maxGenerateMs)}ms, worst write ${Math.round(this.maxWriteMs)}ms`
     ].join(' | ')
   }
 
@@ -96,5 +116,6 @@ export class ThumbStageStats {
     this.videoOk = empty()
     this.maxWaitMs = 0
     this.maxGenerateMs = 0
+    this.maxWriteMs = 0
   }
 }

@@ -1505,6 +1505,7 @@ app.whenReady().then(() => {
           thumbEnqueuedAt.delete(p)
           let lookupMs = 0
           let generateMs = 0
+          let writeMs = 0
           let deliverMs = 0
           let cacheHit = false
           let failed = false
@@ -1557,12 +1558,17 @@ app.whenReady().then(() => {
             generateMs = Date.now() - tGen
             cacheHit = existedBefore && thumbPath !== null
             if (thumbPath) {
-              updateThumb(p, thumbPath)
+              // Delivered to the renderer BEFORE being recorded. The tile only
+              // needs the path; the catalogue write is bookkeeping, and making
+              // the pixels wait for it is what the write stage used to cost.
               const tDeliver = Date.now()
               if (mainWindow && !mainWindow.isDestroyed()) {
                 mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath })
               }
               deliverMs = Date.now() - tDeliver
+              const tWrite = Date.now()
+              updateThumb(p, thumbPath)
+              writeMs = Date.now() - tWrite
             } else {
               failed = true
               thumbFailed.add(p)
@@ -1583,7 +1589,7 @@ app.whenReady().then(() => {
               mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath: THUMB_UNAVAILABLE })
             }
           } finally {
-            thumbStages.add({ waitMs, lookupMs, generateMs, deliverMs, cacheHit, failed, video: isVideo })
+            thumbStages.add({ waitMs, lookupMs, generateMs, writeMs, deliverMs, cacheHit, failed, video: isVideo })
             scheduleStageReport()
             thumbInFlight.delete(p)
           }
