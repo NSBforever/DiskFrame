@@ -148,6 +148,16 @@ const api = {
   indexFolder: (folder: string, maxFiles?: number) => ipcRenderer.invoke('index-folder', folder, maxFiles),
   cancelIndexFolder: () => ipcRenderer.invoke('cancel-index-folder'),
   driveAvailability: () => ipcRenderer.invoke('drive-availability'),
+  /** Why one file would not paint - unavailable, unreadable, or decodable but
+   *  broken. Reports only; never deletes a record or moves the file. */
+  mediaStatus: (
+    filePath: string
+  ): Promise<{
+    status: 'ok' | 'drive-offline' | 'volume-mismatch' | 'folder-missing' | 'no-access' | 'missing'
+    volumeKnown: boolean
+    resolved: string
+    missingRoot: string | null
+  }> => ipcRenderer.invoke('media-status', filePath),
   favouritePaths: () => ipcRenderer.invoke('favourite-paths'),
   playMpv: (filePath: string, relativeBounds: { left: number; top: number; width: number; height: number }) =>
     ipcRenderer.invoke('start-mpv', { filePath, relativeBounds }),

@@ -736,7 +736,11 @@ app.whenReady().then(() => {
     }
   }
   protocol.handle('media', async (request) => {
-    const url = request.url.replace('media:///', '')
+    // A query string names no part of the file. The viewer's Retry adds one so
+    // that Blink stops serving its cached failure for the same URL; without
+    // stripping it the '?retry=1' would be decoded as part of the path and
+    // every retry would look for a file that does not exist.
+    const url = request.url.replace('media:///', '').split('?')[0]
     let filePath: string
     try {
       filePath = decodeURIComponent(url).replace(/\//g, '\\')
@@ -1717,6 +1721,33 @@ app.whenReady().then(() => {
   ipcMain.handle('cancel-index-folder', () => {
     cancelFolderIndex()
     return true
+  })
+
+  /**
+   * Why one file would not paint.
+   *
+   * The viewer only learns that an <img> or a <video> failed, which is the
+   * same event for a deleted original, an unplugged drive, a permission
+   * refusal and a file that is present and readable but cannot be decoded.
+   * Showing "Failed to load image" for all four sends the user looking for the
+   * wrong thing - and in the reported case (Snipping Tool captures under
+   * TempState\Snips, which Windows clears) it implied the app had lost a file
+   * it never owned.
+   *
+   * Same resolver the thumbnails and the media protocol use, so a tile, a
+   * preview and the viewer cannot disagree about one path. Reports only - it
+   * never deletes a record and never copies the file anywhere.
+   */
+  ipcMain.handle('media-status', (_event, raw: unknown) => {
+    const filePath = typeof raw === 'string' ? raw : ''
+    if (!isSafeLocalPath(filePath)) return { status: 'missing', volumeKnown: false, resolved: filePath }
+    const a = checkPathAvailability(filePath)
+    return {
+      status: a.status,
+      volumeKnown: a.volumeKnown,
+      resolved: a.resolved,
+      missingRoot: a.missingRoot ?? null
+    }
   })
 
   ipcMain.handle('drive-availability', async () => {

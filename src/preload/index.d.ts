@@ -225,6 +225,12 @@ declare global {
           volumeMatches: boolean | null
         }[]
       >
+      mediaStatus: (filePath: string) => Promise<{
+        status: 'ok' | 'drive-offline' | 'volume-mismatch' | 'folder-missing' | 'no-access' | 'missing'
+        volumeKnown: boolean
+        resolved: string
+        missingRoot: string | null
+      }>
       cancelIndexFolder: () => Promise<boolean>
       favouritePaths: () => Promise<string[]>
       playMpv: (filePath: string, relativeBounds: { left: number; top: number; width: number; height: number }) => Promise<void>

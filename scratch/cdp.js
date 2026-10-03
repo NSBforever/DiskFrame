@@ -10,6 +10,12 @@
  * Usage: electron (ELECTRON_RUN_AS_NODE=1) scratch/cdp.js <port> '<js expression>'
  *   The expression is evaluated in the first page target, awaited, and the
  *   JSON result printed.
+ *
+ *        electron (ELECTRON_RUN_AS_NODE=1) scratch/cdp.js <port> --shot <file.png>
+ *   Captures what is actually on screen. DOM assertions are not enough for
+ *   anything layered over mpv's native window: mpv embeds as a real child HWND
+ *   and Windows z-orders it above anything the DOM can draw, so an overlay can
+ *   be present, opaque and on top in the DOM and still be invisible.
  */
 const http = require('http')
 const crypto = require('crypto')
@@ -137,7 +143,12 @@ function connect(wsUrl) {
   const port = Number(process.argv[2] || 9222)
   const expression = process.argv[3]
   if (!expression) {
-    console.error("usage: cdp.js <port> '<js expression>'")
+    console.error("usage: cdp.js <port> '<js expression>' | cdp.js <port> --shot <file.png>")
+    process.exit(1)
+  }
+  const shotPath = expression === '--shot' ? process.argv[4] : null
+  if (expression === '--shot' && !shotPath) {
+    console.error('usage: cdp.js <port> --shot <file.png>')
     process.exit(1)
   }
   const targets = await listTargets(port)
@@ -147,6 +158,19 @@ function connect(wsUrl) {
     process.exit(1)
   }
   const cdp = await connect(page.webSocketDebuggerUrl)
+  if (shotPath) {
+    const shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
+    const data = shot.result && shot.result.data
+    if (!data) {
+      console.error('no screenshot data: ' + JSON.stringify(shot).slice(0, 300))
+      cdp.close()
+      process.exit(1)
+    }
+    require('fs').writeFileSync(shotPath, Buffer.from(data, 'base64'))
+    console.log('wrote ' + shotPath + ' (' + require('fs').statSync(shotPath).size + ' bytes)')
+    cdp.close()
+    process.exit(0)
+  }
   const res = await cdp.send('Runtime.evaluate', {
     expression,
     awaitPromise: true,

@@ -56,6 +56,54 @@ function toUrl(p: string): string {
 /** Activity anywhere in the player - DOM or mpv's own forwarded mouse-pos. */
 export const VIEWER_ACTIVITY_EVENT = 'diskframe:viewer-activity'
 
+/**
+ * Why a file would not paint, and what to say about it.
+ *
+ * An <img> or <video> error is one event for several unrelated situations, and
+ * they need different answers from the user: an unplugged drive comes back by
+ * itself, a moved folder can be pointed at, a permission problem is about
+ * access rather than absence, and a present, readable file that still will not
+ * decode is a damaged file. 'undecodable' is the case the main process reports
+ * as ok - the file is there and readable, so the failure was the decoder's.
+ *
+ * Deliberately never says "deleted". The record is kept either way; nothing
+ * here removes a catalogue row or copies the file anywhere.
+ */
+type FailureKind =
+  | 'missing'
+  | 'folder-missing'
+  | 'drive-offline'
+  | 'volume-mismatch'
+  | 'no-access'
+  | 'undecodable'
+
+const FAILURE_TEXT: Record<FailureKind, { title: string; detail: string }> = {
+  missing: {
+    title: 'Original unavailable',
+    detail: 'The file is not on the drive any more. Its entry and preview are kept.'
+  },
+  'folder-missing': {
+    title: 'Folder not found',
+    detail: 'The folder this file was in is not where it was. It can be relinked from the gallery.'
+  },
+  'drive-offline': {
+    title: 'Drive not connected',
+    detail: 'Reconnect the drive this file is on and try again.'
+  },
+  'volume-mismatch': {
+    title: 'Different volume at this letter',
+    detail: 'Another device is mounted where this file was recorded, so it was not opened.'
+  },
+  'no-access': {
+    title: 'Cannot be read',
+    detail: 'The file is there but this account was refused access to it.'
+  },
+  undecodable: {
+    title: 'Could not be displayed',
+    detail: 'The file is present and readable, but its contents could not be decoded.'
+  }
+}
+
 export const ImageLoader: React.FC<ImageLoaderProps> = ({
   file,
   list,
@@ -75,8 +123,19 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   const [highResSrc, setHighResSrc] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [showSpinner, setShowSpinner] = useState(false)
-  const [imgError, setImgError] = useState(false)
+  /** Null while the photo is fine. Set only once the main process has said why. */
+  const [imgFailure, setImgFailure] = useState<FailureKind | null>(null)
   const [videoError, setVideoError] = useState(false)
+  /**
+   * Bumped by Retry, and in the load effect's deps so Retry re-runs the real
+   * load rather than only clearing the message.
+   *
+   * Carries the path it belongs to so moving to the next file starts from zero
+   * without a reset effect - a counter reset inside the effect that depends on
+   * it would loop.
+   */
+  const [retry, setRetry] = useState<{ path: string; n: number }>({ path: '', n: 0 })
+  const retryNonce = retry.path === file.path ? retry.n : 0
 
   const isPhoto = photoExts.includes(file.ext.toLowerCase())
   const isVideo = videoExts.includes(file.ext.toLowerCase())
@@ -168,7 +227,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
     setHighResSrc(null)
     setLoading(true)
     setShowSpinner(false)
-    setImgError(false)
+    setImgFailure(null)
     setVideoError(false)
 
     // Reset video player states
@@ -188,22 +247,46 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
     }, 150)
 
     if (isPhoto) {
-      const fullUrl = toUrl(file.path)
+      // A decode and a status round trip both outlive a fast Next/Previous.
+      // Without this, a slow answer for the photo just left could paint over
+      // the one now on screen, or report its failure against it.
+      let active = true
+      // Retry has to actually re-request: Blink caches the failed response for
+      // media:///<path>, so the same URL would resolve from that cache. The
+      // media handler ignores a query string, which makes this a new URL for
+      // the cache and the same file for the handler.
+      const fullUrl = retryNonce > 0 ? `${toUrl(file.path)}?retry=${retryNonce}` : toUrl(file.path)
       imageCache
-        .preload(file.path, fullUrl)
+        .preload(file.path + (retryNonce > 0 ? `#${retryNonce}` : ''), fullUrl)
         .then((img) => {
+          if (!active) return
           clearTimeout(spinnerTimer)
           setHighResSrc(fullUrl)
           setLoading(false)
           setShowSpinner(false)
           onImageLoaded({ width: img.naturalWidth, height: img.naturalHeight })
         })
-        .catch(() => {
+        .catch(async () => {
+          if (!active) return
           clearTimeout(spinnerTimer)
           setLoading(false)
           setShowSpinner(false)
-          setImgError(true)
+          // Ask why rather than guessing. 'ok' here means the file is present
+          // and readable, so what failed was the decode.
+          let kind: FailureKind = 'undecodable'
+          try {
+            const s = await window.api.mediaStatus(file.path)
+            if (s.status !== 'ok') kind = s.status
+          } catch {
+            /* no answer - the generic decode message is still honest */
+          }
+          if (!active) return
+          setImgFailure(kind)
         })
+      return () => {
+        active = false
+        clearTimeout(spinnerTimer)
+      }
     } else if (isVideo) {
       clearTimeout(spinnerTimer)
       setLoading(false)
@@ -297,7 +380,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
     return () => {
       clearTimeout(spinnerTimer)
     }
-  }, [file.path, isPhoto, isVideo, onImageLoaded])
+  }, [file.path, isPhoto, isVideo, onImageLoaded, retryNonce])
 
   // Synchronize mpv window bounds on resize
   useEffect(() => {
@@ -907,10 +990,65 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
             willChange: 'transform'
           }}
         >
-          {imgError ? (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
-              <div style={{ fontSize: '64px' }}>⚠️</div>
-              <div style={{ fontSize: '14px', color: 'var(--app-fg-dim, #8a8a8f)' }}>Failed to load image</div>
+          {imgFailure ? (
+            // The cached preview is a real picture of this file and it is
+            // already on disk, so it is shown rather than a warning triangle -
+            // labelled, so it is never mistaken for the original.
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '14px',
+                maxWidth: '100%',
+                maxHeight: '100%'
+              }}
+            >
+              {thumbSrc && (
+                <img
+                  src={thumbSrc}
+                  alt=""
+                  style={{
+                    maxWidth: '100%',
+                    maxHeight: '55vh',
+                    objectFit: 'contain',
+                    borderRadius: '6px',
+                    opacity: 0.55
+                  }}
+                />
+              )}
+              <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--app-fg, #e8e8ea)' }}>
+                {FAILURE_TEXT[imgFailure].title}
+              </div>
+              <div
+                style={{
+                  fontSize: '13px',
+                  lineHeight: 1.5,
+                  maxWidth: '380px',
+                  textAlign: 'center',
+                  color: 'var(--app-fg-dim, #8a8a8f)'
+                }}
+              >
+                {FAILURE_TEXT[imgFailure].detail}
+                {thumbSrc ? ' The preview above is the one DiskFrame already had.' : ''}
+              </div>
+              <button
+                type="button"
+                onClick={() => setRetry({ path: file.path, n: retryNonce + 1 })}
+                style={{
+                  marginTop: '2px',
+                  padding: '7px 18px',
+                  fontSize: '13px',
+                  borderRadius: '999px',
+                  border: '1px solid var(--app-border, rgba(255,255,255,0.18))',
+                  background: 'var(--app-glass, rgba(255,255,255,0.08))',
+                  color: 'var(--app-fg, #e8e8ea)',
+                  cursor: 'pointer'
+                }}
+              >
+                Retry
+              </button>
             </div>
           ) : (
             <>
