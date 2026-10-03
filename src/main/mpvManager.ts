@@ -18,6 +18,45 @@ let cachedRelativeBounds = { left: 0, top: 0, width: 0, height: 0 }
 // the killing so a deliberate shutdown is not mistaken for a crash.
 let closingDeliberately = false
 
+/**
+ * Which playback session is current.
+ *
+ * Bumped by every initMpv and every closeMpv. mpv's pipe connect retries for
+ * 2.5s and its process events arrive whenever the OS gets round to them, so
+ * without this a session that has already been replaced can still install its
+ * socket over the live one, or report its own shutdown as the current video's
+ * failure. Every callback that can outlive its session captures this and
+ * checks it.
+ */
+let sessionId = 0
+
+/**
+ * Whether the current file has played to its end and is sitting there.
+ *
+ * mpv is run with --keep-open=yes, which is correct - it keeps the session and
+ * the last frame rather than tearing the window down. What it also does,
+ * measured against mpv itself (scratch/mpveof.js, same options, MP4 and MOV):
+ *
+ *     1993ms  eof-reached = true
+ *     1993ms  core-idle   = true
+ *     2103ms  pause       = true        <- mpv pauses itself
+ *             idle-active = false        (the session is alive)
+ *             end-file                   NEVER FIRES at eof under keep-open
+ *
+ * So the app saw only `pause = true` and could not tell "the user paused" from
+ * "it finished". And at eof, un-pausing does nothing:
+ *
+ *     set_property pause=false    -> pause snaps back to true, eof-reached
+ *                                    stays true, DID NOT RESUME
+ *     seek 0 absolute, pause=false -> eof-reached=false, playback-restart,
+ *                                    RESUMED
+ *
+ * That is the whole of "controls stop working after a video finishes": the
+ * Play button sends the first one. eof-reached is the signal to watch -
+ * listening for end-file, the obvious guess, would never have fired.
+ */
+let ended = false
+
 function getMpvPath(): string {
   const isDev = !app.isPackaged
   const root = app.getAppPath()
@@ -137,6 +176,11 @@ export async function initMpv(
     throw new Error(`File not found: ${filePath}`)
   }
 
+  // This session's identity. Everything below that can be called back into
+  // after the user has moved on compares against it.
+  const mySession = ++sessionId
+  ended = false
+
   hostWindowRef = hostWindow
   cachedRelativeBounds = relativeBounds
 
@@ -238,10 +282,12 @@ export async function initMpv(
   const thisProcess = mpvProcess
   mpvProcess.on('close', (code) => {
     console.log('[mpvManager] Process closed with code:', code)
-    // Only report a failure for the session that is still current and that we
-    // did not kill ourselves. A late 'close' from a previous video would
-    // otherwise make the video now on screen fall back to transcoding.
-    if (closingDeliberately || thisProcess !== mpvProcess) return
+    // Three different things end a session and they must not be confused:
+    // the user closing it, the file finishing, and mpv falling over. Only the
+    // last is a failure, and only for the session still on screen - a late
+    // 'close' from a previous video would otherwise make the video now
+    // playing fall back to transcoding.
+    if (closingDeliberately || thisProcess !== mpvProcess || mySession !== sessionId) return
     if (code !== 0 && hostWindow && !hostWindow.isDestroyed()) {
       hostWindow.webContents.send('mpv-error', { error: `MPV exited with code ${code}` })
     }
@@ -249,15 +295,19 @@ export async function initMpv(
 
   // Wait for named pipe and connect
   try {
-    await connectIpcPipe(currentPipeName, hostWindow)
+    await connectIpcPipe(currentPipeName, hostWindow, mySession)
   } catch (err) {
-    if (!hostWindow.isDestroyed()) {
+    // A session the user has already left is not a failure to report. Closing
+    // a video while the pipe was still being retried used to surface as a
+    // playback error, and the renderer answered it by transcoding a file
+    // nobody was watching.
+    if (mySession === sessionId && !hostWindow.isDestroyed()) {
       hostWindow.webContents.send('mpv-error', { error: 'Failed to connect to mpv IPC socket' })
     }
   }
 }
 
-function connectIpcPipe(pipeName: string, hostWindow: BrowserWindow): Promise<void> {
+function connectIpcPipe(pipeName: string, hostWindow: BrowserWindow, mySession: number): Promise<void> {
   return new Promise((resolve, reject) => {
     let retries = 0
     const maxRetries = 25 // 2.5 seconds total
@@ -267,13 +317,29 @@ function connectIpcPipe(pipeName: string, hostWindow: BrowserWindow): Promise<vo
         reject(new Error('Host window destroyed'))
         return
       }
+      // The retry loop outlives a close or a switch to the next video. Without
+      // this it would eventually connect and install its socket as the live
+      // one, so commands for the video on screen went to a dead session.
+      if (mySession !== sessionId) {
+        reject(new Error('Session superseded'))
+        return
+      }
       console.log(`[mpvManager] Connecting to pipe (try ${retries + 1}):`, pipeName)
       const socket = net.connect(pipeName)
 
       socket.on('connect', () => {
+        if (mySession !== sessionId) {
+          try {
+            socket.destroy()
+          } catch {
+            /* nothing to clean up */
+          }
+          reject(new Error('Session superseded'))
+          return
+        }
         console.log('[mpvManager] Connected to named pipe successfully')
         ipcSocket = socket
-        setupIpcListeners(socket, hostWindow)
+        setupIpcListeners(socket, hostWindow, mySession)
         resolve()
       })
 
@@ -297,7 +363,37 @@ function sendCommand(socket: net.Socket, command: any[]) {
   socket.write(payload)
 }
 
-function setupIpcListeners(socket: net.Socket, hostWindow: BrowserWindow) {
+/**
+ * Tells both surfaces the same thing at the same time.
+ *
+ * The control bar lives in the mpv window (it is the only thing that can be
+ * seen over mpv's native surface) and the gallery's own chrome lives in the
+ * main window. They must never disagree about whether the video has ended.
+ */
+function broadcast(hostWindow: BrowserWindow, payload: { name: string; value: unknown }): void {
+  if (hostWindow && !hostWindow.isDestroyed()) hostWindow.webContents.send('mpv-property-change', payload)
+  if (mpvWindow && !mpvWindow.isDestroyed()) mpvWindow.webContents.send('mpv-property-change', payload)
+}
+
+function setEnded(hostWindow: BrowserWindow, value: boolean): void {
+  if (ended === value) return
+  ended = value
+  broadcast(hostWindow, { name: 'ended', value })
+}
+
+/**
+ * Whether the current session can still be commanded.
+ *
+ * mpv's window can be gone while the renderer still thinks it is playing - the
+ * process crashed, or the pipe closed. Sending into that is silent and looks
+ * exactly like broken controls, so the renderer is told instead and starts the
+ * backend again rather than talking to a dead one.
+ */
+export function mpvSessionAlive(): boolean {
+  return !!ipcSocket && !ipcSocket.destroyed && !!mpvProcess
+}
+
+function setupIpcListeners(socket: net.Socket, hostWindow: BrowserWindow, mySession: number) {
   // Observe properties
   sendCommand(socket, ['observe_property', 1, 'time-pos'])
   sendCommand(socket, ['observe_property', 2, 'duration'])
@@ -315,6 +411,11 @@ function setupIpcListeners(socket: net.Socket, hostWindow: BrowserWindow) {
   // input as an activity signal we can forward back over the existing
   // mpv-property-change channel.
   sendCommand(socket, ['observe_property', 10, 'mouse-pos'])
+  // The one that says the video finished. Under --keep-open=yes mpv does not
+  // fire end-file at eof at all - it sets this, then pauses itself ~100ms
+  // later. Without it, "it ended" arrived as an ordinary pause=true and was
+  // indistinguishable from the user pressing pause. Measured: scratch/mpveof.js.
+  sendCommand(socket, ['observe_property', 13, 'eof-reached'])
   // Lets the overlay say "no subtitles" instead of offering a dead button.
   sendCommand(socket, ['observe_property', 11, 'track-list'])
   // Which subtitle track is active, so the CC button can show its real state.
@@ -331,21 +432,33 @@ function setupIpcListeners(socket: net.Socket, hostWindow: BrowserWindow) {
       if (!line.trim()) continue
       try {
         const msg = JSON.parse(line)
+        // Anything still arriving for a session the user has left must not
+        // touch the state of the one now on screen.
+        if (mySession !== sessionId) continue
+
+        // Fires when a file is actually unloaded, which under --keep-open=yes
+        // is not at eof. Its reason is how a crash is told apart from the user
+        // closing the video.
+        if (msg.event === 'end-file') {
+          if (msg.reason === 'error' && !closingDeliberately && !hostWindow.isDestroyed()) {
+            hostWindow.webContents.send('mpv-error', {
+              error: `Playback failed: ${msg.error ?? 'unknown decode error'}`
+            })
+          }
+          continue
+        }
+
         if (msg.event === 'property-change') {
           if (msg.name === 'hwdec-current' && msg.data === 'no' && !hasTriedHwdecFallback) {
             hasTriedHwdecFallback = true
             console.log('[mpvManager] d3d11va hwdec inactive, falling back to dxva2...')
             sendCommand(socket, ['set_property', 'hwdec', 'dxva2'])
           }
+          if (msg.name === 'eof-reached' && typeof msg.data === 'boolean') {
+            setEnded(hostWindow, msg.data)
+          }
           const payload = { name: msg.name, value: msg.data }
-          if (!hostWindow.isDestroyed()) {
-            hostWindow.webContents.send('mpv-property-change', payload)
-          }
-          // The control bar lives in the mpv window, so it needs the same
-          // stream of state - otherwise it would render a static bar.
-          if (mpvWindow && !mpvWindow.isDestroyed()) {
-            mpvWindow.webContents.send('mpv-property-change', payload)
-          }
+          broadcast(hostWindow, payload)
         }
       } catch (err) {
         // silent parse error for incomplete frames
@@ -358,19 +471,63 @@ function setupIpcListeners(socket: net.Socket, hostWindow: BrowserWindow) {
   })
 }
 
+/**
+ * One place that knows what a command means at the end of a file.
+ *
+ * Both the overlay's Play button and the main window's player send their
+ * commands through here, as does every keyboard shortcut in either window, so
+ * this is where "it has ended" has to be understood - a guard in one of the
+ * callers would leave the others still sending a no-op into a finished file.
+ *
+ * Measured against mpv (scratch/mpveof.js): at eof under --keep-open=yes,
+ * un-pausing alone does nothing at all; a seek is what clears eof-reached and
+ * restarts playback. So:
+ *
+ *   play / Space / K at the end   -> replay from the beginning
+ *   any seek at the end           -> resume from there, rather than staying
+ *                                    paused on the last frame
+ */
 export function sendMpvCommand(command: string, args: any[]) {
   if (!ipcSocket || ipcSocket.destroyed) {
     console.warn('[mpvManager] Cannot send command, socket not connected')
+    // The renderer thinks it is still playing something. Say so, rather than
+    // dropping the command and leaving dead-looking controls on screen.
+    if (hostWindowRef && !hostWindowRef.isDestroyed()) {
+      hostWindowRef.webContents.send('mpv-session-lost')
+    }
     return
   }
-  const fullCmd = [command, ...args]
-  const payload = JSON.stringify({ command: fullCmd }) + '\n'
-  ipcSocket.write(payload)
+
+  let effective: unknown[] = [command, ...args]
+
+  if (ended) {
+    const unpausing =
+      command === 'set_property' && args[0] === 'pause' && args[1] === false
+    const cycling = command === 'cycle' && args[0] === 'pause'
+    if (unpausing || cycling) {
+      // Replay. The seek is the part that matters; the unpause follows it
+      // because mpv paused itself when it reached the end.
+      ipcSocket.write(JSON.stringify({ command: ['seek', 0, 'absolute'] }) + '\n')
+      effective = ['set_property', 'pause', false]
+    } else if (command === 'seek') {
+      // The seek itself clears eof-reached; without this the user lands at the
+      // new position still paused, which reads as the controls being dead.
+      ipcSocket.write(JSON.stringify({ command: effective }) + '\n')
+      effective = ['set_property', 'pause', false]
+    }
+  }
+
+  ipcSocket.write(JSON.stringify({ command: effective }) + '\n')
 }
 
 export function closeMpv() {
   console.log('[mpvManager] Closing active mpv session')
   closingDeliberately = true
+  // Retake the identity before anything is torn down, so the retry loop and
+  // the process events belonging to the session being closed can see at once
+  // that they are no longer current.
+  sessionId++
+  ended = false
 
   if (ipcSocket) {
     try {

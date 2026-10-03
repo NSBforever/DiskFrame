@@ -189,6 +189,16 @@ const api = {
       ipcRenderer.removeListener('mpv-property-change', listener)
     }
   },
+  /** The player is gone but the viewer still thinks it is playing - a crashed
+   *  process or a closed pipe. The renderer starts it again rather than
+   *  sending commands nobody receives. */
+  onMpvSessionLost: (cb: () => void) => {
+    const listener = (): void => cb()
+    ipcRenderer.on('mpv-session-lost', listener)
+    return () => {
+      ipcRenderer.removeListener('mpv-session-lost', listener)
+    }
+  },
   onMpvError: (cb: (d: { error: string }) => void) => {
     const listener = (_e: unknown, d: any) => cb(d)
     ipcRenderer.on('mpv-error', listener)

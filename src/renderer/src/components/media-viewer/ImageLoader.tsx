@@ -153,6 +153,9 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   const mpvHeightRef = useRef<number | null>(null)
 
   const [isPlaying, setIsPlaying] = useState(false)
+  /** Played to its end and sitting on the last frame. The session is alive -
+   *  mpv runs with --keep-open=yes - so this is a state, not a failure. */
+  const [hasEnded, setHasEnded] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [volume, setVolume] = useState(1)
@@ -236,6 +239,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
     setIsBuffering(false)
     setSeekOffset(0)
     setIsPlaying(false)
+    setHasEnded(false)
     setCurrentTime(0)
     setDuration(0)
     setVolume(1)
@@ -344,6 +348,15 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
 
       startPlayback()
 
+      // The backend died while the viewer still had a video open. Start it
+       // again for this same file instead of leaving controls that send
+       // commands into nothing - which is indistinguishable, on screen, from
+       // controls that have stopped working.
+      const unbindLost = window.api.onMpvSessionLost(() => {
+        if (!active) return
+        setRetry({ path: file.path, n: retryNonce + 1 })
+      })
+
       const unbindError = window.api.onMpvError((errObj) => {
         console.error('[ImageLoader] mpv error event:', errObj.error)
         if (active) {
@@ -367,6 +380,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
       return () => {
         active = false
         clearTimeout(spinnerTimer)
+        unbindLost()
         unbindError()
         window.api.closeMpv()
         window.api.stopVideoStream().catch(() => {})
@@ -439,6 +453,18 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
         case 'pause':
           if (typeof value === 'boolean') {
             setIsPlaying(!value)
+          }
+          break
+        case 'ended':
+          // Explicit, rather than inferred from pause - mpv pauses itself when
+          // a file ends, and "the user paused" and "it finished" need
+          // different buttons and different behaviour from Play.
+          if (typeof value === 'boolean') {
+            setHasEnded(value)
+            if (value) {
+              setIsPlaying(false)
+              lastTimePosRef.current = null
+            }
           }
           break
         case 'volume':
@@ -1346,7 +1372,13 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
 
                     <button
                       onClick={togglePlay}
-                      title={isPlaying ? 'Pause (Space)' : 'Play (Space)'}
+                      title={
+                        hasEnded
+                          ? 'Replay from the beginning (Space)'
+                          : isPlaying
+                            ? 'Pause (Space)'
+                            : 'Play (Space)'
+                      }
                       style={{
                         background: 'transparent',
                         border: 'none',

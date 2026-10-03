@@ -152,7 +152,13 @@ function connect(wsUrl) {
     process.exit(1)
   }
   const targets = await listTargets(port)
-  const page = targets.find((t) => t.type === 'page' && t.webSocketDebuggerUrl)
+  // Once a video is open there are two page targets - the gallery and the mpv
+  // control overlay, which is its own window. --target picks by URL substring;
+  // without it the first page wins, which is whichever Chromium lists first.
+  const wantIdx = process.argv.indexOf('--target')
+  const want = wantIdx !== -1 ? process.argv[wantIdx + 1] : null
+  const pages = targets.filter((t) => t.type === 'page' && t.webSocketDebuggerUrl)
+  const page = want ? pages.find((t) => t.url.indexOf(want) !== -1) : pages.find((t) => t.url.indexOf('index.html') !== -1) || pages[0]
   if (!page) {
     console.error('no page target; targets: ' + targets.map((t) => t.type).join(','))
     process.exit(1)

@@ -130,6 +130,12 @@
   var duration = 0, cur = 0, paused = true, muted = false, volume = 100, speed = 1
   var subTracks = [], subActive = false, hideT = 0, dragging = false, menuOpen = false
   var lastT = null
+  // The video has played to its end and is sitting on the last frame. mpv is
+  // run with --keep-open=yes, so the session is alive and every control still
+  // works - but Play has to mean "replay", because un-pausing at the end of a
+  // file does nothing at all. The main process owns that rewrite; this is only
+  // about saying so on screen and keeping the bar up.
+  var isEnded = false
 
   function fmt(s) {
     if (!isFinite(s) || s < 0) s = 0
@@ -144,8 +150,8 @@
     knob.style.left = pct + '%'
     $('seek').setAttribute('aria-valuenow', Math.round(pct))
     timeEl.textContent = fmt(cur) + ' / ' + fmt(duration)
-    $('play').innerHTML = paused ? '&#9654;' : '&#10074;&#10074;'
-    $('play').title = (paused ? 'Play' : 'Pause') + ' (Space or K)'
+    $('play').innerHTML = isEnded ? '&#8635;' : (paused ? '&#9654;' : '&#10074;&#10074;')
+    $('play').title = (isEnded ? 'Replay from the beginning' : paused ? 'Play' : 'Pause') + ' (Space or K)'
     $('mute').innerHTML = (muted || volume === 0) ? '&#128263;' : '&#128266;'
     $('speed').textContent = speed + 'x'
     var noSubs = subTracks.length === 0
@@ -169,7 +175,8 @@
     if (api && api.setOverlayInteractive) api.setOverlayInteractive(true)
     clearTimeout(hideT)
     if (sticky === false) return
-    if (paused || dragging || menuOpen) return
+    // A finished video keeps its controls: they are the only way back into it.
+    if (paused || isEnded || dragging || menuOpen) return
     hideT = setTimeout(function () {
       topBar.classList.remove('on'); bot.classList.remove('on')
       closeMenus()
@@ -210,6 +217,13 @@
       }
       else if (name === 'duration' && typeof value === 'number') duration = value
       else if (name === 'pause' && typeof value === 'boolean') { paused = value; show() }
+      else if (name === 'ended' && typeof value === 'boolean') {
+        isEnded = value
+        // mpv pauses itself about 100ms after the end is reached; saying so
+        // now avoids a flash of the Pause icon on a video that has stopped.
+        if (value) { paused = true; lastT = null }
+        show()
+      }
       else if (name === 'volume' && typeof value === 'number') { volume = Math.round(value); $('vol').value = volume }
       else if (name === 'mute' && typeof value === 'boolean') muted = value
       else if (name === 'speed' && typeof value === 'number') speed = Math.round(value * 100) / 100
@@ -256,7 +270,10 @@
     dragging = false; $('seek').classList.remove('drag'); show()
   })
 
-  $('play').onclick = function () { cmd('set_property', ['pause', !paused]); toast(paused ? 'Play' : 'Paused') }
+  $('play').onclick = function () {
+    cmd('set_property', ['pause', !paused])
+    toast(isEnded ? 'Replay' : paused ? 'Play' : 'Paused')
+  }
   $('mute').onclick = function () { cmd('set_property', ['mute', !muted]); toast(muted ? 'Unmuted' : 'Muted') }
   $('vol').oninput = function (e) {
     var v = Number(e.target.value)

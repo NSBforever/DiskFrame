@@ -238,6 +238,7 @@ declare global {
       resizeMpv: (bounds: { left: number; top: number; width: number; height: number }) => void
       closeMpv: () => void
       onMpvPropertyChange: (callback: (data: { name: string; value: any }) => void) => () => void
+      onMpvSessionLost: (callback: () => void) => () => void
       onMpvError: (callback: (data: { error: string }) => void) => () => void
       startNativeDrag: (filePaths: string[]) => void
       onNativeDragError: (callback: (data: { error: string }) => void) => () => void
