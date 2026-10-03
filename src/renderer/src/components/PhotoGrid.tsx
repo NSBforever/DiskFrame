@@ -11,6 +11,7 @@
  * - Two-finger touch pinch on touchscreens works the same way.
  */
 import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { orderBand, type BandCandidate, type ScrollDirection } from '../../../main/thumbBand'
 import { AlertTriangle, Check, FileText, Film, Heart, Image as ImageIcon, Play, Unplug } from 'lucide-react'
 import {
   THUMB_UNAVAILABLE,
@@ -685,6 +686,12 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
   const [viewport, setViewport] = useState({ width: 0, height: 0 })
   const [cols, setCols] = useState(0)
   const [scrollTop, setScrollTop] = useState(0)
+  // Which way the viewport is travelling, for prefetch ranking only. A ref, not
+  // state: it must not trigger a render of its own, and the band is recomputed
+  // during render anyway. Small movements leave it alone so that settling or a
+  // one-pixel jitter does not flip the bias back and forth.
+  const scrollDirRef = useRef<ScrollDirection>('none')
+  const lastDirTopRef = useRef(0)
 
   const gridWidth = Math.max(0, viewport.width - PAD_X * 2)
   const effectiveCols = cols || (gridWidth > 0 ? colsFor(gridWidth, tileSize) : 1)
@@ -1141,6 +1148,11 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
   // extra mounted tile is a decoded thumbnail Chromium's renderer process
   // holds in its image/compositor cache (measured: this was the dominant
   // driver of multi-GB renderer growth during scrolling, not a JS heap leak).
+  if (Math.abs(scrollTop - lastDirTopRef.current) > layout.pitch / 2) {
+    scrollDirRef.current = scrollTop > lastDirTopRef.current ? 'down' : 'up'
+    lastDirTopRef.current = scrollTop
+  }
+
   const overscan = 2 * layout.pitch
   const y0 = scrollTop - overscan
   const y1 = scrollTop + viewport.height + overscan
@@ -1282,13 +1294,16 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
   prefetchThumblessRef.current = (() => {
     if (rangeEnd < rangeStart) return []
     const onScreen = new Set(visibleThumblessPaths)
-    const out: string[] = []
+    const candidates: BandCandidate[] = []
     for (let i = prefetchStart; i <= prefetchEnd; i++) {
       if (i >= rangeStart && i <= rangeEnd) continue
       const r = getRow(i)
-      if (r && !r.thumb && !onScreen.has(r.path)) out.push(r.path)
+      if (r && !r.thumb && !onScreen.has(r.path)) candidates.push({ index: i, path: r.path })
     }
-    return out
+    // Ranked by distance from the viewport, with the direction of travel
+    // discounted rather than the other side dropped - see thumbBand.ts. Index
+    // order would make a downward scroll wait on rows already behind it.
+    return orderBand(candidates, rangeStart, rangeEnd, scrollDirRef.current)
   })()
 
   // Bump thumbnail generation for whatever's on screen right now ahead of the

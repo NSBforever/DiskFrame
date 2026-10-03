@@ -198,6 +198,16 @@ db.pragma('journal_mode = WAL')
 db.pragma('synchronous = NORMAL')
 
 const thumbDir = join(app.getPath('userData'), 'thumbs')
+
+/**
+ * Thumbnail edge length in pixels, for both photos and video frames.
+ *
+ * The grid's tile is 55-120 CSS px (the zoom range), so 300px still covers a
+ * 2x display at the largest tile with room to spare. It is deliberately one
+ * constant: the photo and video paths used to hard-code 300 separately, which
+ * is the kind of thing that drifts.
+ */
+const THUMB_SIZE = 300
 if (!fs.existsSync(thumbDir)) fs.mkdirSync(thumbDir, { recursive: true })
 
 // Hidden vault folder
@@ -373,6 +383,24 @@ if (pendingColumns.length > 0 || favouritesNeedSeeding) {
 // resumable across launches instead of re-parsing the whole library each time.
 if (!cols.includes('exif_checked'))
   db.prepare('ALTER TABLE files ADD COLUMN exif_checked INTEGER DEFAULT 0').run()
+
+// Why a thumbnail could not be produced, remembered across launches.
+//
+// Failure was only ever held in memory, so every launch retried every file
+// that cannot produce a thumbnail. This catalogue holds 3,022 AppleDouble
+// stubs (macOS '._name' sidecars, ~4KB of metadata indexed as video because
+// they carry a video extension). Each one costs two failed ffmpeg spawns,
+// about 133ms, and there are only two generation slots - so a viewport
+// containing a few of them repeatedly pushed real, decodable video behind
+// work already known to be hopeless.
+//
+// fail_sig is the file as it was when it failed (size:mtime). If the file
+// changes the signature stops matching and the retries start over, so this
+// is a bounded memory of failure rather than a permanent verdict.
+if (!cols.includes('thumb_fail_count'))
+  db.prepare('ALTER TABLE files ADD COLUMN thumb_fail_count INTEGER DEFAULT 0').run()
+if (!cols.includes('thumb_fail_sig'))
+  db.prepare('ALTER TABLE files ADD COLUMN thumb_fail_sig TEXT').run()
 
 // Left behind by an older schema that had an `is_vaulted` column. SQLite keeps
 // the index definition around, and every write to `files` has to consider it.
@@ -1126,6 +1154,10 @@ export function getAllFilesWithoutThumbs(
     .prepare(
       `SELECT * FROM files
        WHERE ${NO_THUMB_SQL} AND trashed_at IS NULL AND ext IN (${placeholders}) ${scope}
+         -- Rows that have used up their attempts are left out entirely, so a
+         -- pass is never spent re-failing the same undecodable files. A changed
+         -- file clears its own count (recordThumbFailure) and returns here.
+         AND IFNULL(thumb_fail_count, 0) < ${MAX_THUMB_ATTEMPTS}
        ORDER BY date DESC LIMIT ?`
     )
     .all(...(params as never[]), Math.max(1, Math.floor(limit))) as ScannedFile[]
@@ -1163,7 +1195,7 @@ export async function generateThumbForFile(fullPath: string, ext: string): Promi
       if (fs.existsSync(thumbPath)) return thumbPath
       await sharp(fullPath)
         .rotate()
-        .resize(300, 300, { fit: 'cover', position: 'centre' })
+        .resize(THUMB_SIZE, THUMB_SIZE, { fit: 'cover', position: 'centre' })
         .jpeg({ quality: 80 })
         .toFile(thumbPath)
       return fs.existsSync(thumbPath) ? thumbPath : null
@@ -1186,7 +1218,7 @@ export async function generateThumbForFile(fullPath: string, ext: string): Promi
       })
       await sharp(outputBuffer)
         .rotate()
-        .resize(300, 300, { fit: 'cover', position: 'centre' })
+        .resize(THUMB_SIZE, THUMB_SIZE, { fit: 'cover', position: 'centre' })
         .jpeg({ quality: 80 })
         .toFile(thumbPath)
       return fs.existsSync(thumbPath) ? thumbPath : null
@@ -1202,23 +1234,60 @@ export async function generateThumbForFile(fullPath: string, ext: string): Promi
   return null
 }
 
-function extractRawFrame(fullPath: string, seekSecs: number | string, tempFramePath: string): Promise<boolean> {
+/**
+ * One video frame, already scaled and cropped, straight out of ffmpeg.
+ *
+ * This replaced a three-process pipeline: ffmpeg wrote a FULL-RESOLUTION PNG to
+ * a temp file, ffprobe was spawned purely to read the rotation angle, and sharp
+ * then read that PNG back off disk to resize it. Measured on disposable 1080p
+ * and 4K fixtures (scratch/thumbbench.js): 535ms mean per file versus 303ms for
+ * this, and the 4K case 971ms versus 521ms - while also no longer writing a
+ * 0.3-1.2MB temp PNG per thumbnail.
+ *
+ * Rotation is ffmpeg's own job: it applies a stream's display matrix by default
+ * (verified on a real `-display_rotation 90` fixture - a 1920x1080 source scales
+ * to 300x533 portrait, and -noautorotate gives 300x169), and it does so BEFORE
+ * the filter chain, so the crop is taken from the upright frame. That is what
+ * the ffprobe call and sharp's rotate() were compensating for.
+ *
+ * scale(force_original_aspect_ratio=increase) + centre crop is exactly sharp's
+ * { fit: 'cover', position: 'centre' }, so framing is unchanged.
+ *
+ * Written to a temp file and renamed, never straight to the cache key: the
+ * renderer serves thumbnails off disk through the media: protocol, and a
+ * half-written JPEG at the final path would be served as a broken image.
+ */
+function extractScaledFrame(
+  fullPath: string,
+  seekSecs: number | string,
+  outPath: string,
+  size: number
+): Promise<boolean> {
   return new Promise((resolve) => {
     const args = [
+      // Before -i: ffmpeg seeks by keyframe without decoding the frames it
+      // skips. After -i it would decode from zero every time.
       '-ss',
       seekSecs.toString(),
       '-i',
       fullPath,
       '-vframes',
       '1',
+      '-vf',
+      `scale=${size}:${size}:force_original_aspect_ratio=increase,crop=${size}:${size}`,
       '-f',
       'image2',
+      '-vcodec',
+      'mjpeg',
       '-q:v',
-      '2',
+      '4',
+      // One thread. Several of these run at once by design, and letting each
+      // spawn fan out across every core is how thumbnailing starves the
+      // renderer instead of the other way round.
       '-threads',
       '1',
       '-y',
-      tempFramePath
+      outPath
     ]
     const ff = cp.spawn(ffmpegExe, args)
     // Drained but not accumulated: a stalled ffmpeg whose stderr nobody reads
@@ -1226,21 +1295,31 @@ function extractRawFrame(fullPath: string, seekSecs: number | string, tempFrameP
     // per-thumbnail debug log.
     ff.stderr.resume()
 
+    let settled = false
+    const done = (ok: boolean): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(killTimer)
+      resolve(ok)
+    }
     const killTimer = setTimeout(() => {
       try {
         ff.kill()
-      } catch {}
+      } catch {
+        /* already gone */
+      }
+      done(false)
     }, 15000)
 
-    ff.on('error', () => {
-      clearTimeout(killTimer)
-      resolve(false)
-    })
-
+    ff.on('error', () => done(false))
     ff.on('close', () => {
-      clearTimeout(killTimer)
-      const exists = fs.existsSync(tempFramePath) && fs.statSync(tempFramePath).size > 0
-      resolve(exists)
+      let ok = false
+      try {
+        ok = fs.existsSync(outPath) && fs.statSync(outPath).size > 0
+      } catch {
+        ok = false
+      }
+      done(ok)
     })
   })
 }
@@ -1253,59 +1332,106 @@ async function generateVideoThumb(fullPath: string): Promise<string | null> {
   }
 
   const osTmp = app.getPath('temp') || require('os').tmpdir()
-  const tempFramePath = join(osTmp, `df_raw_${hash}_${Date.now()}.png`)
+  const tempOut = join(osTmp, `df_raw_${hash}_${Date.now()}.jpg`)
 
   try {
-    // 1. Extract single frame near 0.2s mark, fall back to 0s if file is short/fails
-    let success = await extractRawFrame(fullPath, 0.2, tempFramePath)
-    if (!success) {
-      success = await extractRawFrame(fullPath, 0, tempFramePath)
-    }
+    // 0.2s rather than 0: the very first frame of phone video is often black or
+    // a partial keyframe. Falling back to 0 covers clips shorter than that and
+    // containers whose timestamps do not start at zero.
+    let ok = await extractScaledFrame(fullPath, 0.2, tempOut, THUMB_SIZE)
+    if (!ok) ok = await extractScaledFrame(fullPath, 0, tempOut, THUMB_SIZE)
 
-    if (!success || !fs.existsSync(tempFramePath)) {
+    if (!ok) {
       console.warn(`[DIAG:FRAME_EXTRACT_FAILED] for: "${fullPath}"`)
       return null
     }
 
-    // 2. Resize extracted frame through Sharp
-    const ext = fullPath.slice(fullPath.lastIndexOf('.')).toLowerCase()
-    let rotationAngle = 0
-    if (ext === '.mov') {
-      const meta = await getMovMetadata(fullPath)
-      if (meta && meta.rotation) {
-        rotationAngle = meta.rotation
-      }
-    }
-
-    const image = sharp(tempFramePath)
-    if (ext === '.mov' && rotationAngle) {
-      image.rotate(rotationAngle)
-    } else {
-      image.rotate()
-    }
-
-    await image
-      .resize(300, 300, { fit: 'cover', position: 'centre' })
-      .jpeg({ quality: 80 })
-      .toFile(thumbPath)
-
-    const created = fs.existsSync(thumbPath) && fs.statSync(thumbPath).size > 0
-    return created ? thumbPath : null
+    // Rename onto the cache key only once the file is complete and valid.
+    fs.renameSync(tempOut, thumbPath)
+    return fs.existsSync(thumbPath) && fs.statSync(thumbPath).size > 0 ? thumbPath : null
   } catch (err) {
-    console.error(`[DIAG:SHARP_FRAME_FAILED] for: "${fullPath}"`, err)
+    console.error(`[DIAG:VIDEO_THUMB_FAILED] for: "${fullPath}"`, err)
     return null
   } finally {
-    // Clean up temporary raw frame image file
-    if (fs.existsSync(tempFramePath)) {
+    if (fs.existsSync(tempOut)) {
       try {
-        fs.unlinkSync(tempFramePath)
-      } catch {}
+        fs.unlinkSync(tempOut)
+      } catch {
+        /* temp file */
+      }
     }
   }
 }
 
+/** Hard ceiling on attempts before a file is left alone. Transient causes (a
+ *  drive asleep, a locked file, a momentary decoder failure) get retried;
+ *  something genuinely undecodable stops consuming generation slots. */
+export const MAX_THUMB_ATTEMPTS = 3
+
+/** The file as it is now, so a changed file earns fresh attempts. */
+function thumbFailSignature(filePath: string): string | null {
+  try {
+    const st = fs.statSync(filePath)
+    return `${st.size}:${Math.round(st.mtimeMs)}`
+  } catch {
+    return null
+  }
+}
+
 export function updateThumb(filePath: string, thumbPath: string): void {
-  db.prepare('UPDATE files SET thumb = ? WHERE path = ?').run(thumbPath, filePath)
+  // Success clears the failure history: whatever was wrong no longer is.
+  db
+    .prepare('UPDATE files SET thumb = ?, thumb_fail_count = 0, thumb_fail_sig = NULL WHERE path = ?')
+    .run(thumbPath, filePath)
+}
+
+/**
+ * Records that a thumbnail could not be produced for this file.
+ *
+ * Counts attempts rather than writing a verdict, and stores the file as it was
+ * so that replacing or repairing the file starts the count again. Nothing is
+ * written into the `thumb` column itself - an older build wrote a NO_FILE
+ * sentinel into that path column, which the renderer then tried to load and
+ * the backfill treated as done, so those rows could never recover.
+ */
+export function recordThumbFailure(filePath: string): void {
+  const sig = thumbFailSignature(filePath)
+  db
+    .prepare(
+      `UPDATE files SET
+         thumb_fail_count = CASE WHEN thumb_fail_sig IS ? THEN IFNULL(thumb_fail_count, 0) + 1 ELSE 1 END,
+         thumb_fail_sig = ?
+       WHERE path = ?`
+    )
+    .run(sig, sig, filePath)
+}
+
+/**
+ * Of these paths, the ones that have exhausted their attempts and have not
+ * changed since. Callers skip them so the generation slots go to work that can
+ * actually succeed.
+ */
+export function exhaustedThumbPaths(paths: string[]): Set<string> {
+  const out = new Set<string>()
+  if (paths.length === 0) return out
+  // Chunked: SQLite has a bound-parameter limit and a viewport request can
+  // carry hundreds of paths.
+  const CHUNK = 400
+  for (let i = 0; i < paths.length; i += CHUNK) {
+    const slice = paths.slice(i, i + CHUNK)
+    const ph = slice.map(() => "?").join(",")
+    const rows = db
+      .prepare(
+        `SELECT path, thumb_fail_sig FROM files
+         WHERE path IN (${ph}) AND IFNULL(thumb_fail_count, 0) >= ?`
+      )
+      .all(...slice, MAX_THUMB_ATTEMPTS) as { path: string; thumb_fail_sig: string | null }[]
+    for (const r of rows) {
+      // Only still exhausted if the file is as it was when it failed.
+      if (r.thumb_fail_sig === thumbFailSignature(r.path)) out.add(r.path)
+    }
+  }
+  return out
 }
 
 const EXIF_EXTS = new Set([

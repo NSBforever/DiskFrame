@@ -14,6 +14,8 @@ import {
   getFavourites,
   getFileCount,
   getAllFilesWithoutThumbs,
+  recordThumbFailure,
+  exhaustedThumbPaths,
   THUMB_BACKFILL_BATCH,
   generateThumbForFile,
   updateThumb,
@@ -1482,12 +1484,18 @@ app.whenReady().then(() => {
               }
             } else {
               thumbFailed.add(p)
+              // Also remembered on disk. In-memory only meant every launch
+              // retried every undecodable file, and the two generation slots
+              // went to work already known to be hopeless while visible video
+              // waited behind it. Bounded - see MAX_THUMB_ATTEMPTS.
+              recordThumbFailure(p)
               if (mainWindow && !mainWindow.isDestroyed()) {
                 mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath: THUMB_UNAVAILABLE })
               }
             }
           } catch (err) {
             thumbFailed.add(p)
+            recordThumbFailure(p)
             console.error('[thumb:onDemand]', p, err)
             if (mainWindow && !mainWindow.isDestroyed()) {
               mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath: THUMB_UNAVAILABLE })
@@ -1519,11 +1527,28 @@ app.whenReady().then(() => {
     const payload = Array.isArray(raw)
       ? { visible: raw, prefetch: [] }
       : ((raw ?? {}) as { visible?: unknown; prefetch?: unknown })
-    const request = {
+    const requested = {
       visible: safePathList(payload.visible, 300),
       prefetch: safePathList(payload.prefetch, 900)
     }
+    // Files that have exhausted their attempts never enter the queue, so a
+    // screen holding a few undecodable sidecars cannot push decodable video
+    // behind them. One indexed lookup for the whole request, not per file.
+    const exhausted = exhaustedThumbPaths([...requested.visible, ...requested.prefetch])
+    if (exhausted.size > 0) {
+      diag('thumbs', `skipped ${exhausted.size} path(s) with exhausted thumbnail attempts`)
+    }
+    const request = {
+      visible: requested.visible.filter((p) => !exhausted.has(p)),
+      prefetch: requested.prefetch.filter((p) => !exhausted.has(p))
+    }
     thumbQueue = mergeThumbRequest(thumbQueue, request, (p) => thumbInFlight.has(p) || thumbFailed.has(p))
+    // The renderer still has to stop showing a spinner for them.
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      for (const p of exhausted) {
+        mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath: THUMB_UNAVAILABLE })
+      }
+    }
     void pumpThumbs()
     return []
   })
