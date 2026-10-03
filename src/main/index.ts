@@ -15,6 +15,7 @@ import {
   getFileCount,
   getAllFilesWithoutThumbs,
   recordThumbFailure,
+  thumbCacheHit,
   exhaustedThumbPaths,
   THUMB_BACKFILL_BATCH,
   generateThumbForFile,
@@ -90,6 +91,12 @@ import {
 } from './validation'
 import { parseSafeMode, subsystemEnabled } from './runtimeMode'
 import { resolveDriveLetters } from './driveIdentity'
+import { ThumbStageStats } from './thumbStages'
+
+/** Which extensions go down the ffmpeg path, so video decode time can be
+ *  reported separately from photo decode time - they differ by an order of
+ *  magnitude and one mean over both explains neither. */
+const VIDEO_THUMB_EXTS = new Set(['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.wmv', '.webm'])
 import {
   EMPTY_QUEUE,
   mergeThumbRequest,
@@ -640,7 +647,7 @@ async function runThumbBackfill(volumeId?: string | null): Promise<void> {
       }
 
       try {
-        const thumbPath = await generateThumbForFile(file.path, file.ext)
+        const thumbPath = await generateThumbForFile(file.path, file.ext, file.volume_id ?? null)
         if (thumbPath) {
           updateThumb(file.path, thumbPath)
           if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1418,6 +1425,22 @@ app.whenReady().then(() => {
   // user is scrolling towards. See thumbQueue.ts for why they are not one list.
   let thumbQueue: ThumbQueueState = EMPTY_QUEUE
   let thumbPumping = false
+  // When each path entered the queue. Queue wait and decode time are different
+  // problems with opposite fixes, so they are never added together.
+  const thumbEnqueuedAt = new Map<string, number>()
+  const thumbStages = new ThumbStageStats()
+  let thumbStageTimer: NodeJS.Timeout | null = null
+  /** Summarised on a trailing timer rather than per thumbnail: one log line per
+   *  burst of scrolling, instead of hundreds. */
+  const scheduleStageReport = (): void => {
+    if (thumbStageTimer) return
+    thumbStageTimer = setTimeout(() => {
+      thumbStageTimer = null
+      const line = thumbStages.report()
+      if (line) diag('thumbs', line)
+      thumbStages.reset()
+    }, 3000)
+  }
 
   /**
    * Single bounded pump.
@@ -1442,11 +1465,23 @@ app.whenReady().then(() => {
           if (p === undefined) return
           if (thumbInFlight.has(p) || thumbFailed.has(p)) continue
           thumbInFlight.add(p)
+          const tPicked = Date.now()
+          const waitMs = tPicked - (thumbEnqueuedAt.get(p) ?? tPicked)
+          thumbEnqueuedAt.delete(p)
+          let lookupMs = 0
+          let generateMs = 0
+          let deliverMs = 0
+          let cacheHit = false
+          let failed = false
+          const isVideo = VIDEO_THUMB_EXTS.has(extname(p).toLowerCase())
           try {
             // Shared with the media protocol and file actions, so a tile, a
             // preview and an action all agree on why a path did not resolve.
+            const tLookup = Date.now()
             const availability = checkPathAvailability(p)
+            lookupMs = Date.now() - tLookup
             if (availability.status !== 'ok') {
+              failed = true
               // Anything that can come back on its own - a disconnected drive,
               // a relettered volume, a folder the user can still point us at -
               // is never remembered as failed, or it would stay broken after
@@ -1473,16 +1508,28 @@ app.whenReady().then(() => {
             // Generated from wherever the original actually is now. A cached
             // thumbnail that has gone missing is regenerated from a readable
             // original rather than marking that original unavailable.
+            // A cache hit and a cold generation both come back from here; the
+            // difference is whether the file already existed, which is what
+            // separates "warm display" from "cold generation" in any measurement.
+            const tGen = Date.now()
+            const pathVolumeId = getCachedVolumeId(p.slice(0, 2))
+            const existedBefore = thumbCacheHit(availability.resolved, pathVolumeId)
             const thumbPath = await generateThumbForFile(
               availability.resolved,
-              extname(p).toLowerCase()
+              extname(p).toLowerCase(),
+              pathVolumeId
             )
+            generateMs = Date.now() - tGen
+            cacheHit = existedBefore && thumbPath !== null
             if (thumbPath) {
               updateThumb(p, thumbPath)
+              const tDeliver = Date.now()
               if (mainWindow && !mainWindow.isDestroyed()) {
                 mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath })
               }
+              deliverMs = Date.now() - tDeliver
             } else {
+              failed = true
               thumbFailed.add(p)
               // Also remembered on disk. In-memory only meant every launch
               // retried every undecodable file, and the two generation slots
@@ -1501,6 +1548,8 @@ app.whenReady().then(() => {
               mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath: THUMB_UNAVAILABLE })
             }
           } finally {
+            thumbStages.add({ waitMs, lookupMs, generateMs, deliverMs, cacheHit, failed, video: isVideo })
+            scheduleStageReport()
             thumbInFlight.delete(p)
           }
           await new Promise((r) => setImmediate(r))
@@ -1543,6 +1592,15 @@ app.whenReady().then(() => {
       prefetch: requested.prefetch.filter((p) => !exhausted.has(p))
     }
     thumbQueue = mergeThumbRequest(thumbQueue, request, (p) => thumbInFlight.has(p) || thumbFailed.has(p))
+    const queuedNow = Date.now()
+    for (const path of [...thumbQueue.visible, ...thumbQueue.prefetch]) {
+      if (!thumbEnqueuedAt.has(path)) thumbEnqueuedAt.set(path, queuedNow)
+    }
+    // Paths the merge dropped must not keep a timestamp alive.
+    if (thumbEnqueuedAt.size > 4000) {
+      const live = new Set([...thumbQueue.visible, ...thumbQueue.prefetch, ...thumbInFlight])
+      for (const key of thumbEnqueuedAt.keys()) if (!live.has(key)) thumbEnqueuedAt.delete(key)
+    }
     // The renderer still has to stop showing a spinner for them.
     if (mainWindow && !mainWindow.isDestroyed()) {
       for (const p of exhausted) {

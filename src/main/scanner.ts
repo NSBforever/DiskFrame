@@ -1186,13 +1186,63 @@ function makeHash(fullPath: string): string {
 const sharpExts = ['.jpg', '.jpeg', '.png', '.webp']
 
 // ─── THUMBNAIL GENERATION ─────────────────────────────────────────────────────
-export async function generateThumbForFile(fullPath: string, ext: string): Promise<string | null> {
+/**
+ * Where this file's thumbnail lives, and the legacy location to adopt from.
+ *
+ * The key used to be md5(path) alone. A drive letter is a mount point, not an
+ * identity - this machine has had two different volumes as D: - so two files
+ * at the same path on different volumes hashed to the same thumbnail, and
+ * whichever was generated first was shown for both.
+ *
+ * The key is now scoped by the verified volume when one is known. The old key
+ * is still checked, and a thumbnail found there is RENAMED into the scoped
+ * key rather than regenerated: the existing cache (654MB, 42,231 files here)
+ * stays useful and migrates as files are browsed, at the cost of one rename.
+ * With no verified volume the legacy key is used unchanged - inventing a
+ * scope would be asserting an identity that was never established.
+ */
+function thumbKeyFor(fullPath: string, volumeId?: string | null): { scoped: string; legacy: string } {
+  const legacy = join(thumbDir, `${makeHash(fullPath)}.jpg`)
+  if (!volumeId) return { scoped: legacy, legacy }
+  // NUL cannot appear in either a volume GUID or a Windows path, so it is an
+  // unambiguous separator - "A" + "BC" can never collide with "AB" + "C".
+  return { scoped: join(thumbDir, `${makeHash(volumeId + String.fromCharCode(0) + fullPath)}.jpg`), legacy }
+}
+
+/** An existing thumbnail for this file, adopting the legacy key if that is
+ *  where it is. Returns null when nothing is cached. */
+function existingThumb(fullPath: string, volumeId?: string | null): string | null {
+  const { scoped, legacy } = thumbKeyFor(fullPath, volumeId)
+  try {
+    if (fs.existsSync(scoped) && fs.statSync(scoped).size > 0) return scoped
+    if (scoped !== legacy && fs.existsSync(legacy) && fs.statSync(legacy).size > 0) {
+      // Migrate in place. If another volume adopted it first the rename
+      // fails, and that volume simply generates its own.
+      try {
+        fs.renameSync(legacy, scoped)
+        return scoped
+      } catch {
+        return legacy
+      }
+    }
+  } catch {
+    /* unreadable cache entry - treat as absent */
+  }
+  return null
+}
+
+export async function generateThumbForFile(
+  fullPath: string,
+  ext: string,
+  volumeId?: string | null
+): Promise<string | null> {
+  const cached = existingThumb(fullPath, volumeId)
+  if (cached) return cached
   const lowerExt = ext.toLowerCase()
 
   if (sharpExts.includes(lowerExt)) {
     try {
-      const thumbPath = join(thumbDir, `${makeHash(fullPath)}.jpg`)
-      if (fs.existsSync(thumbPath)) return thumbPath
+      const thumbPath = thumbKeyFor(fullPath, volumeId).scoped
       await sharp(fullPath)
         .rotate()
         .resize(THUMB_SIZE, THUMB_SIZE, { fit: 'cover', position: 'centre' })
@@ -1206,8 +1256,7 @@ export async function generateThumbForFile(fullPath: string, ext: string): Promi
 
   if (lowerExt === '.heic') {
     try {
-      const thumbPath = join(thumbDir, `${makeHash(fullPath)}.jpg`)
-      if (fs.existsSync(thumbPath)) return thumbPath
+      const thumbPath = thumbKeyFor(fullPath, volumeId).scoped
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const convert = require('heic-convert')
       const inputBuffer = fs.readFileSync(fullPath)
@@ -1228,7 +1277,7 @@ export async function generateThumbForFile(fullPath: string, ext: string): Promi
   }
 
   if (videoExts.includes(lowerExt)) {
-    return generateVideoThumb(fullPath)
+    return generateVideoThumb(fullPath, volumeId)
   }
 
   return null
@@ -1324,12 +1373,14 @@ function extractScaledFrame(
   })
 }
 
-async function generateVideoThumb(fullPath: string): Promise<string | null> {
+async function generateVideoThumb(
+  fullPath: string,
+  volumeId?: string | null
+): Promise<string | null> {
+  const thumbPath = thumbKeyFor(fullPath, volumeId).scoped
   const hash = makeHash(fullPath)
-  const thumbPath = join(thumbDir, `${hash}.jpg`)
-  if (fs.existsSync(thumbPath) && fs.statSync(thumbPath).size > 0) {
-    return thumbPath
-  }
+  const cached = existingThumb(fullPath, volumeId)
+  if (cached) return cached
 
   const osTmp = app.getPath('temp') || require('os').tmpdir()
   const tempOut = join(osTmp, `df_raw_${hash}_${Date.now()}.jpg`)
@@ -1375,6 +1426,22 @@ function thumbFailSignature(filePath: string): string | null {
     return `${st.size}:${Math.round(st.mtimeMs)}`
   } catch {
     return null
+  }
+}
+
+/**
+ * Whether a thumbnail for this file is already on disk.
+ *
+ * Asked BEFORE generation so a warm display can be told apart from a cold
+ * decode in the timings - generateThumbForFile returns an existing file and a
+ * freshly made one identically, which is right for the caller but useless for
+ * measuring. Reads nothing but the directory entry.
+ */
+export function thumbCacheHit(fullPath: string, volumeId?: string | null): boolean {
+  try {
+    return existingThumb(fullPath, volumeId) !== null
+  } catch {
+    return false
   }
 }
 
@@ -1709,7 +1776,7 @@ export async function updateFileInPlace(filePath: string, statInput?: fs.Stats):
 
   let newThumb: string | null = null
   try {
-    newThumb = await generateThumbForFile(filePath, ext)
+    newThumb = await generateThumbForFile(filePath, ext, volumeId)
   } catch (e) {
     console.error(`[updateFileInPlace] Thumb generation failed for ${filePath}:`, e)
   }
