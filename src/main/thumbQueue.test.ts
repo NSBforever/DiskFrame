@@ -86,3 +86,35 @@ test('an empty request leaves outstanding work alone', () => {
   assert.deepEqual(q.visible, ['a'])
   assert.deepEqual(q.prefetch, [])
 })
+
+test('a predicate lets one pool take only its own kind of work', () => {
+  // Video generation is an ffmpeg subprocess; photo generation runs sharp inside
+  // the main process. They need different concurrency limits but must share one
+  // priority order, so the pools filter a single queue rather than keeping two.
+  const q = mergeThumbRequest(
+    EMPTY_QUEUE,
+    { visible: ['a.jpg', 'b.mov', 'c.jpg'], prefetch: ['d.mov'] },
+    none
+  )
+  const isVideo = (p: string): boolean => p.endsWith('.mov')
+  assert.equal(nextThumb(q, isVideo), 'b.mov', 'video pool skips the photos ahead of it')
+  assert.equal(nextThumb(q, (p) => !isVideo(p)), 'a.jpg', 'photo pool takes the first photo')
+  assert.equal(nextThumb(q, isVideo), 'd.mov', 'and then falls through to the prefetch tier')
+  assert.equal(nextThumb(q, (p) => !isVideo(p)), 'c.jpg')
+  assert.equal(nextThumb(q, isVideo), undefined)
+})
+
+test('a visible item is still taken before a prefetched one of the same kind', () => {
+  // The whole point of one shared queue: filtering by kind must not let a
+  // prefetched item overtake a visible one.
+  const q = mergeThumbRequest(EMPTY_QUEUE, { visible: ['v.mov'], prefetch: ['p.mov'] }, none)
+  assert.equal(nextThumb(q, (p) => p.endsWith('.mov')), 'v.mov')
+  assert.equal(nextThumb(q, (p) => p.endsWith('.mov')), 'p.mov')
+})
+
+test('no predicate keeps the original visible-then-prefetch behaviour', () => {
+  const q = mergeThumbRequest(EMPTY_QUEUE, { visible: ['a'], prefetch: ['b'] }, none)
+  assert.equal(nextThumb(q), 'a')
+  assert.equal(nextThumb(q), 'b')
+  assert.equal(nextThumb(q), undefined)
+})

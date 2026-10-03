@@ -69,10 +69,27 @@ export function mergeThumbRequest(
   return { visible, prefetch }
 }
 
-/** The next path to generate, visible tier first. Mutates in place - this is a
- *  work queue, and the pump's workers share it. */
-export function nextThumb(q: ThumbQueueState): string | undefined {
-  return q.visible.shift() ?? q.prefetch.shift()
+/**
+ * The next path to generate, visible tier first.
+ *
+ * `accept` lets two worker pools drain this one queue by kind of work. Video
+ * thumbnails are an ffmpeg subprocess; photo thumbnails run sharp inside this
+ * process, on its libuv pool. They need different limits, but they must share
+ * one priority order - two separate queues would let a prefetched photo be
+ * generated ahead of a visible video.
+ *
+ * Mutates in place: this is a work queue and the pump's workers share it.
+ */
+export function nextThumb(
+  q: ThumbQueueState,
+  accept?: (path: string) => boolean
+): string | undefined {
+  if (!accept) return q.visible.shift() ?? q.prefetch.shift()
+  for (const tier of [q.visible, q.prefetch]) {
+    const at = tier.findIndex(accept)
+    if (at !== -1) return tier.splice(at, 1)[0]
+  }
+  return undefined
 }
 
 /** Total work outstanding. The drive-wide backfill stands aside while this is

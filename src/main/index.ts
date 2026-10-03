@@ -97,6 +97,16 @@ import { ThumbStageStats } from './thumbStages'
  *  reported separately from photo decode time - they differ by an order of
  *  magnitude and one mean over both explains neither. */
 const VIDEO_THUMB_EXTS = new Set(['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.wmv', '.webm'])
+
+/** Logical cores, with a floor so a failure to read them cannot yield zero. */
+function cpuCount(): number {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    return Math.max(2, require('os').cpus().length)
+  } catch {
+    return 4
+  }
+}
 import {
   EMPTY_QUEUE,
   mergeThumbRequest,
@@ -1457,11 +1467,36 @@ app.whenReady().then(() => {
     if (thumbPumping) return
     thumbPumping = true
     try {
-      const CONCURRENCY = 2
-      const workers = Array.from({ length: CONCURRENCY }, async () => {
+      // Two pools over one priority order, because the two kinds of work load
+      // the machine in completely different ways.
+      //
+      // Photo thumbnails run sharp INSIDE this process, on its libuv thread pool,
+      // so they compete directly with everything else the main process must do.
+      // That is what the earlier measurement was about: four concurrent
+      // sharp/ffmpeg operations starved the renderer badly enough to stall
+      // main-thread JS for seconds. Their limit stays exactly where it was.
+      //
+      // Video thumbnails are now a single ffmpeg subprocess with -threads 1 -
+      // they used to be ffmpeg plus ffprobe plus an in-process sharp resize of a
+      // full-resolution PNG. A subprocess is scheduled by the OS across all cores
+      // and touches neither this process's event loop nor its thread pool, so the
+      // old shared limit was guarding a cost that no longer exists on this path.
+      //
+      // It matters because queue WAIT, not decode time, is the bottleneck.
+      // Measured on a cold 30-tile viewport: generation averaged 205ms while mean
+      // wait was 1559ms and the worst 2981ms. Thirty visible tiles sharing two
+      // slots is what leaves visible video sitting as placeholders.
+      //
+      // Still bounded, and bounded by the machine rather than by a guess.
+      const PHOTO_SLOTS = 2
+      const VIDEO_SLOTS = Math.min(6, Math.max(2, cpuCount() - 2))
+      const isVideoPath = (path: string): boolean =>
+        VIDEO_THUMB_EXTS.has(extname(path).toLowerCase())
+
+      const runWorker = async (accept: (path: string) => boolean): Promise<void> => {
         for (;;) {
           if (isQuitting) return
-          const p = nextThumb(thumbQueue)
+          const p = nextThumb(thumbQueue, accept)
           if (p === undefined) return
           if (thumbInFlight.has(p) || thumbFailed.has(p)) continue
           thumbInFlight.add(p)
@@ -1554,8 +1589,12 @@ app.whenReady().then(() => {
           }
           await new Promise((r) => setImmediate(r))
         }
-      })
-      await Promise.all(workers)
+      }
+
+      await Promise.all([
+        ...Array.from({ length: VIDEO_SLOTS }, () => runWorker(isVideoPath)),
+        ...Array.from({ length: PHOTO_SLOTS }, () => runWorker((path) => !isVideoPath(path)))
+      ])
     } finally {
       thumbPumping = false
       // A request that arrived while the last worker was finishing would have
