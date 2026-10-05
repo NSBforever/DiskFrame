@@ -208,6 +208,17 @@ function previewUrl(p: string): string {
   return 'file:///' + encodeURI(p.replace(/\\/g, '/')).replace(/#/g, '%23')
 }
 
+/**
+ * Thumbnails load over file: too. They are DiskFrame's own generated files in
+ * its own data folder, which the media: handler only ever forwarded to file:
+ * after a prefix check - but that handler is JavaScript on the main process,
+ * one task per image, so every tile scrolled past queued work on the thread
+ * that also routes input and pumps the window. file: is served by Chromium off
+ * that thread. Originals keep media:, where the volume checks and HEIC
+ * conversion live.
+ */
+const thumbUrl = previewUrl
+
 // Only one hover preview plays at a time, across the whole grid.
 let stopActivePreview: (() => void) | null = null
 const HOVER_DELAY_MS = 350
@@ -520,7 +531,7 @@ const GridTile = memo(function GridTile({
           <img
             ref={imgRef}
             key={src + ':' + attempt}
-            src={mediaUrl(src)}
+            src={src === usableThumb ? thumbUrl(src) : mediaUrl(src)}
             loading="lazy"
             decoding="async"
             draggable={false}
@@ -1179,6 +1190,11 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
   const tiles: React.ReactNode[] = []
   const visiblePaths: string[] = []
   const visibleThumblessPaths: string[] = []
+  // Mounted but outside the viewport (the overscan rows). Asked for after the
+  // tiles actually on screen: in render order the rows ABOVE the viewport came
+  // first, and after a timeline jump the generation slots spent their first
+  // seconds on tiles nobody could see.
+  const overscanThumblessPaths: string[] = []
   // Global index range actually on screen. Only these pages are kept resident.
   let rangeStart = Infinity
   let rangeEnd = -Infinity
@@ -1264,7 +1280,10 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
           continue
         }
         visiblePaths.push(f.path)
-        if (!f.thumb) visibleThumblessPaths.push(f.path)
+        if (!f.thumb) {
+          const onScreen = p.y + layout.tile > scrollTop && p.y < scrollTop + viewport.height
+          ;(onScreen ? visibleThumblessPaths : overscanThumblessPaths).push(f.path)
+        }
         tiles.push(
           <GridTile
             key={f.path}
@@ -1283,6 +1302,7 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
       }
     }
   }
+  visibleThumblessPaths.push(...overscanThumblessPaths)
 
   // ── Prefetch band ──
   //
