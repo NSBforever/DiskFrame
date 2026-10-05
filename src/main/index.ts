@@ -12,7 +12,7 @@ import {
   toggleFavourite,
   getFavourites,
   getFileCount,
-  getAllFilesWithoutThumbs,
+  owedThumbnailPaths,
   recordThumbFailure,
   thumbCacheHit,
   exhaustedThumbPaths,
@@ -1578,7 +1578,7 @@ app.whenReady().then(() => {
           if (speculative) speculativeSlots[kind]--
           if (background) {
             backgroundInFlight--
-            if (thumbQueue.background.length === 0 && backgroundInFlight === 0) refillBackground()
+            if (thumbQueue.background.length === 0 && backgroundInFlight === 0) void refillBackground()
           }
           setImmediate(pumpThumbs)
         })
@@ -1599,17 +1599,26 @@ app.whenReady().then(() => {
    *  or its drive went away), so the same rows are not re-read forever. */
   let backgroundDrive: string | null = null
   let backgroundProgress = 0
-  function refillBackground(): void {
+  let refilling = false
+  async function refillBackground(): Promise<void> {
     const drive = backgroundDrive
+    if (refilling) return
     if (!drive || drive !== currentOpenDrive || backgroundProgress === 0 || isQuitting) {
       backgroundDrive = null
       return
     }
     backgroundProgress = 0
     const volumeId = getCachedVolumeId(drive)
-    const paths = (volumeId ? getAllFilesWithoutThumbs(volumeId) : [])
-      .map((r) => r.path)
-      .filter((p) => !thumbInFlight.has(p) && !thumbFailed.has(p))
+    refilling = true
+    let owed: string[] = []
+    try {
+      owed = volumeId ? await owedThumbnailPaths(volumeId) : []
+    } finally {
+      refilling = false
+    }
+    // The user may have moved to another drive while the query ran.
+    if (backgroundDrive !== drive || drive !== currentOpenDrive) return
+    const paths = owed.filter((p) => !thumbInFlight.has(p) && !thumbFailed.has(p))
     thumbQueue = { ...thumbQueue, background: paths }
     if (paths.length === 0) {
       backgroundDrive = null
@@ -1622,7 +1631,7 @@ app.whenReady().then(() => {
     if (!subsystemEnabled(safeMode, 'thumbnails')) return
     backgroundDrive = drive
     backgroundProgress = 1
-    if (backgroundInFlight === 0) refillBackground()
+    if (backgroundInFlight === 0) void refillBackground()
   }
 
   async function generateOne(p: string, background: boolean): Promise<void> {

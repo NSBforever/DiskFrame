@@ -27,6 +27,7 @@ import {
 } from './validation'
 import { listMountedVolumes } from './driveEnum'
 import { heicToJpeg } from './heicPool'
+import { readLibrary } from './libraryWorkerClient'
 import { LibraryReads, EPOCH_SCHEMA_SQL, type MapCluster } from './libraryReads'
 
 function resolveFfmpeg(): string {
@@ -819,17 +820,22 @@ export function unhideFile(filePath: string, pin: string): boolean {
 // ─── TRASH / RECYCLE BIN LIFECYCLE ───────────────────────────────────────────
 /** Trashed rows for one volume - see getFavourites for why a legacy row with
  *  no recorded identity is left out rather than guessed. */
+// Favourites and trash are a handful of rows; their partial indexes find them
+// directly. Left to itself the planner preferred the volume index and walked
+// every row of the volume (41k): measured 119ms (favourites), 90ms (trash) and
+// 55ms (trash count) against 0.1-0.4ms forced - on the main thread, at every
+// drive open and after every sync.
 export function getTrashedFiles(volumeId: string | null): ScannedFile[] {
   if (!volumeId) return []
   return db
-    .prepare('SELECT * FROM files WHERE trashed_at IS NOT NULL AND volume_id = ? ORDER BY trashed_at DESC')
+    .prepare('SELECT * FROM files INDEXED BY idx_files_trashed WHERE trashed_at IS NOT NULL AND volume_id = ? ORDER BY trashed_at DESC')
     .all(volumeId) as ScannedFile[]
 }
 
 export function getTrashCount(volumeId: string | null): number {
   if (!volumeId) return 0
   const row = db
-    .prepare('SELECT COUNT(*) as count FROM files WHERE trashed_at IS NOT NULL AND volume_id = ?')
+    .prepare('SELECT COUNT(*) as count FROM files INDEXED BY idx_files_trashed WHERE trashed_at IS NOT NULL AND volume_id = ?')
     .get(volumeId) as { count: number }
   return row?.count ?? 0
 }
@@ -977,7 +983,7 @@ export async function deleteFilesPermanently(refs: PathRef[]): Promise<{ success
 export async function emptyTrash(volumeId: string | null): Promise<{ success: boolean; count: number }> {
   if (!volumeId) return { success: true, count: 0 }
   const toPurge = db
-    .prepare('SELECT * FROM files WHERE trashed_at IS NOT NULL AND volume_id = ?')
+    .prepare('SELECT * FROM files INDEXED BY idx_files_trashed WHERE trashed_at IS NOT NULL AND volume_id = ?')
     .all(volumeId) as ScannedFile[]
   let count = 0
   for (const file of toPurge) {
@@ -1106,7 +1112,7 @@ export function getGroupedFiles(drivePath?: string, volumeId?: string | null): R
 export function getFavourites(volumeId: string | null): ScannedFile[] {
   if (!volumeId) return []
   return db
-    .prepare('SELECT * FROM files WHERE favourited = 1 AND volume_id = ? AND hidden = 0 AND trashed_at IS NULL ORDER BY date DESC')
+    .prepare('SELECT * FROM files INDEXED BY idx_files_favourited WHERE favourited = 1 AND volume_id = ? AND hidden = 0 AND trashed_at IS NULL ORDER BY date DESC')
     .all(volumeId) as ScannedFile[]
 }
 
@@ -1203,17 +1209,19 @@ export function getFileCount(volumeId?: string | null): number {
     return row.count
   }
   if (!volumeId) return 0
+  // The drive poll asks every 3s for every mounted indexed drive, and the count
+  // walks the whole volume (62ms for 41k rows, on the main thread). It can only
+  // change when the catalogue epoch does, so it is reused until then.
+  const epoch = (db.prepare('SELECT n FROM catalogue_epoch').get() as { n: number }).n
+  const hit = fileCountCache.get(volumeId)
+  if (hit && hit.epoch === epoch) return hit.count
   const row = db
     .prepare('SELECT COUNT(*) as count FROM files WHERE volume_id = ? AND trashed_at IS NULL')
     .get(volumeId) as { count: number }
+  fileCountCache.set(volumeId, { epoch, count: row.count })
   return row.count
 }
-
-// Restricted to extensions a thumbnail can actually be produced from. The
-// unrestricted version handed the backfill thousands of .db/.json/.ts/no-ext
-// rows, each costing a failed sharp or ffmpeg spawn at startup.
-/** A thumbnail column that does not name a real file on disk. */
-const NO_THUMB_SQL = "(thumb IS NULL OR thumb = '' OR thumb = 'NO_FILE')"
+const fileCountCache = new Map<string, { epoch: number; count: number }>()
 
 /** Ceiling on one backfill pass, so a freshly scanned 2 TB volume cannot pull
  *  a hundred thousand rows into main-process memory in one query. The pass is
@@ -1228,25 +1236,14 @@ export const THUMB_BACKFILL_BATCH = 2000
  * worked through every other drive's missing thumbnails too - spending the
  * machine's two thumbnail slots on files nobody was looking at.
  */
-export function getAllFilesWithoutThumbs(
-  volumeId?: string | null,
-  limit: number = THUMB_BACKFILL_BATCH
-): ScannedFile[] {
-  const thumbable = thumbnailExts
-  const placeholders = thumbable.map(() => '?').join(',')
-  const scope = volumeId ? 'AND volume_id = ?' : ''
-  const params: unknown[] = volumeId ? [...thumbable, volumeId] : [...thumbable]
-  return db
-    .prepare(
-      `SELECT * FROM files
-       WHERE ${NO_THUMB_SQL} AND trashed_at IS NULL AND ext IN (${placeholders}) ${scope}
-         -- Rows that have used up their attempts are left out entirely, so a
-         -- pass is never spent re-failing the same undecodable files. A changed
-         -- file clears its own count (recordThumbFailure) and returns here.
-         AND IFNULL(thumb_fail_count, 0) < ${MAX_THUMB_ATTEMPTS}
-       ORDER BY date DESC LIMIT ?`
-    )
-    .all(...(params as never[]), Math.max(1, Math.floor(limit))) as ScannedFile[]
+export function owedThumbnailPaths(volumeId: string, limit: number = THUMB_BACKFILL_BATCH): Promise<string[]> {
+  // On the library worker: the query walks the whole volume (166ms for 41k
+  // rows on the main thread, once per 2000 thumbnails).
+  return readLibrary(
+    catalogueDbPath,
+    { kind: 'owed', volumeId, exts: thumbnailExts, maxAttempts: MAX_THUMB_ATTEMPTS, limit },
+    () => mainReads.owedThumbnails(volumeId, thumbnailExts, MAX_THUMB_ATTEMPTS, limit)
+  )
 }
 
 /**
@@ -2901,8 +2898,18 @@ export function primeVolumeCache(letter: string, volumeId: string | null): void 
  * volume now mounted at `newLetter`. Rows under any other volume, including
  * legacy rows with no recorded identity, are untouched.
  */
+/** Volumes whose rows have been brought onto a letter this session. Every row
+ *  written afterwards for that volume uses that same letter, so the check -
+ *  a walk of every row of the volume, 118ms for 41k on the main thread, on
+ *  every open - is needed once per (volume, letter) per session. A changed
+ *  letter is a new key and is checked in full. */
+const lettersReconciled = new Set<string>()
+
 export function reconcileDriveLetterForVolume(volumeId: string, newLetter: string): void {
   const letter = newLetter.slice(0, 2).toUpperCase()
+  const key = volumeId + '|' + letter
+  if (lettersReconciled.has(key)) return
+  lettersReconciled.add(key)
   const oldLetters = (
     db
       .prepare('SELECT DISTINCT drive FROM files WHERE volume_id = ? AND drive IS NOT NULL AND drive != ?')
@@ -3165,19 +3172,17 @@ export function listUnresolvedRoots(
 async function listUnresolvedRootsNow(
   volumeId: string
 ): Promise<{ root: string; count: number; sample: string }[]> {
-  const rows = db
-    .prepare(
-      'SELECT path FROM files WHERE volume_id = ? AND hidden = 0 AND trashed_at IS NULL LIMIT 250000'
-    )
-    .all(volumeId) as { path: string }[]
-
+  // Grouped by stored folder on the library worker (a few hundred groups, not
+  // every row on this thread). A relink maps whole folders, so resolving one
+  // sample resolves its folder.
+  const groups = await readLibrary(catalogueDbPath, { kind: 'folders', volumeId }, () => mainReads.folders(volumeId))
   const byFolder = new Map<string, { count: number; sample: string; resolved: string }>()
-  for (const r of rows) {
-    const resolved = resolveStoredPath(r.path)
+  for (const g of groups) {
+    const resolved = resolveStoredPath(g.sample)
     const folder = resolved.slice(0, resolved.lastIndexOf('\\'))
     const cur = byFolder.get(folder)
-    if (cur) cur.count++
-    else byFolder.set(folder, { count: 1, sample: r.path, resolved })
+    if (cur) cur.count += g.count
+    else byFolder.set(folder, { count: g.count, sample: g.sample, resolved })
   }
 
   // A few at a time on the thread pool, so a slow or busy drive delays only

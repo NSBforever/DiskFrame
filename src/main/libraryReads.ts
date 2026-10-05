@@ -157,6 +157,38 @@ export class LibraryReads {
     return { rows, version }
   }
 
+  /** Paths on a volume still owed a thumbnail, newest first - the background
+   *  thumbnail tier's next batch. Rows that have used up their attempts are
+   *  left out, so a pass never re-fails the same undecodable files. */
+  owedThumbnails(volumeId: string, exts: string[], maxAttempts: number, limit: number): string[] {
+    const ph = exts.map(() => '?').join(',')
+    return (
+      this.db
+        .prepare(
+          `SELECT path FROM files
+           WHERE (thumb IS NULL OR thumb = '' OR thumb = 'NO_FILE') AND trashed_at IS NULL
+             AND ext IN (${ph}) AND volume_id = ? AND IFNULL(thumb_fail_count, 0) < ?
+           ORDER BY date DESC LIMIT ?`
+        )
+        .all(...exts, volumeId, maxAttempts, limit) as { path: string }[]
+    ).map((r) => r.path)
+  }
+
+  /** Catalogued files per folder for one volume (one sample path each) - a few
+   *  hundred groups instead of every row, for the missing-folder check. */
+  folders(volumeId: string): { folder: string; count: number; sample: string }[] {
+    const byFolder = new Map<string, { folder: string; count: number; sample: string }>()
+    for (const { path } of this.db
+      .prepare('SELECT path FROM files WHERE volume_id = ? AND hidden = 0 AND trashed_at IS NULL LIMIT 250000')
+      .all(volumeId) as { path: string }[]) {
+      const folder = path.slice(0, path.lastIndexOf('\\'))
+      const g = byFolder.get(folder)
+      if (g) g.count++
+      else byFolder.set(folder, { folder, count: 1, sample: path })
+    }
+    return [...byFolder.values()]
+  }
+
   clusters(q: LibraryQuery, zoom: number): MapCluster[] {
     const cell = clusterCellSize(zoom)
     const c = mapClustersSql(q, cell)

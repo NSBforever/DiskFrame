@@ -20,10 +20,14 @@ type Request =
   | { id: number; kind: 'summary'; query: LibraryQuery }
   | { id: number; kind: 'page'; query: LibraryQuery; offset: number; limit: number }
   | { id: number; kind: 'clusters'; query: LibraryQuery; zoom: number }
+  | { id: number; kind: 'owed'; volumeId: string; exts: string[]; maxAttempts: number; limit: number }
+  | { id: number; kind: 'folders'; volumeId: string }
 
 const run = db.transaction((m: Request) => {
   if (m.kind === 'summary') return reads.summary(m.query)
   if (m.kind === 'page') return reads.page(m.query, m.offset, m.limit)
+  if (m.kind === 'owed') return reads.owedThumbnails(m.volumeId, m.exts, m.maxAttempts, m.limit)
+  if (m.kind === 'folders') return reads.folders(m.volumeId)
   return reads.clusters(m.query, m.zoom)
 })
 

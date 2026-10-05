@@ -24,7 +24,7 @@ function makeDb(): DatabaseSync {
       drive TEXT, favourited INTEGER DEFAULT 0, thumb TEXT,
       locked INTEGER DEFAULT 0, hidden INTEGER DEFAULT 0, vault_path TEXT,
       trashed_at TEXT, mtime INTEGER, hash TEXT, ino INTEGER,
-      volume_id TEXT, exif_checked INTEGER DEFAULT 0
+      volume_id TEXT, exif_checked INTEGER DEFAULT 0, thumb_fail_count INTEGER DEFAULT 0
     );
   `)
   db.exec(EPOCH_SCHEMA_SQL)
@@ -130,4 +130,27 @@ test('favourite-dependent queries are never served from a stale ordering', () =>
   const after = cachedWalk(reads, fq, 50)
   assert.ok(after.length > before.length)
   assert.deepEqual(after, offsetWalk(db, fq, 50))
+})
+
+test('the background tier is fed newest first, only rows still owed and still worth trying', () => {
+  const db = makeDb()
+  const reads = new LibraryReads(db as unknown as ReadDb)
+  db.prepare("UPDATE files SET thumb = 'C:\\t.jpg' WHERE ext = '.jpg'").run()
+  db.prepare("UPDATE files SET thumb_fail_count = 3 WHERE ext = '.heic'").run()
+  const owed = reads.owedThumbnails(VOL, ['.jpg', '.mov', '.heic'], 3, 1000)
+  const rows = owed.map((p) => db.prepare('SELECT ext, date, trashed_at, volume_id FROM files WHERE path = ?').get(p) as { ext: string; date: string | null; trashed_at: string | null; volume_id: string })
+  assert.ok(owed.length > 0)
+  assert.ok(rows.every((r) => r.ext === '.mov' && r.trashed_at === null && r.volume_id === VOL), 'thumbnailed, exhausted, trashed and foreign rows are left out')
+  const dates = rows.map((r) => r.date ?? '')
+  assert.deepEqual(dates, [...dates].sort().reverse(), 'newest first')
+  assert.equal(reads.owedThumbnails(VOL, ['.mov'], 3, 2).length, 2, 'bounded')
+})
+
+test('folders groups a volume by folder with counts that add up to its rows', () => {
+  const db = makeDb()
+  const groups = new LibraryReads(db as unknown as ReadDb).folders(VOL)
+  const live = (db.prepare('SELECT COUNT(*) n FROM files WHERE volume_id = ? AND hidden = 0 AND trashed_at IS NULL').get(VOL) as { n: number }).n
+  assert.equal(groups.reduce((a, g) => a + g.count, 0), live)
+  assert.deepEqual(groups.map((g) => g.folder).sort(), ['D:\\A', 'D:\\B', 'D:\\U'])
+  for (const g of groups) assert.ok(g.sample.startsWith(g.folder + '\\'))
 })
