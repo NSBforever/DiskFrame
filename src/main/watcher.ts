@@ -56,6 +56,16 @@ export class WatcherManager {
    */
   public onNeedsReconcile: (driveKey: string, reason: string) => void = () => {}
 
+  /**
+   * Whether DiskFrame itself just read this file (to make its thumbnail).
+   * Windows updates a file's last-access time on a read when the old value is
+   * over an hour stale, and that arrives here as a change - so opening a drive
+   * that had not been touched for an hour turned every thumbnail into a watcher
+   * event, each with synchronous I/O on the main thread. Those are dropped
+   * before any filesystem call.
+   */
+  public isOwnRead: (fullPath: string) => boolean = () => false
+
   constructor(mainWindow: BrowserWindow | null = null) {
     this.mainWindow = mainWindow
   }
@@ -143,6 +153,7 @@ export class WatcherManager {
         if (!isFile) this.onNeedsReconcile(driveKey, 'folder changed')
         return
       }
+      if (this.isOwnRead(fullPath)) return
       this.settle(fullPath, driveKey)
     })
 
@@ -181,11 +192,12 @@ export class WatcherManager {
       fullPath,
       setTimeout(() => {
         this.settling.delete(fullPath)
-        if (fs.existsSync(fullPath)) {
-          void this.handleAddOrChange(fullPath, driveKey)
-        } else {
-          this.handleUnlink(fullPath, driveKey)
-        }
+        // Asynchronous: a busy or sleeping drive delays this decision, never
+        // the main thread.
+        fs.promises.stat(fullPath).then(
+          (stat) => void this.handleAddOrChange(fullPath, driveKey, stat),
+          () => this.handleUnlink(fullPath, driveKey)
+        )
       }, WRITE_SETTLE_MS)
     )
   }
@@ -235,7 +247,7 @@ export class WatcherManager {
     this.pendingUnlinks.set(filePath, timer)
   }
 
-  private async handleAddOrChange(filePath: string, driveKey: string): Promise<void> {
+  private async handleAddOrChange(filePath: string, driveKey: string, known?: fs.Stats): Promise<void> {
     // If a pending unlink existed for this path, cancel it (coalesced replacement)
     if (this.pendingUnlinks.has(filePath)) {
       clearTimeout(this.pendingUnlinks.get(filePath)!)
@@ -243,7 +255,7 @@ export class WatcherManager {
     }
 
     try {
-      const stat = fs.statSync(filePath)
+      const stat = known ?? (await fs.promises.stat(filePath))
       if (!stat.isFile()) return
       const ino = stat.ino ? Number(stat.ino) : null
 

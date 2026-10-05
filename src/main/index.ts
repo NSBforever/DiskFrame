@@ -166,6 +166,25 @@ app.on('second-instance', () => {
 
 const watcherManager = new WatcherManager()
 /**
+ * Files the thumbnail pump has just read, so the watcher can drop the
+ * last-access notifications those reads cause (see WatcherManager.isOwnRead).
+ * Marked when generation starts and again when it ends; a change notification
+ * within a few seconds of that is our own read, not an edit.
+ */
+const ownReads = new Map<string, number>()
+const OWN_READ_MS = 5000
+function markOwnRead(path: string): void {
+  if (ownReads.size > 5000) {
+    const cutoff = Date.now() - OWN_READ_MS
+    for (const [k, t] of ownReads) if (t < cutoff) ownReads.delete(k)
+  }
+  ownReads.set(path.toLowerCase(), Date.now())
+}
+watcherManager.isOwnRead = (fullPath) => {
+  const t = ownReads.get(fullPath.toLowerCase())
+  return t !== undefined && Date.now() - t < OWN_READ_MS
+}
+/**
  * Which drive the user is looking at. Reconciliation, the watcher and the
  * deferred thumbnail pass only ever act for this one; a job started for a
  * drive the user has since left is cancelled or ignored.
@@ -1636,6 +1655,7 @@ app.whenReady().then(() => {
 
   async function generateOne(p: string, background: boolean): Promise<void> {
     thumbInFlight.add(p)
+    markOwnRead(p)
     const tPicked = Date.now()
     const waitMs = tPicked - (thumbEnqueuedAt.get(p) ?? tPicked)
     thumbEnqueuedAt.delete(p)
@@ -1718,6 +1738,7 @@ app.whenReady().then(() => {
       thumbStages.add({ waitMs, lookupMs, generateMs, writeMs, deliverMs, cacheHit, failed, video: kindOf(p) === 'video' })
       scheduleStageReport()
       thumbInFlight.delete(p)
+      markOwnRead(p)
     }
   }
 
