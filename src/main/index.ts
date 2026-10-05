@@ -72,7 +72,8 @@ import {
   getCachedVolumeId,
   hasCachedVolumeId,
   reconcileDriveLetterForVolume,
-  getFavouritePaths
+  getFavouritePaths,
+  catalogueDbPath
 } from './scanner'
 import type { LibraryQuery } from './libraryQuery'
 import { getMapClusters, getCatalogueVersion } from './scanner'
@@ -95,6 +96,7 @@ import { parseSafeMode, subsystemEnabled } from './runtimeMode'
 import { resolveDriveLetters } from './driveIdentity'
 import { ThumbStageStats } from './thumbStages'
 import { heicToJpeg, stopHeicWorkers } from './heicPool'
+import { readLibrary, stopLibraryWorker } from './libraryWorkerClient'
 
 /** Which extensions go down the ffmpeg path, so video decode time can be
  *  reported separately from photo decode time - they differ by an order of
@@ -1310,20 +1312,19 @@ app.whenReady().then(() => {
     return { minLat, maxLat, minLng, maxLng }
   }
 
-  ipcMain.handle('library-summary', (_event, raw) => {
+  // Summaries, pages and map clusters are read on the library worker, never on
+  // this thread (see libraryWorker.ts); each answer carries the version it was
+  // read at, from the same snapshot as its rows.
+  ipcMain.handle('library-summary', async (_event, raw) => {
     const q = normalizeQuery(raw)
     if (!q) return { total: 0, groups: [], version: getCatalogueVersion() }
     const t0 = Date.now()
-    // Read BEFORE the rows it describes, so the version can never be newer than
-    // them. A version read afterwards would miss a write that landed during the
-    // query, and the renderer would then trust pages it should have dropped.
-    const version = getCatalogueVersion()
-    const res = getLibrarySummary(q)
+    const res = await readLibrary(catalogueDbPath, { kind: 'summary', query: q }, () => getLibrarySummary(q))
     diag('library', `summary ${q.drive}/${q.nav}/${q.groupBy}: ${res.total} files in ${res.groups.length} groups (${Date.now() - t0}ms)`)
-    return { ...res, version }
+    return res
   })
 
-  ipcMain.handle('library-map-clusters', (_event, raw) => {
+  ipcMain.handle('library-map-clusters', async (_event, raw) => {
     const { query, zoom, bounds } = (raw ?? {}) as {
       query?: unknown
       zoom?: number
@@ -1344,21 +1345,23 @@ app.whenReady().then(() => {
         : null
     const z = Math.max(0, Math.min(22, Math.floor(Number(zoom) || 2)))
     const t0 = Date.now()
-    const clusters = getMapClusters({ ...q, bbox }, z)
+    const clusters = await readLibrary(catalogueDbPath, { kind: 'clusters', query: { ...q, bbox }, zoom: z }, () =>
+      getMapClusters({ ...q, bbox }, z)
+    )
     diag('map', `clusters z${z}: ${clusters.length} cells (${Date.now() - t0}ms)`)
     return { clusters }
   })
 
-  ipcMain.handle('library-page', (_event, raw) => {
+  ipcMain.handle('library-page', async (_event, raw) => {
     const { query, offset, limit } = (raw ?? {}) as { query?: unknown; offset?: number; limit?: number }
     const q = normalizeQuery(query)
     if (!q) return { offset: 0, rows: [], version: getCatalogueVersion() }
     const from = Math.max(0, Math.floor(Number(offset) || 0))
     const size = Math.max(1, Math.min(Math.floor(Number(limit) || 100), MAX_PAGE_SIZE))
-    // Same ordering as the summary: the version, then the rows it describes.
-    const version = getCatalogueVersion()
-    const rows = getLibraryPage(q, from, size)
-    return { offset: from, rows, version }
+    const page = await readLibrary(catalogueDbPath, { kind: 'page', query: q, offset: from, limit: size }, () =>
+      getLibraryPage(q, from, size)
+    )
+    return { offset: from, ...page }
   })
 
   // Explicit reconciliation. Never triggered by opening a drive.
@@ -2306,6 +2309,7 @@ function shutdown(): void {
   isQuitting = true
   watcherManager.closeAll()
   stopHeicWorkers()
+  stopLibraryWorker()
   syncService.cancel()
   closeMpv()
   closeStreamServer()

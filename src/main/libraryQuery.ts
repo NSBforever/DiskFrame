@@ -251,6 +251,20 @@ export function groupIsDateDerived(groupBy: GroupBy): boolean {
  * agree by construction.
  */
 export function pageSql(q: LibraryQuery): { sql: string; params: unknown[] } {
+  const o = orderedSql(q)
+  return { sql: o.sql + ' LIMIT ? OFFSET ?', params: o.params }
+}
+
+/**
+ * The whole ordering behind pageSql, selecting `columns`, with no window.
+ *
+ * pageSql is this plus LIMIT/OFFSET. The library reader selects `id` alone to
+ * sort once per catalogue version and then serve every page from that, instead
+ * of re-sorting the whole volume for each 200-row page (the ORDER BY leads with
+ * expressions, so no index can serve it: measured 86-231ms per page on a 41k
+ * file volume, every page, on the main thread).
+ */
+export function orderedSql(q: LibraryQuery, columns: string = PAGE_COLUMNS): { sql: string; params: unknown[] } {
   const where = buildWhere(q)
   const rowOrder = orderExpr(q.order)
   const key = groupKeyExpr(q.groupBy)
@@ -263,24 +277,34 @@ export function pageSql(q: LibraryQuery): { sql: string; params: unknown[] } {
   // unaffected - nothing crosses a group boundary.
   if (groupIsDateDerived(q.groupBy)) {
     return {
-      sql: `SELECT ${PAGE_COLUMNS} FROM files WHERE ${where.sql}
-          ORDER BY ${key} ${dir}, ${compactExpr()} ASC, ${rowOrder} LIMIT ? OFFSET ?`,
+      sql: `SELECT ${columns} FROM files WHERE ${where.sql}
+          ORDER BY ${key} ${dir}, ${compactExpr()} ASC, ${rowOrder}`,
       params: where.params
     }
   }
 
   const agg = q.order === 'reverse' ? 'MIN' : 'MAX'
   return {
-    sql: `SELECT ${PAGE_COLUMNS} FROM (
-            SELECT ${PAGE_COLUMNS},
+    sql: `SELECT ${columns} FROM (
+            SELECT id, ${PAGE_COLUMNS},
                    ${key} AS gkey,
                    ${compactExpr()} AS is_compact,
                    ${agg}(date) OVER (PARTITION BY ${key}) AS gsort
             FROM files WHERE ${where.sql}
           )
-          ORDER BY gsort ${dir}, gkey ${dir}, is_compact ASC, ${rowOrder} LIMIT ? OFFSET ?`,
+          ORDER BY gsort ${dir}, gkey ${dir}, is_compact ASC, ${rowOrder}`,
     params: where.params
   }
+}
+
+/**
+ * Whether a query's rows or order depend on favourites. Favouriting does not
+ * move the catalogue version (a heart must not re-layout the grid), so these
+ * are never served from an ordering cached against that version.
+ */
+export function dependsOnFavourites(q: LibraryQuery): boolean {
+  const s = q.search.trim().toLowerCase()
+  return q.nav === 'favourites' || q.groupBy === 'favorites' || s === 'is:fav' || s === 'fav:true'
 }
 
 export function countSql(q: LibraryQuery): { sql: string; params: unknown[] } {

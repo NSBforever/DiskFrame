@@ -7,17 +7,7 @@ import { app, utilityProcess } from 'electron'
 import sharp from 'sharp'
 import { createHash } from 'crypto'
 import { Worker } from 'worker_threads'
-import {
-  summarySql,
-  pageSql,
-  countSql,
-  mapClustersSql,
-  clusterThumbsSql,
-  clusterCellSize,
-  MAX_CLUSTERS,
-  groupOffsets,
-  type LibraryQuery
-} from './libraryQuery'
+import { countSql, type LibraryQuery } from './libraryQuery'
 import {
   applyMappings,
   folderChecks,
@@ -37,6 +27,7 @@ import {
 } from './validation'
 import { listMountedVolumes } from './driveEnum'
 import { heicToJpeg } from './heicPool'
+import { LibraryReads, EPOCH_SCHEMA_SQL, type MapCluster } from './libraryReads'
 
 function resolveFfmpeg(): string {
   try {
@@ -524,6 +515,16 @@ db.exec(`
   -- Costs ~6MB here and 342ms to build once.
   CREATE INDEX IF NOT EXISTS idx_files_path ON files (path);
 `)
+
+// The catalogue's version for paginated reads (see getCatalogueVersion), kept
+// by the database itself: every change to which rows a query returns, or the
+// order it returns them in, moves it - from any connection, including the scan
+// utility process - and thumbnail and failure bookkeeping does not. Favourites
+// are deliberately not in it (a heart must not re-layout the grid); queries
+// that depend on them are never served from a cached ordering. Created after
+// the table rebuild above for the same reason as the indexes: dropping the
+// table drops its triggers.
+db.exec(EPOCH_SCHEMA_SQL)
 
 // favourite_paths needs the same (path, volume_id) identity as files, for the
 // same reason: two different volumes can now share a literal path, and a
@@ -2118,80 +2119,36 @@ export function purgeGeneratedAssetRows(): { removed: number; scanned: number } 
  *  the whole library in one call and undo the point of paginating. */
 export const MAX_PAGE_SIZE = 500
 
-export function getLibrarySummary(q: LibraryQuery): {
-  total: number
-  groups: {
-    key: string
-    count: number
-    compactCount: number
-    minDate: string
-    maxDate: string
-    offset: number
-  }[]
-} {
-  const s = summarySql(q)
-  const rows = db.prepare(s.sql).all(...(s.params as never[])) as {
-    gkey: string
-    n: number
-    n_compact: number
-    min_date: string
-    max_date: string
-  }[]
-  const offsets = groupOffsets(rows)
-  let total = 0
-  for (const r of rows) total += r.n
-  return {
-    total,
-    groups: rows.map((r) => ({
-      key: r.gkey,
-      count: r.n,
-      compactCount: r.n_compact ?? 0,
-      minDate: r.min_date,
-      maxDate: r.max_date,
-      offset: offsets.get(r.gkey) ?? 0
-    }))
-  }
+/** Library reads on this (main) connection. The library worker serves these
+ *  normally; this is its fallback, with the same once-per-version ordering. */
+const mainReads = new LibraryReads(db as unknown as import('./libraryReads').ReadDb)
+
+export function getLibrarySummary(q: LibraryQuery): ReturnType<LibraryReads['summary']> {
+  return db.transaction(() => mainReads.summary(q))()
 }
 
 /**
- * A fingerprint of the catalogue's current contents.
+ * A fingerprint of the catalogue's current contents: the database's own epoch,
+ * moved only by changes to row membership or ordering (see EPOCH_SCHEMA_SQL).
  *
- * This exists for exactly one purpose: telling the renderer that the pages it
- * already holds were read against a different set of rows, so an OFFSET page
- * read before a change and one read after it cannot both stay resident and
- * draw the same file twice.
- *
- * So it must move for changes to row MEMBERSHIP or ORDERING, and must not move
- * for anything else. PRAGMA data_version moves when another connection commits,
- * which is precisely the case that matters: the scan utility is a separate
- * process, and its batched inserts during discovery are the only writes that
- * arrive while the user is browsing without this process knowing. Same-
- * connection membership changes - the watcher adding or removing a file, a
- * delete, a trash, an incremental sync - already push 'files-updated' or
- * 'scan-complete', on which the renderer reloads and clears every page.
- *
- * It deliberately does NOT include total_changes(). That counts every row write
- * on this connection, thumbnail updates included - and a thumbnail changes
- * neither membership nor ordering, so it cannot produce a duplicate tile.
- * Measured on the real 40,960-row volume with total_changes() in the version:
- * a single full walk saw 16 distinct versions purely because the thumbnail
- * backfill was running, which would empty the renderer's page cache on nearly
- * every page that arrived - a re-fetch storm during ordinary browsing, caused
- * by pictures showing up. Thumbnails reach resident rows through patchThumb,
- * which is exactly why they must not invalidate anything.
- *
- * One cheap pragma read, no table scan - called once per summary/page request.
+ * It exists so the renderer can tell that pages it holds were read against a
+ * different set of rows - an OFFSET page read before a change and one read
+ * after it could otherwise both stay resident and draw the same file twice. It
+ * used to be PRAGMA data_version, which only moves for OTHER connections'
+ * commits: right for the scan utility, blind to this process's own changes,
+ * and unusable from the library worker, where every thumbnail write by this
+ * process would have moved it (measured once: 16 versions in one walk of the
+ * 40,960-row volume purely from thumbnails - a re-fetch storm).
  */
 export function getCatalogueVersion(): string {
-  const dv = db.prepare('PRAGMA data_version').get() as { data_version?: number } | undefined
-  return String(dv?.data_version ?? 0)
+  return mainReads.version()
 }
 
-export function getLibraryPage(q: LibraryQuery, offset: number, limit: number): ScannedFile[] {
+/** One page and the version it was read at, from the same snapshot. */
+export function getLibraryPage(q: LibraryQuery, offset: number, limit: number): { rows: ScannedFile[]; version: string } {
   const bounded = Math.max(1, Math.min(Math.floor(limit) || 1, MAX_PAGE_SIZE))
   const from = Math.max(0, Math.floor(offset) || 0)
-  const p = pageSql(q)
-  return db.prepare(p.sql).all(...(p.params as never[]), bounded, from) as ScannedFile[]
+  return db.transaction(() => mainReads.page(q, from, bounded))() as unknown as { rows: ScannedFile[]; version: string }
 }
 
 export function getLibraryCount(q: LibraryQuery): number {
@@ -2200,72 +2157,10 @@ export function getLibraryCount(q: LibraryQuery): number {
   return row?.n ?? 0
 }
 
-export interface MapCluster {
-  /** Cell coordinates, stable for a given zoom - the renderer keys markers on them. */
-  cx: number
-  cy: number
-  count: number
-  lat: number
-  lng: number
-  minLat: number
-  maxLat: number
-  minLng: number
-  maxLng: number
-  /** Representative thumbnail path, if any file in the cell has one. */
-  thumb: string | null
-  path: string | null
-}
+export type { MapCluster }
 
-/**
- * Clusters for one map viewport at one zoom level.
- *
- * Two bounded queries whatever the size of the library: one aggregate for the
- * counts and bounds, one windowed read for a single representative row per
- * cell. Nothing here returns a row per file, so panning a map over a hundred
- * thousand photos costs the same as panning over a hundred.
- */
 export function getMapClusters(q: LibraryQuery, zoom: number): MapCluster[] {
-  const cell = clusterCellSize(zoom)
-  const c = mapClustersSql(q, cell)
-  const cells = db.prepare(c.sql).all(...(c.params as never[]), MAX_CLUSTERS) as {
-    cy: number
-    cx: number
-    n: number
-    lat: number
-    lng: number
-    min_lat: number
-    max_lat: number
-    min_lng: number
-    max_lng: number
-  }[]
-  if (cells.length === 0) return []
-
-  const t = clusterThumbsSql(q, cell)
-  const reps = db.prepare(t.sql).all(...(t.params as never[])) as {
-    cy: number
-    cx: number
-    thumb: string | null
-    path: string | null
-  }[]
-  const byCell = new Map<string, { thumb: string | null; path: string | null }>()
-  for (const r of reps) byCell.set(r.cy + ':' + r.cx, { thumb: r.thumb, path: r.path })
-
-  return cells.map((r) => {
-    const rep = byCell.get(r.cy + ':' + r.cx)
-    return {
-      cx: r.cx,
-      cy: r.cy,
-      count: r.n,
-      lat: r.lat,
-      lng: r.lng,
-      minLat: r.min_lat,
-      maxLat: r.max_lat,
-      minLng: r.min_lng,
-      maxLng: r.max_lng,
-      thumb: rep?.thumb ?? null,
-      path: rep?.path ?? null
-    }
-  })
+  return mainReads.clusters(q, zoom)
 }
 
 /** Drive key used for the diagnostic sample folder, kept apart from real drives. */
