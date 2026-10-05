@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { useZoomPan } from './ZoomPanEngine'
 import { useGestures } from './GestureEngine'
 import { useShortcuts } from './ShortcutManager'
-import { ImageLoader, VIEWER_ACTIVITY_EVENT } from './ImageLoader'
+import { ImageLoader, VIEWER_ACTIVITY_EVENT, fullscreenExitIntent } from './ImageLoader'
 import { MediaViewerToolbar } from './MediaViewerToolbar'
 import { MetadataPanel } from './MetadataPanel'
 import { MapPin, ArrowLeft } from 'lucide-react'
@@ -134,6 +134,8 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
       onClose()
     }, 320)
   }, [onClose])
+  const handleCloseRef = useRef(handleClose)
+  handleCloseRef.current = handleClose
 
   // Window resize, Info panel opening, entering fullscreen: the stage changes
   // size, so a fitted image refits for free (scale is a fit multiplier) and a
@@ -196,6 +198,7 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
     onPrev: handlePrev
   })
 
+
   // Fullscreen toggle handler
   const handleToggleFullscreen = useCallback(() => {
     if (!document.fullscreenElement) {
@@ -204,6 +207,7 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
       })
       setIsFullscreen(true)
     } else {
+      fullscreenExitIntent.current = true
       document.exitFullscreen().catch(() => {})
       setIsFullscreen(false)
     }
@@ -241,10 +245,19 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
     })
   }, [handleNext, handlePrev, handleToggleFullscreen, handleClose, onFav, onReveal, file])
 
-  // Sync fullscreen state on external escape
+  // Sync fullscreen state on external escape.
+  //
+  // A real Escape in full screen never reaches the keydown handler below:
+  // Chromium consumes it to leave full screen. So an exit the viewer did not
+  // ask for is that Escape, and it closes the viewer too - one press, as the
+  // handler below promises. The app window's own full screen is untouched;
+  // the main process keeps that separately.
   useEffect(() => {
     const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement)
+      const on = !!document.fullscreenElement
+      setIsFullscreen(on)
+      if (!on && !fullscreenExitIntent.current) handleCloseRef.current()
+      fullscreenExitIntent.current = false
     }
     document.addEventListener('fullscreenchange', handleFullscreenChange)
     return () => {
@@ -313,6 +326,7 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
           return // Let the active input element handle the Escape press internally
         }
         if (document.fullscreenElement) {
+          fullscreenExitIntent.current = true
           document.exitFullscreen().catch(() => {})
         }
         handleClose()

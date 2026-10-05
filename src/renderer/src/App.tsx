@@ -111,7 +111,9 @@ if (typeof window !== 'undefined' && !window.electron) {
 }
 
 import MediaViewer from './components/media-viewer/MediaViewer'
-import GlobeView from './components/GlobeView'
+// three.js and the globe are most of the renderer bundle and only the Places
+// globe uses them; loading them on demand keeps them out of startup parsing.
+const GlobeView = React.lazy(() => import('./components/GlobeView'))
 import SearchAgent from './components/SearchAgent'
 import DriveSelectionView from './components/DriveSelectionView'
 import PhotoGrid from './components/PhotoGrid'
@@ -164,8 +166,36 @@ import {
   Settings,
   ArrowLeft,
   PanelLeft,
-  PanelLeftClose
+  PanelLeftClose,
+  Maximize2,
+  Minimize2
 } from 'lucide-react'
+
+/**
+ * Enters or leaves the app's own full screen (F11 does the same). Always
+ * labelled with what it will do, so leaving full screen is never a guess.
+ * Separate from the viewer's full screen, which belongs to the viewer.
+ */
+function FullscreenToggle({ on, onToggle, floating }: { on: boolean; onToggle: () => void; floating?: boolean }): React.JSX.Element {
+  return (
+    <button
+      onClick={onToggle}
+      title={on ? 'Exit full screen (F11)' : 'Full screen (F11)'}
+      aria-label={on ? 'Exit full screen' : 'Enter full screen'}
+      className="df-fullscreen-toggle"
+      style={{
+        display: 'flex', alignItems: 'center', gap: '6px', height: '26px', padding: '0 10px',
+        background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '4px',
+        cursor: 'pointer', color: 'var(--app-fg-dim, #8a8a8f)', fontSize: '10px', fontWeight: 700,
+        textTransform: 'uppercase', letterSpacing: '0.5px', whiteSpace: 'nowrap',
+        ...(floating ? { position: 'fixed', top: '14px', right: '18px', zIndex: 50 } : {})
+      }}
+    >
+      {on ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+      {on ? 'Exit full screen' : 'Full screen'}
+    </button>
+  )
+}
 
 interface DriveInfo {
   name: string
@@ -600,6 +630,8 @@ const MainContentArea: React.FC<{
   onHoverPreviewsChange: (enabled: boolean) => void
   aiSearchButtonEnabled: boolean
   onAiSearchButtonChange: (enabled: boolean) => void
+  startFullscreen: boolean
+  onStartFullscreenChange: (on: boolean) => void
   libraryState: 'idle' | 'loading' | 'ready'
   /** Discovery is still running, so every count on screen is a lower bound. */
   discovering: boolean
@@ -668,6 +700,8 @@ const MainContentArea: React.FC<{
   onHoverPreviewsChange,
   aiSearchButtonEnabled,
   onAiSearchButtonChange,
+  startFullscreen,
+  onStartFullscreenChange,
   libraryState,
   discovering,
   librarySummaryHasData,
@@ -1348,6 +1382,30 @@ const MainContentArea: React.FC<{
             </div>
           </section>
 
+          <section className="glass-panel settings-card" aria-labelledby="window-heading">
+            <h3 id="window-heading" className="settings-heading">
+              Window
+            </h3>
+            <div className="settings-field">
+              <div className="settings-field-head">
+                <label htmlFor="settings-start-fullscreen" className="settings-label">
+                  Open in full screen
+                </label>
+                <input
+                  id="settings-start-fullscreen"
+                  className="settings-switch"
+                  type="checkbox"
+                  checked={startFullscreen}
+                  onChange={(e) => onStartFullscreenChange(e.target.checked)}
+                />
+              </div>
+              <div className="settings-hint">
+                Applies the next time DiskFrame opens. F11, or the Exit full screen button at the top
+                right, leaves or re-enters full screen at any time. A video&apos;s own full screen is separate.
+              </div>
+            </div>
+          </section>
+
           <section className="glass-panel settings-card" aria-labelledby="playback-heading">
             <h3 id="playback-heading" className="settings-heading">
               Playback
@@ -1523,7 +1581,9 @@ const MainContentArea: React.FC<{
             {placesSubView === 'map' ? (
               <MapView files={rowList} onOpen={(f, list, e) => handleTileOpen(f, list, e)} />
             ) : (
-              <GlobeView files={rowList} onOpen={(f, list) => handleTileOpen(f, list)} />
+              <React.Suspense fallback={null}>
+                <GlobeView files={rowList} onOpen={(f, list) => handleTileOpen(f, list)} />
+              </React.Suspense>
             )}
           </div>
         </div>
@@ -1640,6 +1700,23 @@ export default function App(): React.JSX.Element {
   const [aiSearchButtonEnabled, setAiSearchButtonEnabled] = useState(
     () => localStorage.getItem('diskframe-ai-search-button') !== 'off'
   )
+  // The window's own full screen, as the main process reports it, and the
+  // preference for whether the app opens that way.
+  const [appFullscreen, setAppFullscreen] = useState(false)
+  const [startFullscreen, setStartFullscreen] = useState(true)
+  useEffect(() => {
+    window.api.getWindowFullscreen?.().then(setAppFullscreen).catch(() => {})
+    window.api.getStartFullscreen?.().then(setStartFullscreen).catch(() => {})
+    return window.api.onWindowFullscreenChanged?.(setAppFullscreen)
+  }, [])
+  const toggleAppFullscreen = useCallback((): void => {
+    void window.api.setWindowFullscreen(!appFullscreen)
+  }, [appFullscreen])
+  const handleStartFullscreenChange = useCallback((on: boolean): void => {
+    setStartFullscreen(on)
+    void window.api.setStartFullscreen(on)
+  }, [])
+
   useEffect(() => {
     localStorage.setItem('diskframe-tile-size', String(tileSize))
   }, [tileSize])
@@ -2927,7 +3004,12 @@ export default function App(): React.JSX.Element {
                 </div>
               </div>
             )}
+            <FullscreenToggle on={appFullscreen} onToggle={toggleAppFullscreen} />
           </div>
+        )}
+        {/* The drive page has no top bar, so the toggle floats in the same corner. */}
+        {!selectedDrive && !lightbox && (
+          <FullscreenToggle on={appFullscreen} onToggle={toggleAppFullscreen} floating />
         )}
 
         {/* Isolated Scroll Content Area */}
@@ -2984,6 +3066,8 @@ export default function App(): React.JSX.Element {
           onHoverPreviewsChange={handleHoverPreviewsChange}
           aiSearchButtonEnabled={aiSearchButtonEnabled}
           onAiSearchButtonChange={handleAiSearchButtonChange}
+          startFullscreen={startFullscreen}
+          onStartFullscreenChange={handleStartFullscreenChange}
           libraryState={libraryState}
           discovering={scanning}
           librarySummaryHasData={librarySummaryHasData}

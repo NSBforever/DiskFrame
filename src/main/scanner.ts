@@ -33,6 +33,7 @@ import {
   allExts,
   thumbnailExts
 } from './validation'
+import { listMountedVolumes } from './driveEnum'
 
 function resolveFfmpeg(): string {
   try {
@@ -570,6 +571,13 @@ if (!deletePrefsCols.includes('ai_search_button')) {
     console.error('Error migrating delete_prefs (ai_search_button):', e)
   }
 }
+if (!deletePrefsCols.includes('start_fullscreen')) {
+  try {
+    db.prepare('ALTER TABLE delete_prefs ADD COLUMN start_fullscreen INTEGER DEFAULT 1').run()
+  } catch (e) {
+    console.error('Error migrating delete_prefs (start_fullscreen):', e)
+  }
+}
 
 export interface ScannedFile {
   path: string
@@ -718,6 +726,32 @@ export function setAiSearchButtonPref(enabled: boolean): void {
     }
   } catch (e) {
     console.error('Error saving AI search button pref:', e)
+  }
+}
+
+/** Whether the window opens in full screen. Read before the window exists, so
+ *  it lives here rather than in the renderer's localStorage. Default on. */
+export function getStartFullscreenPref(): boolean {
+  try {
+    const row = db.prepare('SELECT start_fullscreen FROM delete_prefs WHERE id = 1').get() as
+      | { start_fullscreen: number }
+      | undefined
+    return (row?.start_fullscreen ?? 1) === 1
+  } catch {
+    return true
+  }
+}
+
+export function setStartFullscreenPref(enabled: boolean): void {
+  try {
+    const exists = db.prepare('SELECT id FROM delete_prefs WHERE id = 1').get()
+    if (exists) {
+      db.prepare('UPDATE delete_prefs SET start_fullscreen = ? WHERE id = 1').run(enabled ? 1 : 0)
+    } else {
+      db.prepare('INSERT OR REPLACE INTO delete_prefs (id, start_fullscreen) VALUES (1, ?)').run(enabled ? 1 : 0)
+    }
+  } catch (e) {
+    console.error('Error saving start-fullscreen pref:', e)
   }
 }
 
@@ -2374,9 +2408,25 @@ export function getAllKnownDrives(): string[] {
   return rows.map((r) => r.drive)
 }
 
-export function getVolumeId(drivePath: string): Promise<string | null> {
+/**
+ * The volume mounted at a letter, as `\\?\Volume{GUID}\`.
+ *
+ * Read from mountvol, which answers for every letter in ~50ms. This used to be
+ * one PowerShell process per call - per letter, per drive poll, per open - and
+ * those were most of the drive page's 4-8 second wait. The value is identical:
+ * Win32_Volume has no VolumeSerialNumber property, so the old query always fell
+ * through to DeviceID, which is this same GUID path. PowerShell remains only as
+ * the fallback for a machine where mountvol cannot run at all.
+ */
+export async function getVolumeId(drivePath: string): Promise<string | null> {
+  const letter = drivePath.slice(0, 2).toUpperCase()
+  const volumes = await listMountedVolumes()
+  if (volumes) return volumes.get(letter) ?? null
+  return getVolumeIdPowerShell(letter)
+}
+
+function getVolumeIdPowerShell(letter: string): Promise<string | null> {
   return new Promise((resolve) => {
-    const letter = drivePath.slice(0, 2).toUpperCase()
     const cmd = `powershell -NoProfile -Command "Get-CimInstance Win32_Volume | Where-Object { $_.DriveLetter -eq '${letter}' } | Select-Object DeviceID, VolumeSerialNumber, Label | ConvertTo-Json"`
     cp.exec(cmd, (err, stdout) => {
       if (err || !stdout) return resolve(null)

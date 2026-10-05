@@ -4,7 +4,7 @@ import { spawn } from 'child_process'
 import * as fs from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
-import { getDiskInfo } from 'node-disk-info'
+import { listMountedVolumes, probeDrives } from './driveEnum'
 import ffmpegPath from 'ffmpeg-static'
 import {
   spawnScanUtilityProcess,
@@ -35,6 +35,8 @@ import {
   setHoverPreviewsPref,
   getAiSearchButtonPref,
   setAiSearchButtonPref,
+  getStartFullscreenPref,
+  setStartFullscreenPref,
   getTrashedFiles,
   getTrashCount,
   softDeleteFiles,
@@ -130,6 +132,10 @@ function diag(subsystem: string, message: string): void {
     /* logging must never take the app down */
   }
 }
+
+// The scanner module opens and migrates the database as it is imported, so
+// this is the cost of everything before Electron is ready, DB included.
+diag('startup', `main module loaded at ${uptimeMs()}ms`)
 
 // A second launch (double-click, dev-mode relaunch) must not run alongside the
 // first - two instances hold two DB connections, two watchers, two scanners,
@@ -262,11 +268,38 @@ protocol.registerSchemesAsPrivileged([
   }
 ])
 
+/**
+ * Whether the user wants the window in full screen right now.
+ *
+ * Kept apart from the viewer's own full screen. The viewer uses the HTML
+ * full-screen API on its element, and Chromium's exit from that restores the
+ * window to whatever state it entered from - which, if anything goes wrong in
+ * that bookkeeping, drops the whole app out of full screen. This is the user's
+ * intent for the window, so leaving the viewer's full screen can put it back.
+ */
+let appFullscreen = false
+
+function sendFullscreenState(): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('window-fullscreen-changed', appFullscreen)
+  }
+}
+
+/** The one way the app's own full screen changes: F11, the menu, the in-app
+ *  button and Settings all come here, so the intent above is always current. */
+function setAppFullscreen(on: boolean): void {
+  appFullscreen = on
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen() !== on) mainWindow.setFullScreen(on)
+  sendFullscreenState()
+}
+
 function createWindow(): void {
+  appFullscreen = getStartFullscreenPref()
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
     show: false,
+    fullscreen: appFullscreen,
     autoHideMenuBar: true,
     icon,
     webPreferences: {
@@ -276,10 +309,22 @@ function createWindow(): void {
       webviewTag: true
     }
   })
+  diag('startup', `window created at ${uptimeMs()}ms (fullscreen=${appFullscreen})`)
   watcherManager.setMainWindow(mainWindow)
   indexingService.setMainWindow(mainWindow)
   mainWindow.setBackgroundColor('#00000000')
-  mainWindow.on('ready-to-show', () => mainWindow.show())
+  mainWindow.on('ready-to-show', () => {
+    mainWindow.show()
+    diag('startup', `window shown at ${uptimeMs()}ms`)
+  })
+  mainWindow.webContents.once('did-finish-load', () => diag('startup', `renderer loaded at ${uptimeMs()}ms`))
+  // Leaving the viewer's (HTML) full screen must leave the app the way it was.
+  mainWindow.on('leave-html-full-screen', () => {
+    setTimeout(() => {
+      if (mainWindow.isDestroyed()) return
+      if (mainWindow.isFullScreen() !== appFullscreen) mainWindow.setFullScreen(appFullscreen)
+    }, 0)
+  })
   mainWindow.on('move', () => refreshMpvBounds())
   mainWindow.on('resize', () => refreshMpvBounds())
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -293,54 +338,8 @@ function createWindow(): void {
   }
 }
 
-function getDrivesPowerShell(): Promise<Array<{ name: string; filesystem: string; total: number; used: number; free: number }>> {
-  return new Promise((resolve) => {
-    const cmd = `powershell -NoProfile -Command "Get-CimInstance Win32_LogicalDisk | Select-Object DeviceID, FileSystem, Size, FreeSpace | ConvertTo-Json"`
-    const { exec } = require('child_process')
-    exec(cmd, (err: any, stdout: string) => {
-      if (err || !stdout) return resolve([])
-      try {
-        const parsed = JSON.parse(stdout)
-        const items = Array.isArray(parsed) ? parsed : [parsed]
-        const drives = items
-          .filter((d: any) => d.Size && d.DeviceID)
-          .map((d: any) => {
-            const totalGB = Math.round(Number(d.Size) / (1024 * 1024 * 1024))
-            const freeGB = Math.round(Number(d.FreeSpace) / (1024 * 1024 * 1024))
-            const usedGB = Math.max(0, totalGB - freeGB)
-            return {
-              name: d.DeviceID,
-              filesystem: d.FileSystem || 'NTFS',
-              total: totalGB,
-              used: usedGB,
-              free: freeGB
-            }
-          })
-        resolve(drives)
-      } catch {
-        resolve([])
-      }
-    })
-  })
-}
-
-// Connection type (internal/external) is a physical-disk property, not a
-// per-poll one - it only changes when a drive is actually plugged/unplugged.
-// Cached by drive letter so the (multi-CIM-call) classification query only
-// re-runs when the set of mounted letters changes, not on every 3s poll.
-let driveHardwareCache: Record<string, DriveHardware> = {}
 /** Letters presented to the user as drives. Aliases are not in here. */
 let knownDriveLetters: Set<string> = new Set()
-/**
- * Every letter the last enumeration saw, aliases included.
- *
- * Kept separate from knownDriveLetters because that one excludes aliases: using
- * it to decide "has the drive set changed?" would compare a set containing an
- * alias against one that never can, so the answer would always be "changed" and
- * the hardware query would re-run its PowerShell shell-outs on every 3-second
- * poll for as long as any alias existed.
- */
-let knownEnumeratedLetters: Set<string> = new Set()
 
 /** Physical medium. Deliberately separate from how the drive is attached:
  *  a USB-attached SSD is external AND an SSD. */
@@ -367,14 +366,6 @@ export interface DriveHardware {
   /** Physical medium, kept separate from how it is attached. */
   media: 'ssd' | 'hdd' | 'unknown'
   model: string | null
-  volumeId: string | null
-  /**
-   * Win32_LogicalDisk.VolumeSerialNumber - the serial of the filesystem this
-   * letter resolves to. An alias (a SUBST mapping, say) has no volumeId but
-   * reports the serial of the volume behind it, which is what lets the letter be
-   * resolved to its backing volume instead of shown as separate storage.
-   */
-  fsSerial: string | null
 }
 
 /**
@@ -420,19 +411,10 @@ function queryDriveHardware(letters: string[]): Promise<Record<string, DriveHard
       `  } catch {`,
       `    $err = $_.Exception.Message`,
       `  }`,
-      `  $v = Get-CimInstance Win32_Volume | Where-Object { $_.DriveLetter -eq ($dl + ':') }`,
-      `  if ($v) {`,
-      `    if ($v.SerialNumber) { $vol = [string]$v.SerialNumber }`,
-      `    elseif ($v.DeviceID) { $vol = [string]$v.DeviceID }`,
-      `  }`,
-      // Win32_LogicalDisk lists letters that are not volumes - a SUBST mapping
-      // enumerates here but has no Win32_Volume entry at all - and reports the
-      // serial of whatever filesystem the letter resolves to. That serial is
-      // what lets an alias be resolved to the volume actually behind it.
-      `  $fsSerial = ''`,
-      `  $ld = Get-CimInstance Win32_LogicalDisk | Where-Object { $_.DeviceID -eq ($dl + ':') }`,
-      `  if ($ld -and $ld.VolumeSerialNumber) { $fsSerial = [string]$ld.VolumeSerialNumber }`,
-      `  $out += [PSCustomObject]@{ DriveLetter = $dl; BusType = $bus; MediaType = $media; Model = $model; VolumeId = $vol; FsSerial = $fsSerial; Err = $err }`,
+      // Identity (volume GUID, filesystem serial) is no longer asked for here:
+      // it comes from mountvol and fs.stat in driveEnum.ts, in milliseconds,
+      // before this script has even started.
+      `  $out += [PSCustomObject]@{ DriveLetter = $dl; BusType = $bus; MediaType = $media; Model = $model; Err = $err }`,
       `}`,
       `$out | ConvertTo-Json -Compress`
     ].join(String.fromCharCode(13, 10))
@@ -469,9 +451,7 @@ function queryDriveHardware(letters: string[]): Promise<Record<string, DriveHard
             result[letter] = {
               connection: classifyBusType(String(item.BusType || '')),
               media: classifyMediaType(String(item.MediaType || '')),
-              model: item.Model ? String(item.Model) : null,
-              volumeId: item.VolumeId ? String(item.VolumeId) : null,
-              fsSerial: item.FsSerial ? String(item.FsSerial) : null
+              model: item.Model ? String(item.Model) : null
             }
             console.log(`[driveHardware] ${letter} bus=${item.BusType} media=${item.MediaType} model=${item.Model}`)
           }
@@ -484,104 +464,159 @@ function queryDriveHardware(letters: string[]): Promise<Record<string, DriveHard
   })
 }
 
-async function sendDrives(): Promise<void> {
+/**
+ * Bus type, medium and model per volume, remembered across launches.
+ *
+ * They are facts about the physical disk, they cost a PowerShell process to
+ * learn, and they never change for a given volume - so a card can show
+ * "INTERNAL · SSD" the instant the drive is listed, from last time, while the
+ * query that confirms it runs in the background.
+ */
+const hardwareCachePath = (): string => join(app.getPath('userData'), 'drive-hardware.json')
+let hardwareByVolume: Record<string, DriveHardware> = {}
+function loadHardwareCache(): void {
   try {
-    let drives: Array<{ name: string; filesystem: string; total: number; used: number; free: number }> = []
-    try {
-      const disks = await getDiskInfo()
-      drives = disks.map((disk) => ({
-        name: disk.mounted,
-        filesystem: disk.filesystem,
-        total: Math.round(disk.blocks / 1024 / 1024 / 1024),
-        used: Math.round((disk.blocks - disk.available) / 1024 / 1024 / 1024),
-        free: Math.round(disk.available / 1024 / 1024 / 1024)
-      }))
-    } catch {
-      drives = await getDrivesPowerShell()
-    }
+    hardwareByVolume = JSON.parse(fs.readFileSync(hardwareCachePath(), 'utf8')) ?? {}
+  } catch {
+    hardwareByVolume = {}
+  }
+}
+let hardwareQuery: Promise<void> | null = null
+/** Letter set the hardware facts were last asked for, so a plug or unplug asks again. */
+let hardwareAskedFor = ''
 
-    const letters = drives.map((d) => d.name.slice(0, 2).toUpperCase())
-    const currentSet = new Set(letters)
-    const sameSet =
-      currentSet.size === knownEnumeratedLetters.size &&
-      [...currentSet].every((l) => knownEnumeratedLetters.has(l))
-    if (!sameSet) {
-      driveHardwareCache = await queryDriveHardware(letters)
-      // Recorded only once the hardware answers actually exist. Setting it
-      // before the await let the next poll see "same set", skip the query, and
-      // build the drive list from an empty hardware cache - which read as "this
-      // letter has no verifiable volume identity" and briefly labelled a
-      // perfectly ordinary C: as unverifiable.
-      knownEnumeratedLetters = currentSet
-      // A drive that has never been indexed has no rows to derive its letter
-      // from, so it would never get an identity cached until the user opened
-      // it - and by then the drive-select screen would already have asked
-      // "how many files" using a stale or missing volume id. Priming here,
-      // for every currently mounted letter, closes that gap.
-      await refreshVolumeCache(letters)
-    }
+function refreshHardware(letters: string[], volumes: Map<string, string>): void {
+  if (hardwareQuery) return
+  hardwareAskedFor = letters.join(',')
+  const t = Date.now()
+  hardwareQuery = queryDriveHardware(letters)
+    .then((byLetter) => {
+      let changed = false
+      for (const [letter, hw] of Object.entries(byLetter)) {
+        const vol = volumes.get(letter)
+        // Keyed by the volume, not the letter: letters move between devices.
+        if (!vol) continue
+        const prev = hardwareByVolume[vol]
+        if (!prev || prev.connection !== hw.connection || prev.media !== hw.media || prev.model !== hw.model) {
+          hardwareByVolume[vol] = hw
+          changed = true
+        }
+      }
+      diag('drives', `hardware facts for ${letters.join(' ')} in ${Date.now() - t}ms${changed ? ' (changed)' : ''}`)
+      if (changed) {
+        try {
+          fs.writeFileSync(hardwareCachePath(), JSON.stringify(hardwareByVolume))
+        } catch {
+          /* only a cache */
+        }
+        void sendDrives()
+      }
+    })
+    .finally(() => {
+      hardwareQuery = null
+    })
+}
+
+/** Last list sent, so a renderer that asks again gets an answer immediately. */
+let lastDrivesPayload: unknown[] | null = null
+let drivesInFlight: Promise<void> | null = null
+let drivesSentOnce = false
+
+/**
+ * Lists the drives. Never waits on PowerShell: capacity comes from fs.statfs and
+ * identity from mountvol (see driveEnum.ts), each letter on its own timeout.
+ * Bus/medium/model are filled from the per-volume cache and confirmed in the
+ * background, which re-sends the list if anything changed.
+ */
+function sendDrives(): Promise<void> {
+  if (drivesInFlight) return drivesInFlight
+  drivesInFlight = sendDrivesNow().finally(() => {
+    drivesInFlight = null
+  })
+  return drivesInFlight
+}
+
+async function sendDrivesNow(): Promise<void> {
+  try {
+    const t0 = Date.now()
+    // null means mountvol could not run, which is not the same as "no volumes":
+    // every letter is then listed as unverified rather than hidden.
+    const volumes = (await listMountedVolumes()) ?? new Map<string, string>()
+    const probed = await probeDrives(volumes.keys())
+    const letters = probed.map((p) => p.letter)
+
+    // Identity for every mounted letter, and an explicit "nothing here" for a
+    // previously indexed letter that is not mounted - so the drive page's
+    // counts and an open of this letter both read a verified answer.
+    const mounted = new Set(letters)
+    for (const l of letters) primeVolumeCache(l, volumes.get(l) ?? null)
+    for (const known of knownDriveLetters) if (!mounted.has(known)) primeVolumeCache(known, null)
 
     // Not every drive letter is storage. Windows hands out a letter for a SUBST
-    // mapping too, and such a letter enumerates in Win32_LogicalDisk with the
-    // backing volume's name, serial, capacity and free space - because it IS
-    // that volume - while having no Win32_Volume entry of its own. Presenting it
-    // as another drive claims storage the user does not have, and the identical
-    // capacity figures look like an arithmetic bug.
-    //
-    // Resolution is by verified volume identity, never by capacity, label or
-    // letter. See driveIdentity.ts for what is and is not treated as an alias.
-    //
-    // Only letters Windows has actually been asked about take part. "We asked
-    // and there is no volume here" and "we have not asked yet" are different
-    // facts: resolving on the second would call a drive unverifiable for no
-    // better reason than that a PowerShell call had not come back. A letter with
-    // no hardware answer yet is simply passed through unchanged.
-    const answered = letters.filter((l) => driveHardwareCache[l] !== undefined)
+    // mapping too, and such a letter answers with the backing volume's capacity
+    // and free space - because it IS that volume - while having no volume of
+    // its own in mountvol. Presenting it as another drive claims storage the
+    // user does not have. Resolution is by verified volume identity, never by
+    // capacity, label or letter; see driveIdentity.ts.
     const resolved = resolveDriveLetters(
-      answered.map((letter) => ({
-        letter,
-        volumeId: driveHardwareCache[letter]?.volumeId ?? null,
-        fsSerial: driveHardwareCache[letter]?.fsSerial ?? null
-      }))
+      probed.map((p) => ({ letter: p.letter, volumeId: volumes.get(p.letter) ?? null, fsSerial: p.fsSerial }))
     )
     const byLetter = new Map(resolved.map((r) => [r.letter, r]))
     for (const r of resolved) {
       if (!r.independent) {
         diag('drives', `${r.letter} is an alias of ${r.aliasOf} (same volume) - not listed as a drive`)
-      } else if (r.identityUnverified) {
+      } else if (r.identityUnverified && !knownDriveLetters.has(r.letter)) {
         diag('drives', `${r.letter} has no verifiable volume identity - listed, but unverified`)
       }
     }
 
-    const drivesWithType = drives
-      .filter((d) => byLetter.get(d.name.slice(0, 2).toUpperCase())?.independent !== false)
-      .map((d) => ({
-        ...d,
-        ...(() => {
-          const letter = d.name.slice(0, 2).toUpperCase()
-          const hw = driveHardwareCache[letter]
-          return {
-            connectionType: hw?.connection ?? 'unknown',
-            mediaType: hw?.media ?? 'unknown',
-            model: hw?.model ?? null,
-            volumeId: hw?.volumeId ?? null,
-            // So the card can say "this drive could not be verified" rather than
-            // implying its catalogue state is known.
-            identityUnverified: byLetter.get(letter)?.identityUnverified ?? false
-          }
-        })()
-      }))
+    const GB = 1024 * 1024 * 1024
+    const drivesWithType = probed
+      .filter((p) => byLetter.get(p.letter)?.independent !== false)
+      .map((p) => {
+        const volumeId = volumes.get(p.letter) ?? null
+        const hw = volumeId ? hardwareByVolume[volumeId] : undefined
+        return {
+          name: p.letter,
+          filesystem: '',
+          total: Math.round(p.totalBytes / GB),
+          used: Math.round((p.totalBytes - p.freeBytes) / GB),
+          free: Math.round(p.freeBytes / GB),
+          connectionType: hw?.connection ?? 'unknown',
+          mediaType: hw?.media ?? 'unknown',
+          model: hw?.model ?? null,
+          volumeId,
+          // So the card can say "this drive could not be verified" rather than
+          // implying its catalogue state is known.
+          identityUnverified: byLetter.get(p.letter)?.identityUnverified ?? false,
+          // Counted by the verified volume, one indexed COUNT each. Sent with
+          // the list so a card never shows "Not indexed yet" while a separate
+          // request for its count is still on the way.
+          indexedCount: getFileCount(volumeId)
+        }
+      })
 
     // Only the letters actually presented as drives. An alias must not get its
     // own file count either - that count belongs to the backing volume's card.
-    knownDriveLetters = new Set(
-      drivesWithType.map((d) => d.name.slice(0, 2).toUpperCase())
-    )
-
+    knownDriveLetters = new Set(drivesWithType.map((d) => d.name))
+    lastDrivesPayload = drivesWithType
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('drives-updated', drivesWithType)
+    if (!drivesSentOnce) {
+      drivesSentOnce = true
+      diag('startup', `first drive list (${drivesWithType.map((d) => d.name).join(' ') || 'none'}) at ${uptimeMs()}ms, enumeration ${Date.now() - t0}ms`)
+    }
+
+    // Asked once per launch and again only when the set of letters changes -
+    // never per poll, even for a disk that will not say what it is.
+    if (letters.join(',') !== hardwareAskedFor) refreshHardware(letters, volumes)
   } catch (err) {
     console.error('Error getting disk info:', err)
   }
+}
+
+/** Milliseconds since this process started, for startup stage logging. */
+function uptimeMs(): number {
+  return Math.round(process.uptime() * 1000)
 }
 
 /**
@@ -695,6 +730,17 @@ async function runThumbBackfill(volumeId?: string | null): Promise<void> {
 
 app.whenReady().then(() => {
   if (!gotLock) return
+  diag('startup', `electron ready at ${uptimeMs()}ms`)
+
+  // The window first. Everything below this is synchronous registration, so
+  // every IPC handler and the media protocol still exist before the renderer
+  // can send its first message - but the renderer's 0.5s+ of loading now
+  // overlaps all of it instead of starting after it.
+  createWindow()
+  // Drive enumeration starts now too, in parallel with the renderer loading,
+  // so the list is usually ready before the drive page asks for it.
+  loadHardwareCache()
+  void sendDrives()
 
   if (safeMode.verboseLog) {
     try {
@@ -714,27 +760,33 @@ app.whenReady().then(() => {
   } catch (err) {
     console.error('[startup] crashReporter unavailable', err)
   }
-  // One-time (idempotent) cleanup of index rows for the app's own generated
-  // thumbnails and cache files. Rows only - nothing on disk is removed.
-  try {
-    clearThumbSentinels()
-    const purged = purgeGeneratedAssetRows()
-    if (purged.removed > 0) diag('purge', `removed ${purged.removed} generated-asset rows of ${purged.scanned} scanned`)
-  } catch (err) {
-    console.error('[purge] failed', err)
-  }
-
-  // Auto-purge permanently deletes trashed files older than 30 days. A
-  // diagnostic session must never destroy anything, so it stays off there.
-  if (safeMode.enabled) {
-    diag('safe-mode', 'startup trash auto-purge suppressed (no destructive work in diagnostic mode)')
-  } else {
-    try {
-      autoPurgeTrash()
-    } catch (err) {
-      console.error('Error running auto-purge on startup:', err)
-    }
-  }
+  // Startup maintenance runs after the first paint, not before the window:
+  // purgeGeneratedAssetRows reads every row's path (85k here) and the two of
+  // them were ~200ms of synchronous work in front of createWindow().
+  mainWindow.webContents.once('did-finish-load', () => {
+    setTimeout(() => {
+      if (isQuitting) return
+      // One-time (idempotent) cleanup of index rows for the app's own generated
+      // thumbnails and cache files. Rows only - nothing on disk is removed.
+      try {
+        clearThumbSentinels()
+        const purged = purgeGeneratedAssetRows()
+        if (purged.removed > 0) {
+          diag('purge', `removed ${purged.removed} generated-asset rows of ${purged.scanned} scanned`)
+          if (currentOpenDrive) sendFilesUpdated(currentOpenDrive, 'background')
+        }
+      } catch (err) {
+        console.error('[purge] failed', err)
+      }
+      // Auto-purge permanently deletes trashed files older than 30 days. A
+      // diagnostic session must never destroy anything, so it stays off there.
+      if (safeMode.enabled) {
+        diag('safe-mode', 'startup trash auto-purge suppressed (no destructive work in diagnostic mode)')
+      } else {
+        autoPurgeTrash().catch((err) => console.error('Error running auto-purge on startup:', err))
+      }
+    }, 1500)
+  })
   protocol.handle('media', async (request) => {
     // A query string names no part of the file. The viewer's Retry adds one so
     // that Blink stops serving its cached failure for the same URL; without
@@ -841,7 +893,14 @@ app.whenReady().then(() => {
   })
 
   // ── DRIVE / SCAN ──
-  ipcMain.on('get-drives', () => sendDrives())
+  // Answer at once with the last list (enumeration has usually finished before
+  // the renderer mounts), and refresh behind it.
+  ipcMain.on('get-drives', () => {
+    if (lastDrivesPayload && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('drives-updated', lastDrivesPayload)
+    }
+    void sendDrives()
+  })
   // Per-letter, but the count itself is looked up by the volume currently
   // proven to be at that letter - a stale or foreign catalogue under the same
   // letter is never reported as this drive's count.
@@ -1405,6 +1464,18 @@ app.whenReady().then(() => {
   ipcMain.handle('get-hover-previews', () => getHoverPreviewsPref())
   ipcMain.handle('set-hover-previews', (_event, enabled: boolean) => {
     setHoverPreviewsPref(enabled)
+    return true
+  })
+
+  // The app's own full screen: current state, and the preference for launch.
+  ipcMain.handle('get-window-fullscreen', () => appFullscreen)
+  ipcMain.handle('set-window-fullscreen', (_event, on: unknown) => {
+    setAppFullscreen(on === true)
+    return appFullscreen
+  })
+  ipcMain.handle('get-start-fullscreen', () => getStartFullscreenPref())
+  ipcMain.handle('set-start-fullscreen', (_event, on: unknown) => {
+    setStartFullscreenPref(on === true)
     return true
   })
 
@@ -2049,12 +2120,26 @@ app.whenReady().then(() => {
         ]
       },
       { label: 'Edit', role: 'editMenu' },
-      { label: 'View', role: 'viewMenu' },
+      {
+        label: 'View',
+        submenu: [
+          { role: 'reload' },
+          { role: 'forceReload' },
+          { role: 'toggleDevTools' },
+          { type: 'separator' },
+          { role: 'resetZoom' },
+          { role: 'zoomIn' },
+          { role: 'zoomOut' },
+          { type: 'separator' },
+          // Not the built-in togglefullscreen role: that would change the
+          // window without updating the app's own record of what the user
+          // wants (see appFullscreen).
+          { label: 'Toggle Full Screen', accelerator: 'F11', click: () => setAppFullscreen(!appFullscreen) }
+        ]
+      },
       { label: 'Window', role: 'windowMenu' }
     ])
   )
-
-  createWindow()
 
   if (safeMode.enabled) {
     diag('safe-mode', `ENABLED. sampleFolder=${safeMode.sampleFolder ?? '(none)'} maxFiles=${safeMode.maxFiles} gpu=${safeMode.disableGpu ? 'disabled' : 'on'}`)
@@ -2118,9 +2203,8 @@ app.whenReady().then(() => {
     driveInterval = setInterval(() => sendDrives(), 3000)
     indexingService.start()
   } else {
+    // The drive list was still sent once above, so the window has something to show.
     diag('safe-mode', 'drive polling and periodic rescan suppressed')
-    // The drive list is still sent once, so the window has something to show.
-    sendDrives()
   }
   memoryLogInterval = setInterval(logMemoryMetrics, safeMode.enabled ? 5000 : 20000)
 

@@ -18,6 +18,8 @@ export interface Drive {
    * real - but its catalogue state is unknown, so the card must not claim one.
    */
   identityUnverified: boolean
+  /** Records indexed for this drive's verified volume; undefined until known. */
+  indexedCount: number | undefined
 }
 
 interface DriveSelectGridProps {
@@ -66,34 +68,9 @@ function mapRawDrive(d: any): Drive {
     model: typeof d.model === 'string' && d.model ? d.model : null,
     totalBytes,
     freeBytes,
-    identityUnverified: d.identityUnverified === true
+    identityUnverified: d.identityUnverified === true,
+    indexedCount: typeof d.indexedCount === 'number' ? d.indexedCount : undefined
   }
-}
-
-async function fetchDrives(): Promise<Drive[]> {
-  return new Promise((resolve) => {
-    if (typeof window !== 'undefined' && window.api) {
-      let resolved = false
-      const unbind = window.api.onDrivesUpdated((rawDrives) => {
-        if (resolved) return
-        resolved = true
-        unbind()
-        const mapped = (rawDrives || []).map((d) => mapRawDrive(d))
-        resolve(mapped)
-      })
-      window.api.getDrives()
-
-      setTimeout(() => {
-        if (!resolved) {
-          resolved = true
-          unbind()
-          resolve([])
-        }
-      }, 2500)
-    } else {
-      resolve([])
-    }
-  })
 }
 
 function formatBytes(bytes: number): string {
@@ -104,71 +81,29 @@ function formatBytes(bytes: number): string {
 }
 
 export default function DriveSelectGrid({ onSelectDrive, drives: propDrives }: DriveSelectGridProps) {
-  const [drives, setDrives] = useState<Drive[]>([])
-  const [loading, setLoading] = useState(true)
-  // The real, DB-backed count for every drive ever indexed - not just the
-  // renderer's session cache, which is empty until you've opened a drive
-  // this session (that's what made an actually-indexed drive show "not
-  // indexed" and, combined with the conditional status row below, made cards
-  // different heights). null = not fetched yet.
-  const [driveCounts, setDriveCounts] = useState<Record<string, number> | null>(null)
+  // Seeded from the list the app already holds (returning from a drive), then
+  // kept current by every 'drives-updated'. Each entry carries its own indexed
+  // count, so a card never says "Not indexed yet" while a separate count
+  // request is still on its way - which is what every card briefly said before.
+  const [drives, setDrives] = useState<Drive[]>(() => (propDrives ?? []).map(mapRawDrive))
+  // "No drives" is only said once the main process has actually answered. The
+  // old 2.5s timeout said it on every cold start, while enumeration was still
+  // waiting on PowerShell.
+  const [received, setReceived] = useState(() => (propDrives?.length ?? 0) > 0)
 
-  // Re-asked whenever the set of drives changes, not just once on mount.
-  //
-  // The counts are keyed by the volume verified at each letter, and the main
-  // process resolves those identities with PowerShell during enumeration. On a
-  // cold start this component mounts well before that finishes, so a single
-  // fetch on mount came back with every count 0 and every card read
-  // "Not indexed yet" on a library that was fully indexed. Keying on the
-  // enumerated letters means the answer is re-read once the drives are actually
-  // known, and again whenever one is plugged in or removed.
-  const driveKey = drives.map((d) => d.letter).join('|')
   useEffect(() => {
-    let cancelled = false
-    window.api
-      .getDriveFileCounts()
-      .then((c) => {
-        if (!cancelled) setDriveCounts(c)
-      })
-      .catch(() => {
-        if (!cancelled) setDriveCounts({})
-      })
+    if (typeof window === 'undefined' || !window.api) return undefined
+    const unbind = window.api.onDrivesUpdated((rawDrives) => {
+      setDrives((rawDrives || []).map((d) => mapRawDrive(d)))
+      setReceived(true)
+    })
+    window.api.getDrives()
     return () => {
-      cancelled = true
+      unbind()
     }
-  }, [driveKey])
-
-  useEffect(() => {
-    if (propDrives && propDrives.length > 0) {
-      setDrives(propDrives.map((d) => mapRawDrive(d)))
-      setLoading(false)
-    } else {
-      fetchDrives()
-        .then((fetched) => {
-          if (fetched.length > 0) {
-            setDrives(fetched)
-          }
-        })
-        .finally(() => setLoading(false))
-    }
-  }, [propDrives])
-
-  useEffect(() => {
-    if (typeof window !== 'undefined' && window.api) {
-      const unbind = window.api.onDrivesUpdated((rawDrives) => {
-        if (rawDrives && rawDrives.length > 0) {
-          setDrives(rawDrives.map((d) => mapRawDrive(d)))
-          setLoading(false)
-        }
-      })
-      return () => {
-        unbind()
-      }
-    }
-    return undefined
   }, [])
 
-  if (!loading && drives.length === 0) {
+  if (received && drives.length === 0) {
     return (
       <div className="drive-empty-state">
         <div className="drive-empty-icon">🖴</div>
@@ -185,7 +120,7 @@ export default function DriveSelectGrid({ onSelectDrive, drives: propDrives }: D
           SELECT A DRIVE
         </h1>
         <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', marginTop: '6px', textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 600 }}>
-          Choose a storage volume to scan and organize media files
+          {received ? 'Choose a storage volume to scan and organize media files' : 'Looking for drives…'}
         </div>
       </div>
       <div className="drive-grid">
@@ -196,7 +131,7 @@ export default function DriveSelectGrid({ onSelectDrive, drives: propDrives }: D
           const Icon = drive.type === 'external' ? Usb : HardDrive
           const badgeText = drive.type === 'unknown' ? 'Drive' : drive.type.toUpperCase()
           const mediaText = drive.media === 'unknown' ? null : drive.media.toUpperCase()
-          const realCount = driveCounts ? driveCounts[drive.letter] ?? 0 : undefined
+          const realCount = drive.indexedCount
           return (
             <button
               key={drive.id}

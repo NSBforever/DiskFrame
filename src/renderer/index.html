@@ -28,7 +28,15 @@
         }
       })()
     </script>
-    <div id="root"></div>
+    <!-- Painted before the app bundle has even been evaluated, so the window
+         opens on the drive page's own header instead of waiting ~0.5s for
+         React's first render. React replaces it on mount. -->
+    <div id="root">
+      <div style="position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:var(--app-bg,#0a0a0c);font-family:system-ui,sans-serif">
+        <div style="font-size:20px;font-weight:800;letter-spacing:2px;text-transform:uppercase;color:var(--app-fg,#f2f2f0)">Select a drive</div>
+        <div style="font-size:11px;margin-top:6px;text-transform:uppercase;letter-spacing:1px;font-weight:600;color:var(--app-fg-dim,#8a8a8f)">Looking for drives…</div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

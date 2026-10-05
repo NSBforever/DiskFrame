@@ -6,6 +6,8 @@ interface DriveInfo {
   total: number
   used: number
   free: number
+  /** Records indexed for the volume verified at this letter, sent with the list. */
+  indexedCount?: number
 }
 
 interface ScannedFile {
@@ -183,6 +185,11 @@ declare global {
       setViewOrder: (order: 'default' | 'reverse') => Promise<void>
       getHoverPreviews: () => Promise<boolean>
       setHoverPreviews: (enabled: boolean) => Promise<void>
+      getWindowFullscreen: () => Promise<boolean>
+      setWindowFullscreen: (on: boolean) => Promise<boolean>
+      onWindowFullscreenChanged: (cb: (on: boolean) => void) => () => void
+      getStartFullscreen: () => Promise<boolean>
+      setStartFullscreen: (on: boolean) => Promise<unknown>
       getAiSearchButton: () => Promise<boolean>
       setAiSearchButton: (enabled: boolean) => Promise<void>
       setOverlayMeta: (meta: { name?: string; isFav?: boolean; toast?: string; show?: boolean }) => void

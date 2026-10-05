@@ -57,6 +57,14 @@ function toUrl(p: string): string {
 export const VIEWER_ACTIVITY_EVENT = 'diskframe:viewer-activity'
 
 /**
+ * Set by whichever viewer control is about to leave full screen on purpose (F,
+ * the button, the video's own toggle). A full-screen exit that happens with
+ * this unset is Escape, which Chromium consumes before any keydown handler
+ * sees it - and the viewer treats that as "close", as Escape always meant.
+ */
+export const fullscreenExitIntent = { current: false }
+
+/**
  * Why a file would not paint, and what to say about it.
  *
  * An <img> or <video> error is one event for several unrelated situations, and
@@ -720,6 +728,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
       videoContainerRef.current.requestFullscreen().catch((err) => console.error(err))
       setIsFullscreen(true)
     } else {
+      fullscreenExitIntent.current = true
       document.exitFullscreen().catch(() => {})
       setIsFullscreen(false)
     }

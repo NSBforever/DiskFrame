@@ -138,6 +138,16 @@ const api = {
   setViewOrder: (order: 'default' | 'reverse') => ipcRenderer.invoke('set-view-order', order),
   getHoverPreviews: () => ipcRenderer.invoke('get-hover-previews'),
   setHoverPreviews: (enabled: boolean) => ipcRenderer.invoke('set-hover-previews', enabled),
+  /** The app window's own full screen - not the viewer's. */
+  getWindowFullscreen: (): Promise<boolean> => ipcRenderer.invoke('get-window-fullscreen'),
+  setWindowFullscreen: (on: boolean): Promise<boolean> => ipcRenderer.invoke('set-window-fullscreen', on),
+  onWindowFullscreenChanged: (cb: (on: boolean) => void) => {
+    const listener = (_e: unknown, on: boolean): void => cb(on)
+    ipcRenderer.on('window-fullscreen-changed', listener)
+    return () => ipcRenderer.removeListener('window-fullscreen-changed', listener)
+  },
+  getStartFullscreen: (): Promise<boolean> => ipcRenderer.invoke('get-start-fullscreen'),
+  setStartFullscreen: (on: boolean) => ipcRenderer.invoke('set-start-fullscreen', on),
   getAiSearchButton: () => ipcRenderer.invoke('get-ai-search-button'),
   setAiSearchButton: (enabled: boolean) => ipcRenderer.invoke('set-ai-search-button', enabled),
   // Two tiers: tiles on screen, then the band being scrolled towards. The band

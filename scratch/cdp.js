@@ -19,6 +19,7 @@
  */
 const http = require('http')
 const crypto = require('crypto')
+const fs = require('fs')
 
 function listTargets(port) {
   return new Promise((resolve, reject) => {
@@ -141,7 +142,9 @@ function connect(wsUrl) {
 
 ;(async () => {
   const port = Number(process.argv[2] || 9222)
-  const expression = process.argv[3]
+  // --file <path> reads the expression from disk: Windows command-line quoting
+  // mangles quotes and backslashes in long inline scripts.
+  const expression = process.argv[3] === '--file' ? fs.readFileSync(process.argv[4], 'utf8') : process.argv[3]
   if (!expression) {
     console.error("usage: cdp.js <port> '<js expression>' | cdp.js <port> --shot <file.png>")
     process.exit(1)
@@ -164,6 +167,19 @@ function connect(wsUrl) {
     process.exit(1)
   }
   const cdp = await connect(page.webSocketDebuggerUrl)
+  // --key <Name>: a real key press through the input pipeline, so Chromium's
+  // own handling (Escape leaving HTML full screen) happens as it would for a
+  // person, which a synthetic DOM KeyboardEvent never triggers.
+  if (expression === '--key') {
+    const key = process.argv[4]
+    const vk = { Escape: 27, F11: 122, ArrowRight: 39, ArrowLeft: 37, Delete: 46, Enter: 13, f: 70, Space: 32 }[key] || 0
+    for (const type of ['rawKeyDown', 'keyUp']) {
+      await cdp.send('Input.dispatchKeyEvent', { type, key, code: key, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk })
+    }
+    console.log('pressed ' + key)
+    cdp.close()
+    process.exit(0)
+  }
   if (shotPath) {
     const shot = await cdp.send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })
     const data = shot.result && shot.result.data
