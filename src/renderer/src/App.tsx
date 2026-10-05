@@ -267,7 +267,7 @@ function thumbUrl(file: ScannedFile): string {
 }
 
 export const FileTile = React.memo(({
-  file, onOpen, onFav, isFav, isSelected, onSelect, onContextMenu, tileSize, isTrashView, onRestore, onDeletePermanently, isDeleting, onDragStart, selectedPaths
+  file, onOpen, onFav, isFav, isSelected, onSelect, onContextMenu, tileSize, isTrashView, onRestore, onDeletePermanently, onDragStart, selectedPaths
 }: {
   file: ScannedFile
   /** Changes when file.thumb is patched in place, so memo re-renders. */
@@ -282,7 +282,6 @@ export const FileTile = React.memo(({
   isTrashView?: boolean
   onRestore?: (f: ScannedFile) => void
   onDeletePermanently?: (f: ScannedFile) => void
-  isDeleting?: boolean
   onDragStart?: (file: ScannedFile, e: React.DragEvent) => void
   selectedPaths?: string[]
 }): React.JSX.Element => {
@@ -374,8 +373,8 @@ export const FileTile = React.memo(({
         border: `1px solid ${isSelected ? '#e11d2e' : hovered ? 'rgba(225,29,46,0.4)' : 'rgba(255,255,255,0.04)'}`,
         outline: isSelected ? '1px solid #e11d2e' : 'none',
         outlineOffset: '2px',
-        transform: isDeleting ? 'scale(0.1)' : 'scale(1) translateY(0)',
-        opacity: isDeleting ? 0 : 1,
+        transform: 'scale(1) translateY(0)',
+        opacity: 1,
         boxShadow: 'none',
         transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.15s, opacity 0.35s',
         zIndex: hovered ? 2 : 1
@@ -586,7 +585,6 @@ const MainContentArea: React.FC<{
   /** Every favourite row across all drives, already filtered by the main process. */
   favRecords: ScannedFile[]
   selected: Set<string>
-  deletingPaths: Set<string>
   handleTileOpen: (file: ScannedFile, indexOrList: number | ScannedFile[], e?: React.MouseEvent) => void
   handleFav: (file: ScannedFile) => void
   handleSelect: (file: ScannedFile, e: React.MouseEvent) => void
@@ -663,7 +661,6 @@ const MainContentArea: React.FC<{
   favourites,
   favRecords,
   selected,
-  deletingPaths,
   handleTileOpen,
   handleFav,
   handleSelect,
@@ -959,7 +956,6 @@ const MainContentArea: React.FC<{
                 onSelect={handleSelect}
                 onContextMenu={(f, e) => handleTileContextMenu(f, files, e)}
                 tileSize={80}
-                isDeleting={deletingPaths.has(file.path)}
                 onDragStart={onDragStart}
                 selectedPaths={Array.from(selected)}
               />
@@ -1033,7 +1029,7 @@ const MainContentArea: React.FC<{
         return (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(100px, 1fr))', gap: '5px', marginBottom: '5px' }}>
             {rowFiles.map((file: ScannedFile) => (
-              <FileTile key={file.path} file={file} thumbKey={file.thumb} onOpen={(f, e) => handleTileOpen(f, allFavFiles, e)} onFav={handleFav} isFav={true} isSelected={selected.has(file.path)} onSelect={handleSelect} onContextMenu={(f, e) => handleTileContextMenu(f, allFavFiles, e)} tileSize={100} isDeleting={deletingPaths.has(file.path)} onDragStart={onDragStart} selectedPaths={Array.from(selected)} />
+              <FileTile key={file.path} file={file} thumbKey={file.thumb} onOpen={(f, e) => handleTileOpen(f, allFavFiles, e)} onFav={handleFav} isFav={true} isSelected={selected.has(file.path)} onSelect={handleSelect} onContextMenu={(f, e) => handleTileContextMenu(f, allFavFiles, e)} tileSize={100} onDragStart={onDragStart} selectedPaths={Array.from(selected)} />
             ))}
           </div>
         )
@@ -1064,7 +1060,6 @@ const MainContentArea: React.FC<{
                 isTrashView={true}
                 onRestore={handleRestore}
                 onDeletePermanently={f => setFileToDeletePermanently(f)}
-                isDeleting={deletingPaths.has(file.path)}
               />
             ))}
           </div>
@@ -1275,7 +1270,6 @@ const MainContentArea: React.FC<{
           formatGroupKey={formatGroupKey}
           selected={selected}
           favourites={favourites}
-          deletingPaths={deletingPaths}
           tileSize={tileSize}
           onTileSizeCommit={onTileSizeCommit}
           onZoomOutBeyond={onGridZoomOutBeyond}
@@ -1757,7 +1751,6 @@ export default function App(): React.JSX.Element {
   const [trashCount, setTrashCount] = useState(0)
   const [fileToDeletePermanently, setFileToDeletePermanently] = useState<ScannedFile | null>(null)
   const [showEmptyTrashConfirm, setShowEmptyTrashConfirm] = useState(false)
-  const [deletingPaths, setDeletingPaths] = useState<Set<string>>(new Set())
 
   // Floating AI search interface states
   const [showAiOverlay, setShowAiOverlay] = useState(false)
@@ -2549,30 +2542,89 @@ export default function App(): React.JSX.Element {
     if (row) setLightbox({ file: row, index: next })
   }, [])
 
-  const handleFileDeleted = useCallback((deletedPath: string): void => {
-    setDeletingPaths(prev => {
-      const next = new Set(prev)
-      next.add(deletedPath)
-      return next
-    })
-    
-    setTimeout(() => {
-      setDeletingPaths(prev => {
-        const next = new Set(prev)
-        next.delete(deletedPath)
-        return next
-      })
-      setSelected(prev => {
-        const next = new Set(prev)
-        next.delete(deletedPath)
-        return next
-      })
-      if (selectedDrive) {
-        window.api.getFiles(selectedDrive)
+  /**
+   * If the file open in the viewer was just removed, show the one that took
+   * its place - the next file, or the previous one at the end - or close the
+   * viewer when nothing is left. Runs after removePaths, so the library has
+   * already moved the next row into this index.
+   */
+  const advanceViewerPast = useCallback((gone: Set<string>): void => {
+    const lb = lightboxRef.current
+    if (!lb || !gone.has(lb.file.path)) return
+    if (lb.list) {
+      const list = lb.list.filter((f) => !gone.has(f.path))
+      if (list.length === 0) return setLightbox(null)
+      const index = Math.min(lb.index, list.length - 1)
+      setLightbox({ file: list[index], index, list })
+      return
+    }
+    const lib = libraryRef.current
+    for (const index of [lb.index, lb.index - 1]) {
+      const row = index >= 0 ? lib?.getRow(index) : undefined
+      if (row && !gone.has(row.path)) {
+        setLightbox({ file: row, index })
+        return
       }
+    }
+    setLightbox(null)
+  }, [])
+
+  /**
+   * Moves files to DiskFrame's Trash - the one path for the context menu,
+   * multi-select and the viewer.
+   *
+   * The gallery changes first: the tiles leave the grid, group counts and
+   * totals drop, the selection, the Favourites list and the Trash badge follow,
+   * and the viewer steps past the file if it was open. Then the main process
+   * is asked, and what it reports is applied: anything it could not trash is
+   * put back by the re-read and named in a message. The re-read swaps rows in
+   * place, so nothing on screen blanks. Nothing is deleted from disk here.
+   */
+  const trashFiles = useCallback(
+    async (items: { path: string; volumeId?: string | null }[]): Promise<void> => {
+      if (items.length === 0) return
+      const gone = new Set(items.map((i) => i.path))
+      libraryRef.current?.removePaths(gone)
+      setSelected((prev) => {
+        if (![...gone].some((p) => prev.has(p))) return prev
+        const next = new Set(prev)
+        for (const p of gone) next.delete(p)
+        return next
+      })
+      setFavRecords((prev) => prev.filter((f) => !gone.has(f.path)))
+      setTrashCount((c) => c + gone.size)
+      advanceViewerPast(gone)
+
+      let failed: string[] = []
+      try {
+        const res = (await window.electron.ipcRenderer.invoke(
+          'delete-files',
+          items.map((i) => (i.volumeId !== undefined ? { path: i.path, volumeId: i.volumeId } : i.path))
+        )) as { success?: string[]; failed?: string[] }
+        failed = res?.failed ?? []
+      } catch (err) {
+        console.error('Trash failed', err)
+        failed = [...gone]
+      }
+      if (failed.length > 0) {
+        setToastMsg(
+          failed.length === gone.size
+            ? `Could not move ${failed.length === 1 ? 'the file' : `${failed.length} files`} to Trash - nothing was changed`
+            : `Moved ${gone.size - failed.length} to Trash; ${failed.length} could not be moved and are back in the gallery`
+        )
+      }
+      void libraryRef.current?.refresh()
       refreshTrash()
-    }, 350)
-  }, [selectedDrive, refreshTrash])
+      loadFavourites()
+    },
+    [advanceViewerPast, refreshTrash, loadFavourites]
+  )
+
+  // The viewer's trash button.
+  const handleFileDeleted = useCallback(
+    (file: ScannedFile): void => void trashFiles([{ path: file.path, volumeId: file.volume_id }]),
+    [trashFiles]
+  )
 
   const handleBatchFavorite = useCallback(async (): Promise<void> => {
     for (const path of selected) {
@@ -2786,29 +2838,24 @@ export default function App(): React.JSX.Element {
   }, [selected, selectedDrive])
 
   // Custom Trash Operations
+  // Out of Trash at once; back into the gallery (in its proper place, which
+  // only the database knows) by a re-read that does not blank the grid.
   const handleRestore = useCallback(async (file: ScannedFile) => {
-    setDeletingPaths(prev => {
-      const next = new Set(prev)
-      next.add(file.path)
-      return next
-    })
-    setTimeout(async () => {
-      try {
-        await window.electron.ipcRenderer.invoke('restore-files', [{ path: file.path, volumeId: file.volume_id }])
-        setDeletingPaths(prev => {
-          const next = new Set(prev)
-          next.delete(file.path)
-          return next
-        })
-        refreshTrash()
-        if (selectedDrive) {
-          window.api.getFiles(selectedDrive)
-        }
-      } catch (err) {
-        console.error(err)
+    setTrashedFiles((prev) => prev.filter((f) => f.path !== file.path))
+    setTrashCount((c) => Math.max(0, c - 1))
+    try {
+      const res = (await window.electron.ipcRenderer.invoke('restore-files', [{ path: file.path, volumeId: file.volume_id }])) as {
+        failed?: string[]
       }
-    }, 350)
-  }, [selectedDrive, refreshTrash])
+      if (res?.failed?.length) setToastMsg(`Could not restore "${file.name}" - it is still in Trash`)
+    } catch (err) {
+      console.error(err)
+      setToastMsg(`Could not restore "${file.name}" - it is still in Trash`)
+    }
+    void libraryRef.current?.refresh()
+    refreshTrash()
+    loadFavourites()
+  }, [refreshTrash, loadFavourites])
 
   // Close context menu helper
   useEffect(() => {
@@ -3051,7 +3098,6 @@ export default function App(): React.JSX.Element {
           rowListTruncated={rowList.truncated}
           favourites={favourites}
           selected={selected}
-          deletingPaths={deletingPaths}
           handleTileOpen={handleTileOpen}
           handleFav={handleFav}
           handleSelect={handleSelect}
@@ -3554,17 +3600,10 @@ export default function App(): React.JSX.Element {
                 Cancel
               </button>
               <button
-                onClick={async () => {
-                  try {
-                    const result = await window.electron.ipcRenderer.invoke('delete-files', [{ path: fileToDelete.path, volumeId: fileToDelete.volume_id }]) as { success?: string[] }
-                    if (result && result.success && result.success.length > 0) {
-                      handleFileDeleted(fileToDelete.path)
-                    }
-                  } catch (err) {
-                    console.error(err)
-                  } finally {
-                    setFileToDelete(null)
-                  }
+                onClick={() => {
+                  const f = fileToDelete
+                  setFileToDelete(null)
+                  void trashFiles([{ path: f.path, volumeId: f.volume_id }])
                 }}
                 className="cred-button"
                 style={{
@@ -3630,38 +3669,9 @@ export default function App(): React.JSX.Element {
                 Cancel
               </button>
               <button
-                onClick={async () => {
-                  try {
-                    const paths = Array.from(selected)
-                    
-                    // Trigger batch animation
-                    setDeletingPaths(prev => {
-                      const next = new Set(prev)
-                      paths.forEach(p => next.add(p))
-                      return next
-                    })
-                    
-                    const result = await window.electron.ipcRenderer.invoke('delete-files', paths) as { success?: string[] }
-                    
-                    setTimeout(() => {
-                      setDeletingPaths(prev => {
-                        const next = new Set(prev)
-                        paths.forEach(p => next.delete(p))
-                        return next
-                      })
-                      if (result && result.success) {
-                        setSelected(new Set())
-                        if (selectedDrive) {
-                          window.api.getFiles(selectedDrive)
-                        }
-                        refreshTrash()
-                      }
-                    }, 350)
-                  } catch (err) {
-                    console.error('Batch delete error', err)
-                  } finally {
-                    setShowBatchDeleteConfirm(false)
-                  }
+                onClick={() => {
+                  setShowBatchDeleteConfirm(false)
+                  void trashFiles(Array.from(selected, (path) => ({ path })))
                 }}
                 className="cred-button"
                 style={{

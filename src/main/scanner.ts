@@ -837,31 +837,41 @@ function refVolumeId(r: PathRef): string | null | undefined {
   return typeof r === 'string' ? undefined : r.volumeId
 }
 
-export function softDeleteFiles(refs: PathRef[]): void {
-  const stmt = db.prepare('UPDATE files SET trashed_at = ? WHERE path = ?')
-  const stmtScoped = db.prepare('UPDATE files SET trashed_at = ? WHERE path = ? AND volume_id IS ?')
+/**
+ * Moves rows to DiskFrame's Trash. Returns which paths actually changed: a
+ * path with no live row (already trashed, removed by reconciliation, a stale
+ * identity) is reported as failed rather than as a success the UI would then
+ * show as gone. Nothing on disk is touched.
+ */
+export function softDeleteFiles(refs: PathRef[]): { success: string[]; failed: string[] } {
+  const stmt = db.prepare('UPDATE files SET trashed_at = ? WHERE path = ? AND trashed_at IS NULL')
+  const stmtScoped = db.prepare('UPDATE files SET trashed_at = ? WHERE path = ? AND volume_id IS ? AND trashed_at IS NULL')
   const now = new Date().toISOString()
-  const tx = db.transaction(() => {
+  const success: string[] = []
+  const failed: string[] = []
+  db.transaction(() => {
     for (const r of refs) {
       const volumeId = refVolumeId(r)
-      if (volumeId !== undefined) stmtScoped.run(now, refPath(r), volumeId)
-      else stmt.run(now, refPath(r))
+      const res = volumeId !== undefined ? stmtScoped.run(now, refPath(r), volumeId) : stmt.run(now, refPath(r))
+      ;(res.changes > 0 ? success : failed).push(refPath(r))
     }
-  })
-  tx()
+  })()
+  return { success, failed }
 }
 
-export function restoreFiles(refs: PathRef[]): void {
-  const stmt = db.prepare('UPDATE files SET trashed_at = NULL WHERE path = ?')
-  const stmtScoped = db.prepare('UPDATE files SET trashed_at = NULL WHERE path = ? AND volume_id IS ?')
-  const tx = db.transaction(() => {
+export function restoreFiles(refs: PathRef[]): { success: string[]; failed: string[] } {
+  const stmt = db.prepare('UPDATE files SET trashed_at = NULL WHERE path = ? AND trashed_at IS NOT NULL')
+  const stmtScoped = db.prepare('UPDATE files SET trashed_at = NULL WHERE path = ? AND volume_id IS ? AND trashed_at IS NOT NULL')
+  const success: string[] = []
+  const failed: string[] = []
+  db.transaction(() => {
     for (const r of refs) {
       const volumeId = refVolumeId(r)
-      if (volumeId !== undefined) stmtScoped.run(refPath(r), volumeId)
-      else stmt.run(refPath(r))
+      const res = volumeId !== undefined ? stmtScoped.run(refPath(r), volumeId) : stmt.run(refPath(r))
+      ;(res.changes > 0 ? success : failed).push(refPath(r))
     }
-  })
-  tx()
+  })()
+  return { success, failed }
 }
 
 async function safeDelete(filePath: string): Promise<void> {

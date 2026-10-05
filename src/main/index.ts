@@ -1473,10 +1473,15 @@ app.whenReady().then(() => {
    * show, and both read this one push - so it has to be resent, not just
    * recomputed on next launch.
    */
-  const pushFavourites = (volumeId: string | null): void => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('favourites-updated', { volumeId, files: getFavourites(volumeId) })
-    }
+  // Tagged with the drive, like every other favourites push. It used to carry
+  // only volumeId, and the renderer - which drops a favourites list not
+  // tagged with the open drive - discarded it, so a trashed favourite stayed
+  // in the Favourites view and its count.
+  const pushFavourites = (volumeId: string | null, refs: ReturnType<typeof safePathRefs>): void => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    const first = refs[0]
+    const drive = first ? normalizeDrive(typeof first === 'string' ? first : first.path) : null
+    mainWindow.webContents.send('favourites-updated', { drive, files: getFavourites(volumeId) })
   }
 
   // The refs a batch operates on all come from one open drive in practice;
@@ -1494,25 +1499,28 @@ app.whenReady().then(() => {
     return getCachedVolumeId(path.slice(0, 2))
   }
 
+  // Reports what actually happened per file: the renderer has already taken
+  // the tiles away, and puts back exactly the ones listed as failed.
   ipcMain.handle('delete-files', (_event, filePaths: unknown) => {
     const refs = safePathRefs(filePaths)
-    softDeleteFiles(refs)
-    pushFavourites(resolveVolumeIdForRefs(refs))
-    return { success: refs.map((r) => (typeof r === 'string' ? r : r.path)), failed: [] }
+    const r = softDeleteFiles(refs)
+    pushFavourites(resolveVolumeIdForRefs(refs), refs)
+    if (r.failed.length) diag('trash', `${r.failed.length} of ${refs.length} could not be moved to Trash (no live record)`)
+    return r
   })
 
   // ── TRASH IPC HANDLERS ──
   ipcMain.handle('restore-files', (_event, filePaths: unknown) => {
     const refs = safePathRefs(filePaths)
-    restoreFiles(refs)
-    pushFavourites(resolveVolumeIdForRefs(refs))
-    return { success: true }
+    const r = restoreFiles(refs)
+    pushFavourites(resolveVolumeIdForRefs(refs), refs)
+    return { ...r, ok: r.failed.length === 0 }
   })
 
   ipcMain.handle('delete-files-permanently', async (_event, filePaths: unknown) => {
     const refs = safePathRefs(filePaths)
     const r = await deleteFilesPermanently(refs)
-    pushFavourites(resolveVolumeIdForRefs(refs))
+    pushFavourites(resolveVolumeIdForRefs(refs), refs)
     return r
   })
 

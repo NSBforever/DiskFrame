@@ -34,7 +34,7 @@ interface MediaViewerProps {
   onClose: () => void
   onNext: () => void
   onPrev: () => void
-  onDelete: (path: string) => void
+  onDelete: (file: ScannedFile) => void
   rect?: DOMRect
 }
 
@@ -404,21 +404,12 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
     setShowDeleteConfirm(true)
   }
 
-  const confirmDelete = async () => {
+  // The app trashes it, takes it out of the gallery, and moves this viewer on
+  // to the next file (or closes it when none is left) - one code path for the
+  // grid's menu, multi-select and here. A failure is reported there too.
+  const confirmDelete = (): void => {
     setShowDeleteConfirm(false)
-    try {
-      const result = (await window.electron.ipcRenderer.invoke('delete-files', [
-        file.path
-      ])) as { success?: string[] }
-      if (result && result.success && result.success.length > 0) {
-        onDelete(file.path)
-        handleClose()
-      } else {
-        alert('Failed to trash file.')
-      }
-    } catch (err) {
-      console.error('Trash error', err)
-    }
+    onDelete(file)
   }
 
   const handleDoubleClick = (e: React.MouseEvent) => {

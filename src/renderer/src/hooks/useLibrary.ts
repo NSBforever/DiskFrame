@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ScannedFile } from '../App'
-import { pickEvictionVictim, reconcileCacheVersion } from '../../../main/pageCache'
+import { pickEvictionVictim, reconcileCacheVersion, removeResidentRows } from '../../../main/pageCache'
+import { COMPACT_EXTS } from '../../../main/libraryQuery'
+
+const isCompactExt = (ext: string): boolean => COMPACT_EXTS.includes((ext || '').toLowerCase())
 
 /**
  * Reads the library through SQLite instead of holding it in memory.
@@ -71,6 +74,8 @@ export interface Library {
   reload: () => void
   /** Re-read without blanking what is on screen; see the implementation. */
   refresh: () => Promise<void>
+  /** Takes rows off the screen now, ahead of the database; returns how many were resident. */
+  removePaths: (paths: Iterable<string>) => number
 }
 
 /** Ceiling on one fetchRange call. 5000 rows is far more than any of its
@@ -91,6 +96,9 @@ function sameQuery(a: LibraryQuery | null, b: LibraryQuery | null): boolean {
 
 export function useLibrary(query: LibraryQuery | null): Library {
   const [groups, setGroups] = useState<LibraryGroup[]>([])
+  // Read synchronously by removePaths, which can run twice before a render.
+  const groupsRef = useRef(groups)
+  groupsRef.current = groups
   const [total, setTotal] = useState(0)
   const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
   // Bumped on every query change. Responses carrying an older generation are
@@ -339,6 +347,27 @@ export function useLibrary(query: LibraryQuery | null): Library {
     }
   }, [])
 
+  /**
+   * Takes rows out of what is on screen immediately - before the main process
+   * has been asked anything - so a trashed file disappears on the click, not
+   * on the round trip. Group counts, offsets and the total change with it, so
+   * the grid reflows exactly as the next summary will. refresh() afterwards
+   * confirms it against the database, and puts rows back if the trash failed.
+   */
+  const removePaths = useCallback(
+    (paths: Iterable<string>): number => {
+      const result = removeResidentRows(pagesRef.current, PAGE_SIZE, groupsRef.current, new Set(paths), isCompactExt)
+      if (result.removed === 0) return 0
+      pagesRef.current = result.pages
+      groupsRef.current = result.groups
+      setGroups(result.groups)
+      setTotal((t) => Math.max(0, t - result.removed))
+      setPageVersion((n) => n + 1)
+      return result.removed
+    },
+    []
+  )
+
   const reload = useCallback(() => {
     const q = queryRef.current
     if (!q) return
@@ -365,6 +394,7 @@ export function useLibrary(query: LibraryQuery | null): Library {
     indexOfPath,
     fetchRange,
     reload,
-    refresh
+    refresh,
+    removePaths
   }
 }

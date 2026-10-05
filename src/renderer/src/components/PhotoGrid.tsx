@@ -248,7 +248,6 @@ const CompactCell = memo(function CompactCell({
   size,
   selected,
   favourites,
-  deletingPaths,
   actions
 }: {
   files: ScannedFile[]
@@ -258,7 +257,6 @@ const CompactCell = memo(function CompactCell({
   size: number
   selected: Set<string>
   favourites: Set<string>
-  deletingPaths: Set<string>
   actions: GridActions
 }): React.JSX.Element {
   return (
@@ -279,8 +277,7 @@ const CompactCell = memo(function CompactCell({
             data-tile={f.path}
             className={
               'pg-doc' +
-              (isSel ? ' is-selected' : '') +
-              (deletingPaths.has(f.path) ? ' is-deleting' : '')
+              (isSel ? ' is-selected' : '')
             }
             title={`${f.name}\n${parentFolder(f.path)}`}
             aria-label={`${f.name} in ${parentFolder(f.path)}`}
@@ -312,7 +309,6 @@ const GridTile = memo(function GridTile({
   size,
   isSelected,
   isFav,
-  isDeleting,
   thumb,
   actions,
   hoverPreviewsEnabled,
@@ -327,7 +323,6 @@ const GridTile = memo(function GridTile({
   size: number
   isSelected: boolean
   isFav: boolean
-  isDeleting: boolean
   actions: GridActions
   hoverPreviewsEnabled: boolean
 }): React.JSX.Element {
@@ -472,7 +467,7 @@ const GridTile = memo(function GridTile({
   // Overlay buttons must not start a press on the tile (otherwise mouseup opens the viewer).
   const stop = (e: React.MouseEvent): void => e.stopPropagation()
 
-  const cls = 'pg-tile' + (isSelected ? ' is-selected' : '') + (isDeleting ? ' is-deleting' : '') + (compact ? ' is-compact' : '')
+  const cls = 'pg-tile' + (isSelected ? ' is-selected' : '') + (compact ? ' is-compact' : '')
 
   return (
     <div
@@ -636,7 +631,6 @@ export interface PhotoGridProps {
   formatGroupKey: (key: string) => string
   selected: Set<string>
   favourites: Set<string>
-  deletingPaths: Set<string>
   /** Preferred tile size in px (persisted). */
   tileSize: number
   onTileSizeCommit: (size: number) => void
@@ -677,7 +671,7 @@ interface Pending {
 }
 
 export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
-  const { groups, getRow, ensureRange, formatGroupKey, selected, favourites, deletingPaths, tileSize, hoverPreviewsEnabled } = props
+  const { groups, getRow, ensureRange, formatGroupKey, selected, favourites, tileSize, hoverPreviewsEnabled } = props
 
   const outerRef = useRef<HTMLDivElement>(null)
   const scrollerRef = useRef<HTMLDivElement>(null)
@@ -1224,7 +1218,6 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
               size={layout.tile}
               selected={selected}
               favourites={favourites}
-              deletingPaths={deletingPaths}
               actions={actions}
             />
           )
@@ -1256,7 +1249,6 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
             size={layout.tile}
             isSelected={selected.has(f.path)}
             isFav={favourites.has(f.path)}
-            isDeleting={deletingPaths.has(f.path)}
             thumb={f.thumb}
             actions={actions}
             hoverPreviewsEnabled={hoverPreviewsEnabled}
