@@ -369,7 +369,15 @@ const GridTile = memo(function GridTile({
     !noAccess
       ? thumb
       : null
-  const src = usableThumb && !thumbFailed ? usableThumb : canUseOriginal && !originalFailed ? file.path : null
+  // The original is a last resort, for a thumbnail that was attempted and
+  // failed - never for one that simply has not been made yet. Falling back
+  // while it was pending meant every JPEG/PNG without a thumbnail streamed its
+  // full-size original off the drive (6.6MB on average on the reporter's drive,
+  // up to 45MB) through the main process and decoded it at up to 24MP, for a
+  // tile a few hundred pixels wide - on every screen scrolled past.
+  const thumbAttemptFailed = reportedUnavailable || thumbFailed
+  const src =
+    usableThumb && !thumbFailed ? usableThumb : canUseOriginal && thumbAttemptFailed && !originalFailed ? file.path : null
   const showImg = !!src
   // Every way of showing this file has been tried and failed. Distinguishing
   // this from "no thumbnail yet" is the difference between a library that
@@ -431,7 +439,15 @@ const GridTile = memo(function GridTile({
     if (!canPreview) stopPreview()
   }, [canPreview, stopPreview])
 
+  // The name, select ring and heart only exist while the pointer is on the
+  // tile (or when they have something to show). They used to be in every
+  // tile at opacity 0: half of each tile's DOM - an SVG heart, text to lay
+  // out - created and destroyed for every tile scrolled past, which was most
+  // of the renderer's JavaScript time during a fast scroll.
+  const [hovered, setHovered] = useState(false)
+
   const onTileMouseEnter = (): void => {
+    setHovered(true)
     if (!canPreview) return
     hoverTimerRef.current = window.setTimeout(() => {
       stopActivePreview?.()
@@ -478,7 +494,7 @@ const GridTile = memo(function GridTile({
       onMouseMove={onMouseMove}
       onMouseUp={onMouseUp}
       onMouseEnter={onTileMouseEnter}
-      onMouseLeave={() => { press.current = null; onTileMouseLeaveForPreview() }}
+      onMouseLeave={() => { press.current = null; setHovered(false); onTileMouseLeaveForPreview() }}
       onContextMenu={e => actions.context(file, e)}
       title={
         folderMissing
@@ -584,33 +600,33 @@ const GridTile = memo(function GridTile({
             onError={stopPreview}
           />
         )}
-        {!compact && <div className="pg-name">{file.name}</div>}
+        {!compact && hovered && <div className="pg-name">{file.name}</div>}
       </div>
-      {!compact && (
-        <>
-          <div
-            className="pg-check"
-            onMouseDown={stop}
-            onMouseUp={stop}
-            onClick={e => {
-              e.stopPropagation()
-              actions.select(file, e)
-            }}
-          >
-            {isSelected && <Check size={11} strokeWidth={3} />}
-          </div>
-          <div
-            className={'pg-fav' + (isFav ? ' is-fav' : '')}
-            onMouseDown={stop}
-            onMouseUp={stop}
-            onClick={e => {
-              e.stopPropagation()
-              actions.fav(file)
-            }}
-          >
-            <Heart size={12} fill={isFav ? '#e11d2e' : 'none'} color={isFav ? '#e11d2e' : '#fff'} />
-          </div>
-        </>
+      {!compact && (hovered || isSelected) && (
+        <div
+          className="pg-check"
+          onMouseDown={stop}
+          onMouseUp={stop}
+          onClick={e => {
+            e.stopPropagation()
+            actions.select(file, e)
+          }}
+        >
+          {isSelected && <Check size={11} strokeWidth={3} />}
+        </div>
+      )}
+      {!compact && (hovered || isFav) && (
+        <div
+          className={'pg-fav' + (isFav ? ' is-fav' : '')}
+          onMouseDown={stop}
+          onMouseUp={stop}
+          onClick={e => {
+            e.stopPropagation()
+            actions.fav(file)
+          }}
+        >
+          <Heart size={12} fill={isFav ? '#e11d2e' : 'none'} color={isFav ? '#e11d2e' : '#fff'} />
+        </div>
       )}
       {compact && isFav && <div className="pg-fav-dot" />}
     </div>
@@ -680,6 +696,8 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
   const [viewport, setViewport] = useState({ width: 0, height: 0 })
   const [cols, setCols] = useState(0)
   const [scrollTop, setScrollTop] = useState(0)
+  const scrollTopRef = useRef(0)
+  scrollTopRef.current = scrollTop
   // Which way the viewport is travelling, for prefetch ranking only. A ref, not
   // state: it must not trigger a render of its own, and the band is recomputed
   // during render anyway. Small movements leave it alone so that settling or a
@@ -901,13 +919,20 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
   // silently - no scroll event - so the virtualiser went on rendering rows
   // from an offset that no longer exists and the grid came up blank until the
   // user scrolled. Resync from the element whenever the height changes.
+  //
+  // Keyed on the height alone. It used to run after every render while
+  // scrolling too: reading scrollTop straight after a commit forces a
+  // synchronous layout of the freshly mounted tiles, and the scroll state lags
+  // the element by a frame, so it nearly always set state again - a second full
+  // grid render per frame. Measured as the single hottest function in the
+  // renderer during fast scrolling.
   useLayoutEffect(() => {
     // Not while the restore above is still waiting for a tall enough layout,
     // or this would sync the state to the 0 it is trying to move away from.
     if (!restoredRef.current) return
     const el = scrollerRef.current
-    if (el && el.scrollTop !== scrollTop) setScrollTop(el.scrollTop)
-  }, [layout.height, scrollTop])
+    if (el && el.scrollTop !== scrollTopRef.current) setScrollTop(el.scrollTop)
+  }, [layout.height])
 
   // A grouping or order change rebuilds the list from scratch, so the old
   // offset means nothing in the new one. Skips the first run: mounting is not
@@ -1282,8 +1307,14 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
   // Thumbless paths in the band, excluding what is already on screen (those are
   // the visible tier). Reads only resident rows - a row whose page has not
   // arrived simply is not asked for yet, and the next pass picks it up.
-  const prefetchThumblessRef = useRef<string[]>([])
-  prefetchThumblessRef.current = (() => {
+  //
+  // Computed when the request is sent, not on every render: it walks and sorts
+  // the whole band (500-800 rows), and while scrolling the grid renders every
+  // frame but only asks once the screen has settled.
+  const bandRef = useRef({ prefetchStart, prefetchEnd, rangeStart, rangeEnd, visibleThumblessPaths })
+  bandRef.current = { prefetchStart, prefetchEnd, rangeStart, rangeEnd, visibleThumblessPaths }
+  const bandThumbless = (): string[] => {
+    const { prefetchStart, prefetchEnd, rangeStart, rangeEnd, visibleThumblessPaths } = bandRef.current
     if (rangeEnd < rangeStart) return []
     const onScreen = new Set(visibleThumblessPaths)
     const candidates: BandCandidate[] = []
@@ -1296,7 +1327,7 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
     // discounted rather than the other side dropped - see thumbBand.ts. Index
     // order would make a downward scroll wait on rows already behind it.
     return orderBand(candidates, rangeStart, rangeEnd, scrollDirRef.current)
-  })()
+  }
 
   // Bump thumbnail generation for whatever's on screen right now ahead of the
   // background backfill queue, instead of waiting for it to reach these files
@@ -1318,7 +1349,7 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
       // Read at fire time: thumbnails that landed during the debounce are
       // already excluded, without that exclusion re-triggering the effect.
       const visible = visibleThumblessRef.current
-      const prefetch = prefetchThumblessRef.current
+      const prefetch = bandThumbless()
       if (visible.length || prefetch.length) {
         window.api.prioritizeThumbnails({ visible, prefetch }).catch(() => {})
       }

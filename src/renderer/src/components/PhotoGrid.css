@@ -279,9 +279,13 @@
 .pg-tile-inner {
   overflow: hidden;
 }
+/* No will-change here: on every image it gave each mounted tile its own
+   compositor layer and GPU texture - ~170 layers rebuilt on every frame that
+   changed anything, which was most of the renderer's time while scrolling
+   (Layerize and Paint) and most of the GPU process's memory. The transition
+   promotes only the hovered image, only while it animates. */
 .pg-tile-inner img {
   transition: transform 170ms cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: transform;
 }
 .pg-tile:hover .pg-tile-inner img {
   transform: scale(1.03);
