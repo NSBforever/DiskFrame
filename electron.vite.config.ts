@@ -25,7 +25,8 @@ export default defineConfig({
         input: {
           index: resolve('src/main/index.ts'),
           scanUtility: resolve('src/main/scanUtility.ts'),
-          incrementalSyncWorker: resolve('src/main/incrementalSyncWorker.ts')
+          incrementalSyncWorker: resolve('src/main/incrementalSyncWorker.ts'),
+          reconcileWorker: resolve('src/main/reconcileWorker.ts')
         }
       }
     }

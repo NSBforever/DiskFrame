@@ -8,6 +8,21 @@ export const photoExts = ['.jpg', '.jpeg', '.png', '.heic', '.raw', '.cr2', '.ne
 export const videoExts = ['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.wmv', '.webm']
 export const docExts = ['.pdf', '.docx', '.doc', '.txt', '.xlsx', '.pptx', '.csv']
 export const allExts = [...photoExts, ...videoExts, ...docExts]
+/** Photos smaller than this are icons and slivers, not photos. Shared by the
+ *  scan and reconciliation so the two cannot disagree about what is indexed. */
+export const MIN_PHOTO_SIZE = 50 * 1024
+/** Folder names neither the scan nor reconciliation descends into. */
+export const SKIP_DIRS = [
+  'windows',
+  'program files',
+  'program files (x86)',
+  '$recycle.bin',
+  'system volume information',
+  'programdata',
+  'node_modules',
+  '.git',
+  'appdata'
+]
 /** Formats a thumbnail can actually be produced from. */
 export const thumbnailExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic', ...videoExts]
 

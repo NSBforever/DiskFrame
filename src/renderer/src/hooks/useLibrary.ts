@@ -69,6 +69,8 @@ export interface Library {
     queryOverride?: LibraryQuery
   ) => Promise<{ rows: ScannedFile[]; truncated: boolean }>
   reload: () => void
+  /** Re-read without blanking what is on screen; see the implementation. */
+  refresh: () => Promise<void>
 }
 
 /** Ceiling on one fetchRange call. 5000 rows is far more than any of its
@@ -293,6 +295,50 @@ export function useLibrary(query: LibraryQuery | null): Library {
     []
   )
 
+  /**
+   * Re-reads the summary and the pages on screen, then swaps them in at once.
+   *
+   * reload() empties the cache first, so every tile becomes a skeleton until
+   * its page returns - right for a new query, wrong for "a file changed under
+   * the gallery the user is reading". This keeps showing what is resident
+   * until the fresh summary and pages have all arrived, so the change lands
+   * as one repaint: removed tiles gone, added ones in place, nothing blank.
+   */
+  const refresh = useCallback(async (): Promise<void> => {
+    const q = queryRef.current
+    if (!q) return
+    const generation = ++generationRef.current
+    const { first, last } = wantRef.current
+    try {
+      const summary = await window.api.librarySummary(q)
+      const indices: number[] = []
+      for (let p = first; p <= last && p * PAGE_SIZE < summary.total; p++) indices.push(p)
+      const pages = await Promise.all(indices.map((p) => window.api.libraryPage(q, p * PAGE_SIZE, PAGE_SIZE)))
+      if (generation !== generationRef.current) return
+      // Pages read across a discovery commit could overlap; fall back to a
+      // clean reload rather than risk drawing a file twice.
+      const versions = new Set(pages.map((p) => p.version))
+      if (versions.size > 1) {
+        reloadRef.current()
+        return
+      }
+      const next = new Map<number, ScannedFile[]>()
+      indices.forEach((p, i) => next.set(p, pages[i].rows as ScannedFile[]))
+      pagesRef.current = next
+      inFlightRef.current.clear()
+      cacheVersionRef.current = pages[0]?.version ?? null
+      setGroups(summary.groups)
+      setTotal(summary.total)
+      setState('ready')
+      setPageVersion((n) => n + 1)
+      // New identity for ensureRange, so the grid asks for anything it needs
+      // that this did not cover.
+      setQueryEpoch((n) => n + 1)
+    } catch {
+      if (generation === generationRef.current) reloadRef.current()
+    }
+  }, [])
+
   const reload = useCallback(() => {
     const q = queryRef.current
     if (!q) return
@@ -305,6 +351,8 @@ export function useLibrary(query: LibraryQuery | null): Library {
     setQueryEpoch((n) => n + 1)
     loadSummary(q, generation)
   }, [loadSummary, resetCaches])
+  const reloadRef = useRef(reload)
+  reloadRef.current = reload
 
   return {
     groups,
@@ -316,6 +364,7 @@ export function useLibrary(query: LibraryQuery | null): Library {
     patchThumb,
     indexOfPath,
     fetchRange,
-    reload
+    reload,
+    refresh
   }
 }

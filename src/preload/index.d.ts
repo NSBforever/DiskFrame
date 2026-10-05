@@ -151,7 +151,7 @@ declare global {
         callback: (payload: {
           drive: string
           /** 'initial' = the user asked for this drive. 'background' = a scan or watcher found changes. */
-          reason: 'initial' | 'background'
+          reason: 'initial' | 'background' | 'index-folder' | 'sync'
         }) => void
       ) => () => void
       toggleFavourite: (filePath: string, volumeId?: string | null) => void
@@ -185,6 +185,9 @@ declare global {
       setViewOrder: (order: 'default' | 'reverse') => Promise<void>
       getHoverPreviews: () => Promise<boolean>
       setHoverPreviews: (enabled: boolean) => Promise<void>
+      onSyncFinished?: (
+        cb: (d: { drive: string; reason: string; ok: boolean; removed: number; message: string }) => void
+      ) => () => void
       getWindowFullscreen: () => Promise<boolean>
       setWindowFullscreen: (on: boolean) => Promise<boolean>
       onWindowFullscreenChanged: (cb: (on: boolean) => void) => () => void

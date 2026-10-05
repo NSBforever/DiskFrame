@@ -1,5 +1,5 @@
 import * as fs from 'fs'
-import { join, isAbsolute } from 'path'
+import { join, isAbsolute, dirname } from 'path'
 import { BrowserWindow } from 'electron'
 import {
   updateFileInPlace,
@@ -48,9 +48,20 @@ export class WatcherManager {
   private recentRemovalsByIno: Map<number, PendingRemoval> = new Map()
   private settling: Map<string, NodeJS.Timeout> = new Map()
   private mainWindow: BrowserWindow | null = null
+  /**
+   * What the per-file handling below cannot decide on its own: a folder that
+   * appeared, vanished or was renamed (the OS reports one event for the
+   * folder, none for the files in it), a notification buffer that overflowed,
+   * or a watch that died. Reconciliation answers all of them.
+   */
+  public onNeedsReconcile: (driveKey: string, reason: string) => void = () => {}
 
   constructor(mainWindow: BrowserWindow | null = null) {
     this.mainWindow = mainWindow
+  }
+
+  public isWatching(driveKey: string): boolean {
+    return this.watchers.has(driveKey)
   }
 
   public setMainWindow(window: BrowserWindow): void {
@@ -109,13 +120,29 @@ export class WatcherManager {
     }
 
     watcher.on('change', (_eventType, filename) => {
-      if (!filename) return
+      // No name means the kernel's buffer overflowed and events were lost.
+      if (!filename) return this.onNeedsReconcile(driveKey, 'watcher overflow')
       const rel = typeof filename === 'string' ? filename : filename.toString()
       const fullPath = isAbsolute(rel) ? rel : join(drivePath, rel)
       // Cheap reject before any stat or database work. Most notification
       // traffic on a real machine is not media, and this is also what keeps
       // the app's own thumbnail/cache churn out of the index.
-      if (isWatchIgnoredPath(rel) || !isIndexableUserMedia(fullPath)) return
+      if (isWatchIgnoredPath(rel)) return
+      if (!isIndexableUserMedia(fullPath)) {
+        // Not a media file - but possibly a folder. Deleting or renaming a
+        // folder in Explorer produces one event for the folder and none for
+        // the files in it, so the per-file path below never hears of them.
+        // A path with a file extension that exists as a file is ordinary
+        // non-media churn and is ignored; anything else may be a folder.
+        let isFile = false
+        try {
+          isFile = fs.statSync(fullPath).isFile()
+        } catch {
+          isFile = /\.[a-z0-9]{1,5}$/i.test(rel) // gone: judge by its name
+        }
+        if (!isFile) this.onNeedsReconcile(driveKey, 'folder changed')
+        return
+      }
       this.settle(fullPath, driveKey)
     })
 
@@ -127,8 +154,10 @@ export class WatcherManager {
         /* already gone */
       }
       // Deliberately not re-attached in a loop: a drive that was unplugged
-      // would spin here forever. Re-opening the drive re-attaches.
+      // would spin here forever. The drive poll re-attaches it when the
+      // volume is back, and reconciliation covers what was missed meanwhile.
       this.watchers.delete(driveKey)
+      this.onNeedsReconcile(driveKey, 'watcher error')
     })
 
     this.watchers.set(driveKey, watcher)
@@ -183,6 +212,18 @@ export class WatcherManager {
       if (ino) this.recentRemovalsByIno.delete(ino)
 
       if (!fs.existsSync(filePath)) {
+        // Only believed when the folder it was in is still there and readable:
+        // an unplugged drive or a folder that went with it makes every file
+        // "not exist" too, and that is a question for reconciliation, which
+        // needs a listing of the parent before it removes anything.
+        let parentListed = false
+        try {
+          fs.readdirSync(dirname(filePath))
+          parentListed = true
+        } catch {
+          parentListed = false
+        }
+        if (!parentListed) return this.onNeedsReconcile(driveKey, 'parent folder gone')
         removeFileRecord(filePath, getCachedVolumeId(driveKey))
         this.notifyFilesUpdated(driveKey)
       } else {
@@ -258,7 +299,7 @@ export class WatcherManager {
         if (this.mainWindow && !this.mainWindow.isDestroyed()) {
           this.mainWindow.webContents.send('files-updated', {
             drive: driveKey,
-            reason: 'background'
+            reason: 'sync'
           })
         }
       }, NOTIFY_COALESCE_MS)

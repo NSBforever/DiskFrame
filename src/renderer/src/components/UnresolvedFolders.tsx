@@ -19,10 +19,13 @@ export interface UnresolvedRoot {
  */
 export default function UnresolvedFolders({
   drive,
-  onRelinked
+  onRelinked,
+  refreshKey = 0
 }: {
   drive: string | null
   onRelinked: () => void
+  /** Changes when the drive was reconciled; the list is asked for again. */
+  refreshKey?: number
 }): React.JSX.Element | null {
   const [roots, setRoots] = useState<UnresolvedRoot[]>([])
   const [busy, setBusy] = useState<string | null>(null)
@@ -46,6 +49,12 @@ export default function UnresolvedFolders({
     setNote(null)
     refresh()
   }, [drive, refresh])
+
+  // After reconciliation: folders deliberately deleted have been confirmed and
+  // dropped, so only what is genuinely unresolved remains to be shown.
+  useEffect(() => {
+    if (refreshKey) refresh()
+  }, [refreshKey, refresh])
 
   const locate = useCallback(
     async (root: string) => {

@@ -234,6 +234,14 @@ const api = {
       ipcRenderer.removeListener('safe-mode-sample', listener)
     }
   },
+  /** A background reconciliation of a drive finished (or gave up). */
+  onSyncFinished: (cb: (d: { drive: string; reason: string; ok: boolean; removed: number; message: string }) => void) => {
+    const listener = (_e: unknown, d: any) => cb(d)
+    ipcRenderer.on('sync-finished', listener)
+    return () => {
+      ipcRenderer.removeListener('sync-finished', listener)
+    }
+  },
   onElevationStatus: (cb: (d: { isElevated: boolean; message: string }) => void) => {
     const listener = (_e: unknown, d: any) => cb(d)
     ipcRenderer.on('elevation-status', listener)

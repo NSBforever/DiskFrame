@@ -1,10 +1,10 @@
-import { app, shell, BrowserWindow, ipcMain, protocol, net, crashReporter, Menu, dialog } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, protocol, net, crashReporter, Menu, dialog, powerMonitor } from 'electron'
 import { join, basename, extname, dirname } from 'path'
 import { spawn } from 'child_process'
 import * as fs from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
-import { listMountedVolumes, probeDrives } from './driveEnum'
+import { listMountedVolumes, probeDrives, invalidateMountedVolumes } from './driveEnum'
 import ffmpegPath from 'ffmpeg-static'
 import {
   spawnScanUtilityProcess,
@@ -80,7 +80,7 @@ import { getMapClusters, getCatalogueVersion } from './scanner'
 import { initStreamServer, probeMedia, killActiveStream, closeStreamServer, authorizeStreamPath } from './streamServer'
 import { initMpv, sendMpvCommand, updateMpvBounds, closeMpv, refreshMpvBounds, setOverlayInteractive, sendToOverlay } from './mpvManager'
 import { WatcherManager } from './watcher'
-import { IndexingService } from './indexingService'
+import { SyncService, catalogueRoot } from './syncService'
 import {
   normalizeDrive,
   isSafeLocalPath,
@@ -163,7 +163,88 @@ app.on('second-instance', () => {
 })
 
 const watcherManager = new WatcherManager()
-const indexingService = new IndexingService()
+/**
+ * Which drive the user is looking at. Reconciliation, the watcher and the
+ * deferred thumbnail pass only ever act for this one; a job started for a
+ * drive the user has since left is cancelled or ignored.
+ */
+let currentOpenDrive: string | null = null
+
+/** Coalesces "something changed" from reconciliation into one renderer re-read. */
+const syncNotifyTimers = new Map<string, NodeJS.Timeout>()
+const syncService = new SyncService({
+  onChanged(drive) {
+    if (syncNotifyTimers.has(drive)) return
+    syncNotifyTimers.set(
+      drive,
+      setTimeout(() => {
+        syncNotifyTimers.delete(drive)
+        sendFilesUpdated(drive, 'sync')
+      }, 300)
+    )
+  },
+  onFinished(drive, reason, outcome) {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    mainWindow.webContents.send('sync-finished', { drive, reason, ...outcome })
+    // An explicit "Check for changes" is waited on by the status bar.
+    if (reason === 'manual') {
+      mainWindow.webContents.send('scan-complete', { count: getFileCount(getCachedVolumeId(drive)), drive })
+    }
+  },
+  log: (m) => diag('sync', m)
+})
+
+/**
+ * Live notifications for the open drive, attached when it is opened (not only
+ * after a scan, as before - so changes made in Explorer while browsing a
+ * cached drive were never seen). Attaching is O(1): ReadDirectoryChangesW,
+ * no traversal.
+ */
+function attachWatcherFor(drive: string): void {
+  if (!subsystemEnabled(safeMode, 'watcher')) return
+  const t = Date.now()
+  watcherManager.watchDrive(catalogueRoot(drive))
+  diag('watcher', `attached to ${catalogueRoot(drive)} in ${Date.now() - t}ms`)
+}
+
+/** The open drive, once it is known to have a catalogue worth watching. */
+let watchWanted: string | null = null
+/** Letters mounted at the previous drive poll, to see the open drive come and go. */
+let mountedBefore = new Set<string>()
+
+/**
+ * The open drive was unplugged, or came back. Unplugging stops its watcher
+ * and any reconciliation in progress (which applies nothing it had not
+ * finished); coming back re-attaches the watcher and reconciles, because
+ * anything could have changed while it was elsewhere.
+ */
+function trackOpenDriveMount(mounted: Set<string>): void {
+  const d = watchWanted
+  if (d && currentOpenDrive === d) {
+    const was = mountedBefore.has(d)
+    const is = mounted.has(d)
+    if (was && !is) {
+      diag('sync', `${d}: disconnected - watcher released, nothing removed`)
+      syncService.cancel(d)
+      watcherManager.unwatchDrive(d)
+    } else if (is && (!was || !watcherManager.isWatching(d))) {
+      diag('sync', `${d}: ${was ? 'watcher lost' : 'reconnected'} - re-attaching and reconciling`)
+      attachWatcherFor(d)
+      syncService.request(d, { reason: was ? 'watcher restart' : 'reconnect', delayMs: 1500 })
+    }
+  }
+  mountedBefore = mounted
+}
+
+watcherManager.onNeedsReconcile = (driveKey, reason) => {
+  // An overflow prompts at most one run per 30s: under heavy churn elsewhere
+  // in the watched tree (AppData is inside the home directory) the kernel
+  // buffer can overflow over and over, and each overflow alone is not news. A
+  // folder event is specific and is acted on promptly.
+  if (driveKey === currentOpenDrive && !isQuitting) {
+    syncService.request(driveKey, { reason, delayMs: 1500, minGapMs: reason === 'watcher overflow' ? 30_000 : undefined })
+  }
+}
 
 const ffmpegExe = ffmpegPath ? ffmpegPath.replace('app.asar', 'app.asar.unpacked') : 'ffmpeg'
 
@@ -233,7 +314,7 @@ function logMemoryMetrics(): void {
  * duration. The renderer reads the library through the paginated
  * library-summary/library-page handlers; this only needs to say "re-read".
  */
-function sendFilesUpdated(drive: string, reason: 'initial' | 'background' | 'index-folder'): void {
+function sendFilesUpdated(drive: string, reason: 'initial' | 'background' | 'index-folder' | 'sync'): void {
   if (!mainWindow || mainWindow.isDestroyed()) return
   mainWindow.webContents.send('files-updated', {
     drive,
@@ -311,7 +392,6 @@ function createWindow(): void {
   })
   diag('startup', `window created at ${uptimeMs()}ms (fullscreen=${appFullscreen})`)
   watcherManager.setMainWindow(mainWindow)
-  indexingService.setMainWindow(mainWindow)
   mainWindow.setBackgroundColor('#00000000')
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
@@ -551,6 +631,7 @@ async function sendDrivesNow(): Promise<void> {
     const mounted = new Set(letters)
     for (const l of letters) primeVolumeCache(l, volumes.get(l) ?? null)
     for (const known of knownDriveLetters) if (!mounted.has(known)) primeVolumeCache(known, null)
+    trackOpenDriveMount(mounted)
 
     // Not every drive letter is storage. Windows hands out a letter for a SUBST
     // mapping too, and such a letter answers with the backing volume's capacity
@@ -965,6 +1046,10 @@ app.whenReady().then(() => {
   ipcMain.handle('list-unresolved-roots', (_event, drive: unknown) => {
     const d = normalizeDrive(drive)
     if (!d) return { roots: [] }
+    // While reconciliation is still deciding, a missing folder may be one the
+    // user deleted on purpose - it is about to be confirmed and dropped, not
+    // something to ask them to locate. The banner asks again when it finishes.
+    if (syncService.isRunning(d)) return { roots: [], pending: true }
     try {
       return { roots: listUnresolvedRoots(getCachedVolumeId(d)) }
     } catch (err) {
@@ -1101,21 +1186,15 @@ app.whenReady().then(() => {
         diag('watcher', `attached to ${scanPath} in ${Date.now() - t}ms`)
       }
 
+      // "Check for changes" on a drive that is already indexed is a full
+      // reconciliation - every folder listed and every file stat()ed, with the
+      // same evidence rules as the background runs - not a stat-everything
+      // pass that also re-read every file whose thumbnail happened to be
+      // missing. syncService answers with scan-complete when it finishes.
       if (!opts.forceFull && liveVolumeId && getFileCount(liveVolumeId) > 0) {
-        const incResult = await incrementalSyncDrive(drivePath, (progress) => {
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('scan-progress', { count: progress, drive: drivePath })
-          }
-        })
-        if (!incResult.fullScanNeeded) {
-          attachWatcher()
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('scan-complete', { count: incResult.count, drive: drivePath })
-          }
-          sendFilesUpdated(drivePath, 'background')
-          generateThumbsForDrive(drivePath)
-          return
-        }
+        attachWatcher()
+        syncService.request(drivePath, { reason: 'manual', full: true })
+        return
       }
 
       let count = 0
@@ -1154,7 +1233,6 @@ app.whenReady().then(() => {
   // nothing else; reconciliation is a separate, explicitly requested job.
   // Which drive the user is actually looking at. A deferred job started for one
   // drive must not run after the user has moved to another.
-  let currentOpenDrive: string | null = null
 
   ipcMain.on('open-drive', (_event, drivePath: string) => {
     const drive = normalizeDrive(drivePath)
@@ -1197,6 +1275,17 @@ app.whenReady().then(() => {
           if (isQuitting || currentOpenDrive !== drive) return
           void generateThumbsForDrive(drive)
         }, 3000)
+      }
+      // Changes made outside DiskFrame - in Explorer, by another app, or while
+      // DiskFrame was closed. Only the open drive is watched and reconciled;
+      // a run for a drive just left is cancelled. Delayed so the first page
+      // of the gallery is on screen first. After the first run this is one
+      // stat per known folder; see reconcile.ts.
+      if (liveVolumeId && indexed > 0) {
+        syncService.cancel()
+        watchWanted = drive
+        attachWatcherFor(drive) // releases any other drive's watcher
+        if (subsystemEnabled(safeMode, 'scan')) syncService.request(drive, { reason: 'open', delayMs: 1500 })
       }
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('drive-opened', {
@@ -2201,12 +2290,35 @@ app.whenReady().then(() => {
 
   if (subsystemEnabled(safeMode, 'periodic')) {
     driveInterval = setInterval(() => sendDrives(), 3000)
-    indexingService.start()
+    // A safety net for anything the watcher missed. Cheap: with the folder
+    // snapshot this is one stat per known folder, and only changed folders
+    // are listed. Replaces a 30-minute pass that stat()ed every indexed file
+    // on every known drive.
+    setInterval(() => {
+      if (currentOpenDrive && !isQuitting) syncService.request(currentOpenDrive, { reason: 'periodic' })
+    }, 15 * 60 * 1000)
   } else {
     // The drive list was still sent once above, so the window has something to show.
     diag('safe-mode', 'drive polling and periodic rescan suppressed')
   }
   memoryLogInterval = setInterval(logMemoryMetrics, safeMode.enabled ? 5000 : 20000)
+
+  // After sleep the watcher's handle may be stale and anything could have
+  // changed (a laptop's external drive used elsewhere). Re-attach and
+  // reconcile once the system has settled - the reconcile itself refuses to
+  // remove anything unless the volume is present and verified.
+  powerMonitor.on('resume', () => {
+    const d = watchWanted
+    if (!d || currentOpenDrive !== d) return
+    diag('sync', `${d}: system resumed - re-attaching watcher and reconciling`)
+    watcherManager.unwatchDrive(d)
+    invalidateMountedVolumes()
+    setTimeout(() => {
+      if (isQuitting || currentOpenDrive !== d || !fs.existsSync(catalogueRoot(d))) return
+      attachWatcherFor(d)
+      syncService.request(d, { reason: 'resume' })
+    }, 3000)
+  })
 
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -2216,7 +2328,7 @@ app.whenReady().then(() => {
 function shutdown(): void {
   isQuitting = true
   watcherManager.closeAll()
-  indexingService.stop()
+  syncService.cancel()
   closeMpv()
   closeStreamServer()
   if (driveInterval) {

@@ -632,6 +632,7 @@ const MainContentArea: React.FC<{
   onAiSearchButtonChange: (enabled: boolean) => void
   startFullscreen: boolean
   onStartFullscreenChange: (on: boolean) => void
+  unresolvedKey: number
   libraryState: 'idle' | 'loading' | 'ready'
   /** Discovery is still running, so every count on screen is a lower bound. */
   discovering: boolean
@@ -702,6 +703,7 @@ const MainContentArea: React.FC<{
   onAiSearchButtonChange,
   startFullscreen,
   onStartFullscreenChange,
+  unresolvedKey,
   libraryState,
   discovering,
   librarySummaryHasData,
@@ -1263,7 +1265,7 @@ const MainContentArea: React.FC<{
         {/* Above the grid, because it explains why a block of it is unavailable
             and offers the one action that fixes the whole block. */}
         <div style={{ padding: '0 20px' }}>
-          <UnresolvedFolders drive={selectedDrive} onRelinked={onFoldersRelinked} />
+          <UnresolvedFolders drive={selectedDrive} onRelinked={onFoldersRelinked} refreshKey={unresolvedKey} />
         </div>
         <PhotoGrid
           groups={libraryGroups}
@@ -1637,6 +1639,9 @@ export default function App(): React.JSX.Element {
     identityUnresolved: boolean
   } | null>(null)
   const [updatesPending, setUpdatesPending] = useState(false)
+  /** Bumped when the open drive's catalogue was reconciled, so the missing-
+   *  folder notice re-asks instead of showing what it found on open. */
+  const [unresolvedKey, setUnresolvedKey] = useState(0)
   // True once the summary says this drive has something on screen. A background
   // change is parked rather than applied while that is the case, so the gallery
   // never rearranges under an active reader.
@@ -1987,6 +1992,19 @@ export default function App(): React.JSX.Element {
       // background sync of another volume replaced the open gallery.
       if (!drive || drive !== currentDriveRef.current) return
 
+      // Files added, moved, renamed or deleted outside DiskFrame, confirmed
+      // by the watcher or by reconciliation. Applied straight away - the user
+      // should never have to ask for a deletion they made in Explorer to show
+      // - but without blanking the grid: refresh() swaps the new rows in at
+      // once, keeping the scroll position.
+      if (reason === 'sync') {
+        void libraryRef.current?.refresh()
+        refreshTrash()
+        loadFavourites()
+        setUnresolvedKey((n) => n + 1)
+        return
+      }
+
       if (reason === 'background' && hasRowsRef.current) {
         // Something changed underneath a gallery the user is already reading.
         // Applying it would re-sort and re-anchor the grid mid-scroll, so it is
@@ -1998,6 +2016,12 @@ export default function App(): React.JSX.Element {
       libraryRef.current?.reload()
       refreshTrash()
     })
+    // A reconciliation finished: the missing-folder notice can now say only
+    // what is genuinely unresolved (a deleted folder has been confirmed and
+    // dropped by then, rather than shown as something to locate).
+    const unsubSync = window.api.onSyncFinished?.((d) => {
+      if (d.drive === currentDriveRef.current) setUnresolvedKey((n) => n + 1)
+    }) ?? (() => {})
     const unsubThumb = window.api.onThumbReady((d) => {
       thumbQueueRef.current.push(d)
     })
@@ -2087,6 +2111,7 @@ export default function App(): React.JSX.Element {
       unsubComplete()
       unsubFiles()
       unsubThumb()
+      unsubSync()
       unsubElevation()
       unsubToggled()
       unsubSample()
@@ -3068,6 +3093,7 @@ export default function App(): React.JSX.Element {
           onAiSearchButtonChange={handleAiSearchButtonChange}
           startFullscreen={startFullscreen}
           onStartFullscreenChange={handleStartFullscreenChange}
+          unresolvedKey={unresolvedKey}
           libraryState={libraryState}
           discovering={scanning}
           librarySummaryHasData={librarySummaryHasData}

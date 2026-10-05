@@ -269,6 +269,18 @@ db.exec(`
     last_seen TEXT
   );
 
+  /* Each folder's mtime the last time reconciliation listed it. On NTFS a
+     folder's mtime moves whenever an entry in it is added, removed or
+     renamed, so a folder whose mtime still matches is skipped with one stat
+     (see reconcile.ts). Losing this table costs one full listing, nothing more. */
+  CREATE TABLE IF NOT EXISTS folder_snapshot (
+    volume_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    mtime INTEGER,
+    children TEXT,
+    PRIMARY KEY (volume_id, path)
+  );
+
   /* Folders the user has explicitly pointed at a new location. Only ever
      written from a folder the user picked in a dialog - never inferred. */
   CREATE TABLE IF NOT EXISTS folder_mappings (
@@ -540,6 +552,11 @@ if (favouritePathsSql && !/volume_id/i.test(favouritePathsSql)) {
     `)
   })()
   console.log('[migrate] rebuilt favourite_paths: identity is now (path, volume_id)')
+}
+
+// folder_snapshot gained its subfolder list after first being created.
+if (!(db.prepare('PRAGMA table_info(folder_snapshot)').all() as { name: string }[]).some((c) => c.name === 'children')) {
+  db.prepare('ALTER TABLE folder_snapshot ADD COLUMN children TEXT').run()
 }
 
 const deletePrefsCols = (db.prepare('PRAGMA table_info(delete_prefs)').all() as { name: string }[]).map((c) => c.name)
@@ -1775,6 +1792,164 @@ export function removeFileRecord(filePath: string, volumeId?: string | null): vo
   } else {
     db.prepare('DELETE FROM files WHERE path = ?').run(filePath)
   }
+}
+
+// ─── RECONCILIATION (see reconcile.ts) ───────────────────────────────────────
+
+/** Everything one reconciliation run needs to know about a volume. */
+export function getReconcileInput(volumeId: string): {
+  files: { path: string; size: number; mtime: number | null; ino: number | null }[]
+  ignorePaths: string[]
+  folders: Record<string, { mtime: number; children: string[] | null }>
+} {
+  const files = db
+    .prepare('SELECT path, size, mtime, ino FROM files WHERE volume_id = ? AND hidden = 0 AND trashed_at IS NULL')
+    .all(volumeId) as { path: string; size: number; mtime: number | null; ino: number | null }[]
+  const ignorePaths = (
+    db.prepare('SELECT path FROM files WHERE volume_id = ? AND (hidden = 1 OR trashed_at IS NOT NULL)').all(volumeId) as {
+      path: string
+    }[]
+  ).map((r) => r.path)
+  const folders: Record<string, { mtime: number; children: string[] | null }> = {}
+  for (const r of db.prepare('SELECT path, mtime, children FROM folder_snapshot WHERE volume_id = ?').all(volumeId) as {
+    path: string
+    mtime: number
+    children: string | null
+  }[]) {
+    let children: string[] | null = null
+    try {
+      children = r.children ? (JSON.parse(r.children) as string[]) : null
+    } catch {
+      children = null // re-listed next run
+    }
+    folders[r.path] = { mtime: r.mtime, children }
+  }
+  return { files, ignorePaths, folders }
+}
+
+interface FoundRow {
+  path: string
+  name: string
+  ext: string
+  size: number
+  mtime: number
+  ino: number | null
+}
+
+/**
+ * Applies one progressive batch: additions, moves, metadata changes and the
+ * folder mtimes that are safe to record. One transaction. Additions follow the
+ * scan exactly (mtime date, no thumbnail - those are made for what is on
+ * screen), and claim a legacy row at the same path rather than duplicating it.
+ */
+export function applyReconcileBatch(
+  volumeId: string,
+  drive: string,
+  batch: { added: FoundRow[]; moved: { from: string; to: FoundRow }[]; changed: FoundRow[]; folders: [string, number, string[]][] }
+): { added: number; moved: number; changed: number } {
+  const backfill = db.prepare('UPDATE files SET volume_id = ? WHERE path = ? AND volume_id IS NULL')
+  const insert = db.prepare(`
+    INSERT INTO files (path, name, ext, size, date, year, month, lat, lng, drive, thumb, locked, hidden, mtime, ino, volume_id)
+    SELECT ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, 0, 0, ?, ?, ?
+    WHERE NOT EXISTS (SELECT 1 FROM files WHERE path = ? AND volume_id IS ?)
+  `)
+  const destTaken = db.prepare('SELECT favourited FROM files WHERE path = ? AND volume_id IS ?')
+  const dropDest = db.prepare('DELETE FROM files WHERE path = ? AND volume_id IS ?')
+  const relink = db.prepare(
+    'UPDATE files SET path = ?, name = ?, ext = ?, drive = ?, size = ?, mtime = ?, ino = ? WHERE path = ? AND volume_id IS ?'
+  )
+  const thumbOf = db.prepare('SELECT thumb FROM files WHERE path = ? AND volume_id IS ?')
+  const update = db.prepare(
+    'UPDATE files SET size = ?, mtime = ?, ino = ?, thumb = NULL, thumb_fail_count = 0, thumb_fail_sig = NULL WHERE path = ? AND volume_id IS ?'
+  )
+  const snap = db.prepare('INSERT OR REPLACE INTO folder_snapshot (volume_id, path, mtime, children) VALUES (?, ?, ?, ?)')
+  let added = 0
+  let moved = 0
+  let changed = 0
+  const staleThumbs: string[] = []
+  db.transaction(() => {
+    for (const f of batch.added) {
+      const d = new Date(f.mtime)
+      backfill.run(volumeId, f.path)
+      added += insert.run(
+        f.path, f.name, f.ext, f.size, d.toISOString(), d.getFullYear().toString(),
+        d.toLocaleString('default', { month: 'long' }), drive, f.mtime, f.ino, volumeId, f.path, volumeId
+      ).changes
+    }
+    for (const m of batch.moved) {
+      // The watcher may already have recorded the new path as a new file. The
+      // old row is the one with history (favourite, thumbnail, capture date),
+      // so it wins and the fresh duplicate goes.
+      const taken = destTaken.get(m.to.path, volumeId) as { favourited: number } | undefined
+      if (taken && taken.favourited !== 1) dropDest.run(m.to.path, volumeId)
+      else if (taken) {
+        // Already favourited at its new path: that row is the keeper.
+        dropDest.run(m.from, volumeId)
+        continue
+      }
+      const r = relink.run(m.to.path, m.to.name, m.to.ext, drive, m.to.size, m.to.mtime, m.to.ino, m.from, volumeId)
+      if (r.changes > 0) {
+        repointPath(m.from, m.to.path, volumeId)
+        moved++
+      }
+    }
+    for (const f of batch.changed) {
+      const t = thumbOf.get(f.path, volumeId) as { thumb: string | null } | undefined
+      if (t?.thumb) staleThumbs.push(t.thumb)
+      changed += update.run(f.size, f.mtime, f.ino, f.path, volumeId).changes
+    }
+    for (const [p, m, c] of batch.folders) snap.run(volumeId, p, m, JSON.stringify(c))
+  })()
+  // A changed file's old thumbnail shows the old content; it is regenerated
+  // from the new content when its tile is next on screen.
+  for (const t of staleThumbs) {
+    try {
+      fs.unlinkSync(t)
+    } catch {
+      /* already gone */
+    }
+  }
+  return { added, moved, changed }
+}
+
+/**
+ * Applies the confirmed removals of a run that finished, together with the
+ * folder mtimes that waited for them. Favourites are kept in favourite_paths
+ * (untouched here), so a file that comes back is a favourite again.
+ */
+export function applyReconcileRemovals(
+  volumeId: string,
+  removed: string[],
+  folders: [string, number, string[]][],
+  goneFolders: string[]
+): number {
+  const thumbOf = db.prepare('SELECT thumb FROM files WHERE path = ? AND volume_id IS ?')
+  const del = db.prepare('DELETE FROM files WHERE path = ? AND volume_id IS ?')
+  const snap = db.prepare('INSERT OR REPLACE INTO folder_snapshot (volume_id, path, mtime, children) VALUES (?, ?, ?, ?)')
+  const dropSnap = db.prepare("DELETE FROM folder_snapshot WHERE volume_id = ? AND (path = ? OR path LIKE ? ESCAPE '!')")
+  const thumbs: string[] = []
+  let n = 0
+  db.transaction(() => {
+    for (const p of removed) {
+      const t = thumbOf.get(p, volumeId) as { thumb: string | null } | undefined
+      const r = del.run(p, volumeId)
+      if (r.changes > 0 && t?.thumb) thumbs.push(t.thumb)
+      n += r.changes
+    }
+    for (const [p, m, c] of folders) snap.run(volumeId, p, m, JSON.stringify(c))
+    for (const g of goneFolders) {
+      const like = g.replace(/[!%_]/g, (c) => '!' + c) + '\\%'
+      dropSnap.run(volumeId, g, like)
+    }
+  })()
+  for (const t of thumbs) {
+    try {
+      fs.unlinkSync(t)
+    } catch {
+      /* already gone */
+    }
+  }
+  return n
 }
 
 export async function updateFileInPlace(filePath: string, statInput?: fs.Stats): Promise<ScannedFile | null> {

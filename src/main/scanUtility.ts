@@ -1,25 +1,7 @@
 import * as fs from 'fs'
 import { join } from 'path'
 import Database from 'better-sqlite3'
-import { isGeneratedAsset } from './validation'
-
-const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.raw', '.cr2', '.nef']
-const videoExts = ['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.wmv', '.webm']
-const docExts = ['.pdf', '.docx', '.doc', '.txt', '.xlsx', '.pptx', '.csv']
-const allExts = [...photoExts, ...videoExts, ...docExts]
-const MIN_PHOTO_SIZE = 50 * 1024
-
-const SKIP_DIRS = [
-  'windows',
-  'program files',
-  'program files (x86)',
-  '$recycle.bin',
-  'system volume information',
-  'programdata',
-  'node_modules',
-  '.git',
-  'appdata'
-]
+import { isGeneratedAsset, photoExts, allExts, MIN_PHOTO_SIZE, SKIP_DIRS } from './validation'
 
 interface ScanTaskPayload {
   drivePath: string
