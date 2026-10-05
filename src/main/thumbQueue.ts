@@ -22,9 +22,17 @@
 export interface ThumbQueueState {
   visible: string[]
   prefetch: string[]
+  /**
+   * The rest of the open volume, worked through only when nothing on or near
+   * the screen is owed (the pump also holds it back while the user is
+   * scrolling). It used to be a separate backfill with its own two workers,
+   * which put ten jobs on one external drive at once and queued its HEIC
+   * decodes ahead of the tiles on screen.
+   */
+  background: string[]
 }
 
-export const EMPTY_QUEUE: ThumbQueueState = { visible: [], prefetch: [] }
+export const EMPTY_QUEUE: ThumbQueueState = { visible: [], prefetch: [], background: [] }
 
 /** Ceiling per tier. A caller asking for more than this is not describing
  *  anything a person is about to look at. */
@@ -34,14 +42,22 @@ export const MAX_PREFETCH = 900
 /**
  * Folds a new request into the existing queue.
  *
- * - The new visible set goes to the front of the visible tier. Whatever was
- *   visible before and is still owed stays behind it rather than being dropped:
- *   the grid only re-requests when the visible set *changes*, so anything
- *   discarded here would never be asked for again.
- * - The prefetch tier is REPLACED. It describes where the user is heading, and
- *   a stale band is not worth generating. Anything in it that is also in the
- *   new visible set is promoted rather than duplicated.
- * - `exclude` drops paths already in flight or known to be unproducible.
+ * A request that names a screen (non-empty visible) is where the user is now:
+ *   1. its visible tiles,
+ *   2. its prefetch band, nearest rows first,
+ *   3. then whatever the previous screen still owed - kept rather than dropped,
+ *      since the grid only re-requests when the visible set changes, but no
+ *      longer ahead of the destination. After a fast scroll or a timeline jump
+ *      the intermediate screens used to be generated before the band of the
+ *      place the user actually stopped.
+ * That leftover rides in the prefetch tier, so the next screen's request
+ * replaces it: work two screens stale is dropped, not accumulated.
+ *
+ * A request with no visible paths says nothing about the screen, so the visible
+ * tier is left as it is; only the band is replaced.
+ *
+ * `exclude` drops paths already in flight or known to be unproducible. The
+ * background tier is untouched.
  */
 export function mergeThumbRequest(
   current: ThumbQueueState,
@@ -58,15 +74,16 @@ export function mergeThumbRequest(
     }
   }
 
+  const newScreen = request.visible.length > 0
   const visible: string[] = []
   take(request.visible, MAX_VISIBLE, visible)
-  // Still-owed work from a previous screen, kept behind the current one.
-  take(current.visible, MAX_VISIBLE, visible)
+  if (!newScreen) take(current.visible, MAX_VISIBLE, visible)
 
   const prefetch: string[] = []
   take(request.prefetch, MAX_PREFETCH, prefetch)
+  if (newScreen) take(current.visible, MAX_PREFETCH, prefetch)
 
-  return { visible, prefetch }
+  return { visible, prefetch, background: current.background }
 }
 
 /**
@@ -82,19 +99,22 @@ export function mergeThumbRequest(
  */
 export function nextThumb(
   q: ThumbQueueState,
-  accept?: (path: string) => boolean
+  accept?: (path: string) => boolean,
+  allowBackground = false,
+  /** Only on-screen work: the caller is filling a slot held in reserve for it. */
+  visibleOnly = false
 ): string | undefined {
-  if (!accept) return q.visible.shift() ?? q.prefetch.shift()
-  for (const tier of [q.visible, q.prefetch]) {
-    const at = tier.findIndex(accept)
+  const tiers = visibleOnly ? [q.visible] : allowBackground ? [q.visible, q.prefetch, q.background] : [q.visible, q.prefetch]
+  for (const tier of tiers) {
+    const at = accept ? tier.findIndex(accept) : tier.length ? 0 : -1
     if (at !== -1) return tier.splice(at, 1)[0]
   }
   return undefined
 }
 
-/** Total work outstanding. The drive-wide backfill stands aside while this is
- *  non-zero, so that both tiers beat it - a prefetch band is still about where
- *  this user is looking, which the backfill is not. */
+/** Work outstanding on or near the screen. The background tier waits while
+ *  this is non-zero - a prefetch band is still about where this user is
+ *  looking, which the rest of the volume is not. */
 export function queuedCount(q: ThumbQueueState): number {
   return q.visible.length + q.prefetch.length
 }

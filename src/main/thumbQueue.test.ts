@@ -112,6 +112,49 @@ test('a visible item is still taken before a prefetched one of the same kind', (
   assert.equal(nextThumb(q, (p) => p.endsWith('.mov')), 'p.mov')
 })
 
+test('after a jump the destination and its band come before the screen left behind', () => {
+  // Fast scrolling or a timeline jump used to keep every intermediate screen's
+  // tiles in the visible tier, ahead of the band around where the user stopped.
+  let q = mergeThumbRequest(EMPTY_QUEUE, { visible: ['passed1', 'passed2'], prefetch: ['passedBand'] }, none)
+  q = mergeThumbRequest(q, { visible: ['here1'], prefetch: ['nextRow'] }, none)
+  assert.deepEqual([nextThumb(q), nextThumb(q), nextThumb(q), nextThumb(q), nextThumb(q)], [
+    'here1',
+    'nextRow',
+    'passed1',
+    'passed2',
+    undefined
+  ])
+})
+
+test('work two screens stale is dropped, not accumulated', () => {
+  let q = mergeThumbRequest(EMPTY_QUEUE, { visible: ['a'], prefetch: [] }, none)
+  q = mergeThumbRequest(q, { visible: ['b'], prefetch: [] }, none)
+  q = mergeThumbRequest(q, { visible: ['c'], prefetch: [] }, none)
+  // 'b' is still owed from one screen ago; 'a' is from two and is gone.
+  assert.deepEqual([nextThumb(q), nextThumb(q), nextThumb(q)], ['c', 'b', undefined])
+})
+
+test('background work waits behind both viewport tiers and only when allowed', () => {
+  const q = mergeThumbRequest({ ...EMPTY_QUEUE, background: ['bg1', 'bg2'] }, { visible: ['v'], prefetch: ['p'] }, none)
+  assert.equal(queuedCount(q), 2, 'background is not viewport work')
+  assert.equal(nextThumb(q, undefined, false), 'v')
+  assert.equal(nextThumb(q, undefined, false), 'p')
+  assert.equal(nextThumb(q, undefined, false), undefined, 'held back while not allowed')
+  assert.equal(nextThumb(q, undefined, true), 'bg1')
+  // A new request leaves the background tier alone.
+  const r = mergeThumbRequest(q, { visible: ['v2'], prefetch: [] }, none)
+  assert.deepEqual(r.background, ['bg2'])
+})
+
+test('a slot held in reserve takes only on-screen work', () => {
+  // The pump keeps some slots for the visible tier, so the band around a screen
+  // the user just left can never occupy every slot when they land somewhere new.
+  const q = mergeThumbRequest(EMPTY_QUEUE, { visible: [], prefetch: ['band.mov'] }, none)
+  assert.equal(nextThumb(q, undefined, false, true), undefined, 'band work may not take a reserved slot')
+  const r = mergeThumbRequest(q, { visible: ['here.mov'], prefetch: [] }, none)
+  assert.equal(nextThumb(r, undefined, false, true), 'here.mov')
+})
+
 test('no predicate keeps the original visible-then-prefetch behaviour', () => {
   const q = mergeThumbRequest(EMPTY_QUEUE, { visible: ['a'], prefetch: ['b'] }, none)
   assert.equal(nextThumb(q), 'a')

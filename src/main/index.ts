@@ -9,7 +9,6 @@ import ffmpegPath from 'ffmpeg-static'
 import {
   spawnScanUtilityProcess,
   cancelScanUtilityProcess,
-  ScannedFile,
   toggleFavourite,
   getFavourites,
   getFileCount,
@@ -17,7 +16,6 @@ import {
   recordThumbFailure,
   thumbCacheHit,
   exhaustedThumbPaths,
-  THUMB_BACKFILL_BATCH,
   generateThumbForFile,
   updateThumb,
   hideFile,
@@ -61,6 +59,7 @@ import {
   cancelFolderIndex,
   getDriveAvailability,
   checkPathAvailability,
+  checkPathAvailabilityAsync,
   resolveStoredPath,
   listUnresolvedRoots,
   saveFolderMapping,
@@ -259,15 +258,17 @@ let memoryLogInterval: ReturnType<typeof setInterval> | null = null
 let isQuitting = false
 
 /**
- * How much on-screen thumbnail work is outstanding.
- *
- * Set once the viewport thumbnail pump is constructed (inside whenReady). The
- * drive-wide backfill polls it and yields, so the two thumbnail slots always go
- * to tiles the user is looking at before they go to the rest of the volume -
- * on a first-time 2 TB drive the backfill otherwise holds both slots for the
- * entire pass and visible tiles stay as placeholders.
+ * True while anything on or near the screen is owed a thumbnail, or the user
+ * scrolled within the last moment. Background passes (the rest of the volume's
+ * thumbnails, capture dates) hold off while it is true, so they never compete
+ * with what the user is looking at for the drive or the CPU. Set once the
+ * viewport pump is constructed (inside whenReady).
  */
-let viewportThumbsOutstanding = (): number => 0
+let viewportBusy = (): boolean => false
+
+async function whenViewportIdle(): Promise<void> {
+  while (viewportBusy() && !isQuitting) await new Promise((r) => setTimeout(r, 250))
+}
 
 /**
  * Worst main-process event-loop delay seen since the last report.
@@ -704,112 +705,15 @@ function uptimeMs(): number {
 }
 
 /**
- * Guards against stacked backfill passes. Opening a drive schedules one, and
- * opening the same drive twice (or a scan finishing while one is already
- * running) would otherwise start a second pass with its own two sharp/ffmpeg
- * slots - four spawns competing for the same CPU the renderer needs.
+ * Thumbnails for the rest of the open volume, behind everything on or near
+ * the screen. Set when a drive is opened (or a scan of it finishes); the
+ * viewport pump feeds this into its lowest tier - see startBackgroundThumbs,
+ * defined with the pump inside whenReady.
  */
-let thumbBackfillRunning = false
+let startBackgroundThumbs: (drive: string) => void = () => {}
 
-async function generateThumbsForDrive(drivePath: string): Promise<void> {
-  await backfillAllMissingThumbnails(getCachedVolumeId(drivePath))
-}
-
-async function backfillAllMissingThumbnails(volumeId?: string | null): Promise<void> {
-  if (thumbBackfillRunning) return
-  thumbBackfillRunning = true
-  try {
-    await runThumbBackfill(volumeId)
-  } finally {
-    thumbBackfillRunning = false
-  }
-}
-
-async function runThumbBackfill(volumeId?: string | null): Promise<void> {
-  let files: ScannedFile[] = []
-  try {
-    files = getAllFilesWithoutThumbs(volumeId)
-  } catch (err) {
-    console.error('[thumb:backfill:error] Failed to fetch missing thumbnail rows:', err)
-    return
-  }
-
-  if (files.length === 0) {
-    console.log('[thumb:backfill] No missing thumbnails found in database.')
-    return
-  }
-
-  console.log(`[thumb:backfill:start] Enqueuing ${files.length} missing thumbnails for processing...`)
-
-  let successCount = 0
-  let failCount = 0
-  let skipCount = 0
-  // Measured: 4 concurrent sharp/ffmpeg spawns was enough to starve the
-  // renderer process of CPU during active browsing (main-thread-idle JS
-  // evaluation stalling 1-4s+ while this ran). 2 leaves more headroom.
-  const CONCURRENCY = 2
-  let idx = 0
-
-  async function worker() {
-    while (idx < files.length) {
-      if (isQuitting) return
-      // What is on screen comes first. Without this the backfill holds both
-      // thumbnail slots for the whole pass and a tile the user is looking at
-      // waits behind tens of thousands of offscreen files.
-      while (viewportThumbsOutstanding() > 0) {
-        if (isQuitting) return
-        await new Promise((r) => setTimeout(r, 150))
-      }
-      const file = files[idx++]
-      if (!file) break
-
-      if (!fs.existsSync(file.path)) {
-        // Deliberately leaves `thumb` NULL. This used to write the string
-        // 'NO_FILE' into the thumbnail *path* column, which did two kinds of
-        // damage: the renderer treated the non-empty value as a usable path and
-        // requested media:///NO_FILE, and the backfill's "needs a thumbnail"
-        // query (thumb IS NULL OR thumb = '') then skipped the row forever - so
-        // a file on a temporarily disconnected drive could never get a
-        // thumbnail again even after the drive came back.
-        skipCount++
-        continue
-      }
-
-      try {
-        const thumbPath = await generateThumbForFile(file.path, file.ext, file.volume_id ?? null)
-        if (thumbPath) {
-          updateThumb(file.path, thumbPath)
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('thumb-ready', { filePath: file.path, thumbPath })
-          }
-          successCount++
-        } else {
-          failCount++
-          console.warn(`[thumb:backfill:fail] Frame/Image conversion returned null for: "${file.path}" (${file.ext})`)
-        }
-      } catch (err) {
-        failCount++
-        console.error(`[thumb:backfill:error] Unexpected failure for file "${file.path}":`, err)
-      }
-      await new Promise((r) => setImmediate(r))
-    }
-  }
-
-  const workers = Array.from({ length: CONCURRENCY }, () => worker())
-  await Promise.all(workers)
-
-  console.log(
-    `[thumb:backfill:complete] Summary: ${successCount} succeeded, ${failCount} failed, ${skipCount} skipped (file not found on disk).`
-  )
-
-  // The query is capped (THUMB_BACKFILL_BATCH) so a large volume cannot pull
-  // its whole backlog into memory at once. A full batch means there is more
-  // behind it: continue, newest-first again, until a short batch comes back.
-  // Nothing progressed (every row skipped or failed) ends the pass instead of
-  // re-reading the same rows forever.
-  if (files.length >= THUMB_BACKFILL_BATCH && successCount > 0 && !isQuitting) {
-    await runThumbBackfill(volumeId)
-  }
+function generateThumbsForDrive(drivePath: string): void {
+  startBackgroundThumbs(drivePath)
 }
 
 app.whenReady().then(() => {
@@ -1188,7 +1092,7 @@ app.whenReady().then(() => {
         mainWindow.webContents.send('scan-complete', { count, drive: drivePath })
       }
       generateThumbsForDrive(drivePath)
-      enrichExifBackfill(() => isQuitting).catch((err) => console.error('[exif backfill]', err))
+      enrichExifBackfill(() => isQuitting, whenViewportIdle).catch((err) => console.error('[exif backfill]', err))
     } finally {
       scansInFlight.delete(drivePath)
     }
@@ -1570,13 +1474,20 @@ app.whenReady().then(() => {
   //     between files rather than finishing work nobody is looking at
   const thumbInFlight = new Set<string>()
   const thumbFailed = new Set<string>()
-  // Published so the drive-wide backfill can stand aside while any of this is
-  // outstanding (see viewportThumbsOutstanding).
-  viewportThumbsOutstanding = () => queuedCount(thumbQueue) + thumbInFlight.size
-  // Pending viewport work, in two tiers - what is on screen, then the band the
-  // user is scrolling towards. See thumbQueue.ts for why they are not one list.
+  // Pending work in three tiers - what is on screen, the band the user is
+  // scrolling towards, then the rest of the open volume. See thumbQueue.ts.
   let thumbQueue: ThumbQueueState = EMPTY_QUEUE
-  let thumbPumping = false
+  // The background tier yields to scrolling, not only to queued work: a burst
+  // of wheel input is followed by requests, and the drive should be free for
+  // them rather than busy with a file nobody is looking at.
+  const BACKGROUND_AFTER_REQUEST_MS = 1500
+  const BACKGROUND_MAX_IN_FLIGHT = 2
+  let lastViewportRequestAt = 0
+  let backgroundInFlight = 0
+  viewportBusy = () =>
+    queuedCount(thumbQueue) > 0 ||
+    thumbInFlight.size > backgroundInFlight ||
+    Date.now() - lastViewportRequestAt < BACKGROUND_AFTER_REQUEST_MS
   // When each path entered the queue. Queue wait and decode time are different
   // problems with opposite fixes, so they are never added together.
   const thumbEnqueuedAt = new Map<string, number>()
@@ -1589,13 +1500,23 @@ app.whenReady().then(() => {
     thumbStageTimer = setTimeout(() => {
       thumbStageTimer = null
       const line = thumbStages.report()
-      if (line) diag('thumbs', line)
+      // Queue depth per tier and busy slots per kind, so a slow screen can be
+      // told apart as "waiting behind other work" or "the work itself is slow".
+      const q = thumbQueue
+      if (line) {
+        diag(
+          'thumbs',
+          `${line} | queued visible=${q.visible.length} prefetch=${q.prefetch.length} background=${q.background.length}` +
+            ` | busy photo=${activeSlots.photo} video=${activeSlots.video} heic=${activeSlots.heic} (background ${backgroundInFlight})`
+        )
+      }
       thumbStages.reset()
     }, 3000)
   }
 
   /**
-   * Single bounded pump.
+   * Bounded slots per kind of work, refilled on every request and every
+   * completion.
    *
    * This replaced a per-request token that aborted the previous batch. That
    * scheme deadlocked: the token was bumped before the in-flight filter ran,
@@ -1603,151 +1524,191 @@ app.whenReady().then(() => {
    * own yet still cancelled the batch generating exactly those thumbnails.
    * Nothing re-requested them, because the visible set had stopped changing -
    * measured as 107 tiles pending indefinitely while the same files generated
-   * in ~1s each when asked for directly.
+   * in ~1s each when asked for directly. It then became one Promise.all round,
+   * which served a request arriving as a round wound down with whichever one or
+   * two workers were still alive; slots are now refilled every time instead.
+   *
+   * Three kinds over one priority order, because they load the machine in
+   * completely different ways:
+   *   photo  sharp inside this process, on its libuv pool. Four concurrent
+   *          sharp/ffmpeg operations once starved the renderer badly enough to
+   *          stall main-thread JS for seconds; the limit stays at two.
+   *   video  one ffmpeg subprocess with -threads 1 each, scheduled by the OS
+   *          and touching neither this event loop nor its pool. Queue WAIT,
+   *          not decode, was the bottleneck there (cold 30-tile screen: 205ms
+   *          mean generation, 1559ms mean wait), hence more slots.
+   *   heic   the HEIC worker (heicPool.ts) - seconds of a core per photo, so a
+   *          slot of its own: it must not hold a photo slot that a JPEG could
+   *          use, and its pool is no deeper than this.
    */
-  async function pumpThumbs(): Promise<void> {
-    if (thumbPumping) return
-    thumbPumping = true
-    try {
-      // Two pools over one priority order, because the two kinds of work load
-      // the machine in completely different ways.
-      //
-      // Photo thumbnails run sharp INSIDE this process, on its libuv thread pool,
-      // so they compete directly with everything else the main process must do.
-      // That is what the earlier measurement was about: four concurrent
-      // sharp/ffmpeg operations starved the renderer badly enough to stall
-      // main-thread JS for seconds. Their limit stays exactly where it was.
-      //
-      // Video thumbnails are now a single ffmpeg subprocess with -threads 1 -
-      // they used to be ffmpeg plus ffprobe plus an in-process sharp resize of a
-      // full-resolution PNG. A subprocess is scheduled by the OS across all cores
-      // and touches neither this process's event loop nor its thread pool, so the
-      // old shared limit was guarding a cost that no longer exists on this path.
-      //
-      // It matters because queue WAIT, not decode time, is the bottleneck.
-      // Measured on a cold 30-tile viewport: generation averaged 205ms while mean
-      // wait was 1559ms and the worst 2981ms. Thirty visible tiles sharing two
-      // slots is what leaves visible video sitting as placeholders.
-      //
-      // Still bounded, and bounded by the machine rather than by a guess.
-      const PHOTO_SLOTS = 2
-      const VIDEO_SLOTS = Math.min(6, Math.max(2, cpuCount() - 2))
-      const isVideoPath = (path: string): boolean =>
-        VIDEO_THUMB_EXTS.has(extname(path).toLowerCase())
+  const SLOTS = { photo: 2, video: Math.min(6, Math.max(2, cpuCount() - 2)), heic: 1 }
+  type ThumbKind = keyof typeof SLOTS
+  // Slots only on-screen work may take. Without them, every slot could be
+  // holding the band around the screen the user just left - measured after a
+  // timeline jump: all six video slots on the previous screen's band, and the
+  // first tile at the destination waiting 12.5s for one to come free.
+  const RESERVED: Record<ThumbKind, number> = { photo: 1, video: 2, heic: 0 }
+  const activeSlots: Record<ThumbKind, number> = { photo: 0, video: 0, heic: 0 }
+  const speculativeSlots: Record<ThumbKind, number> = { photo: 0, video: 0, heic: 0 }
+  const kindOf = (path: string): ThumbKind => {
+    const ext = extname(path).toLowerCase()
+    return VIDEO_THUMB_EXTS.has(ext) ? 'video' : ext === '.heic' ? 'heic' : 'photo'
+  }
+  let backgroundRetry: NodeJS.Timeout | null = null
 
-      const runWorker = async (accept: (path: string) => boolean): Promise<void> => {
-        for (;;) {
-          if (isQuitting) return
-          const p = nextThumb(thumbQueue, accept)
-          if (p === undefined) return
-          if (thumbInFlight.has(p) || thumbFailed.has(p)) continue
-          thumbInFlight.add(p)
-          const tPicked = Date.now()
-          const waitMs = tPicked - (thumbEnqueuedAt.get(p) ?? tPicked)
-          thumbEnqueuedAt.delete(p)
-          let lookupMs = 0
-          let generateMs = 0
-          let writeMs = 0
-          let deliverMs = 0
-          let cacheHit = false
-          let failed = false
-          const isVideo = VIDEO_THUMB_EXTS.has(extname(p).toLowerCase())
-          try {
-            // Shared with the media protocol and file actions, so a tile, a
-            // preview and an action all agree on why a path did not resolve.
-            const tLookup = Date.now()
-            const availability = checkPathAvailability(p)
-            lookupMs = Date.now() - tLookup
-            if (availability.status !== 'ok') {
-              failed = true
-              // Anything that can come back on its own - a disconnected drive,
-              // a relettered volume, a folder the user can still point us at -
-              // is never remembered as failed, or it would stay broken after
-              // the situation is fixed. Only a real miss on the right volume
-              // is remembered.
-              const recoverable =
-                availability.status === 'drive-offline' ||
-                availability.status === 'volume-mismatch' ||
-                availability.status === 'folder-missing'
-              if (!recoverable) thumbFailed.add(p)
-              const sentinel =
-                availability.status === 'folder-missing'
-                  ? THUMB_FOLDER_MISSING
-                  : availability.status === 'no-access'
-                    ? THUMB_NO_ACCESS
-                    : recoverable
-                      ? THUMB_VOLUME_OFFLINE
-                      : THUMB_UNAVAILABLE
-              if (mainWindow && !mainWindow.isDestroyed()) {
-                mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath: sentinel })
-              }
-              continue
-            }
-            // Generated from wherever the original actually is now. A cached
-            // thumbnail that has gone missing is regenerated from a readable
-            // original rather than marking that original unavailable.
-            // A cache hit and a cold generation both come back from here; the
-            // difference is whether the file already existed, which is what
-            // separates "warm display" from "cold generation" in any measurement.
-            const tGen = Date.now()
-            const pathVolumeId = getCachedVolumeId(p.slice(0, 2))
-            const existedBefore = thumbCacheHit(availability.resolved, pathVolumeId)
-            const thumbPath = await generateThumbForFile(
-              availability.resolved,
-              extname(p).toLowerCase(),
-              pathVolumeId
-            )
-            generateMs = Date.now() - tGen
-            cacheHit = existedBefore && thumbPath !== null
-            if (thumbPath) {
-              // Delivered to the renderer BEFORE being recorded. The tile only
-              // needs the path; the catalogue write is bookkeeping, and making
-              // the pixels wait for it is what the write stage used to cost.
-              const tDeliver = Date.now()
-              if (mainWindow && !mainWindow.isDestroyed()) {
-                mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath })
-              }
-              deliverMs = Date.now() - tDeliver
-              const tWrite = Date.now()
-              updateThumb(p, thumbPath)
-              writeMs = Date.now() - tWrite
-            } else {
-              failed = true
-              thumbFailed.add(p)
-              // Also remembered on disk. In-memory only meant every launch
-              // retried every undecodable file, and the two generation slots
-              // went to work already known to be hopeless while visible video
-              // waited behind it. Bounded - see MAX_THUMB_ATTEMPTS.
-              recordThumbFailure(p)
-              if (mainWindow && !mainWindow.isDestroyed()) {
-                mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath: THUMB_UNAVAILABLE })
-              }
-            }
-          } catch (err) {
-            thumbFailed.add(p)
-            recordThumbFailure(p)
-            console.error('[thumb:onDemand]', p, err)
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath: THUMB_UNAVAILABLE })
-            }
-          } finally {
-            thumbStages.add({ waitMs, lookupMs, generateMs, writeMs, deliverMs, cacheHit, failed, video: isVideo })
-            scheduleStageReport()
-            thumbInFlight.delete(p)
+  function pumpThumbs(): void {
+    if (isQuitting) return
+    for (const kind of Object.keys(SLOTS) as ThumbKind[]) {
+      while (activeSlots[kind] < SLOTS[kind]) {
+        const allowBackground = !viewportBusy() && backgroundInFlight < BACKGROUND_MAX_IN_FLIGHT
+        const visibleOnly = speculativeSlots[kind] >= SLOTS[kind] - RESERVED[kind]
+        const before = thumbQueue.background.length
+        const visibleBefore = thumbQueue.visible.length
+        const p = nextThumb(thumbQueue, (path) => kindOf(path) === kind, allowBackground, visibleOnly)
+        if (p === undefined) break
+        const background = thumbQueue.background.length < before
+        const speculative = thumbQueue.visible.length === visibleBefore
+        // Background work is only ever for the drive on screen.
+        if (thumbInFlight.has(p) || thumbFailed.has(p) || (background && p.slice(0, 2) !== currentOpenDrive)) continue
+        activeSlots[kind]++
+        if (speculative) speculativeSlots[kind]++
+        if (background) backgroundInFlight++
+        void generateOne(p, background).finally(() => {
+          activeSlots[kind]--
+          if (speculative) speculativeSlots[kind]--
+          if (background) {
+            backgroundInFlight--
+            if (thumbQueue.background.length === 0 && backgroundInFlight === 0) refillBackground()
           }
-          await new Promise((r) => setImmediate(r))
-        }
+          setImmediate(pumpThumbs)
+        })
       }
+    }
+    // Background work held back by recent scrolling is looked at again once
+    // that window has passed, without needing another request to arrive.
+    if (thumbQueue.background.length > 0 && !backgroundRetry) {
+      backgroundRetry = setTimeout(() => {
+        backgroundRetry = null
+        pumpThumbs()
+      }, 500)
+    }
+  }
 
-      await Promise.all([
-        ...Array.from({ length: VIDEO_SLOTS }, () => runWorker(isVideoPath)),
-        ...Array.from({ length: PHOTO_SLOTS }, () => runWorker((path) => !isVideoPath(path)))
-      ])
+  /** Rows owed a thumbnail on the open drive, fed into the background tier a
+   *  batch at a time. Stops at a batch that made no progress (every row failed
+   *  or its drive went away), so the same rows are not re-read forever. */
+  let backgroundDrive: string | null = null
+  let backgroundProgress = 0
+  function refillBackground(): void {
+    const drive = backgroundDrive
+    if (!drive || drive !== currentOpenDrive || backgroundProgress === 0 || isQuitting) {
+      backgroundDrive = null
+      return
+    }
+    backgroundProgress = 0
+    const volumeId = getCachedVolumeId(drive)
+    const paths = (volumeId ? getAllFilesWithoutThumbs(volumeId) : [])
+      .map((r) => r.path)
+      .filter((p) => !thumbInFlight.has(p) && !thumbFailed.has(p))
+    thumbQueue = { ...thumbQueue, background: paths }
+    if (paths.length === 0) {
+      backgroundDrive = null
+      return
+    }
+    diag('thumbs', `background: ${paths.length} owed on ${drive}`)
+    pumpThumbs()
+  }
+  startBackgroundThumbs = (drive: string): void => {
+    if (!subsystemEnabled(safeMode, 'thumbnails')) return
+    backgroundDrive = drive
+    backgroundProgress = 1
+    if (backgroundInFlight === 0) refillBackground()
+  }
+
+  async function generateOne(p: string, background: boolean): Promise<void> {
+    thumbInFlight.add(p)
+    const tPicked = Date.now()
+    const waitMs = tPicked - (thumbEnqueuedAt.get(p) ?? tPicked)
+    thumbEnqueuedAt.delete(p)
+    let lookupMs = 0
+    let generateMs = 0
+    let writeMs = 0
+    let deliverMs = 0
+    let cacheHit = false
+    let failed = false
+    const send = (thumbPath: string): void => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath })
+    }
+    try {
+      // Shared with the media protocol and file actions, so a tile, a preview
+      // and an action all agree on why a path did not resolve. Asynchronous: a
+      // busy or sleeping drive delays this tile, never the main thread.
+      const tLookup = Date.now()
+      const availability = await checkPathAvailabilityAsync(p)
+      lookupMs = Date.now() - tLookup
+      if (availability.status !== 'ok') {
+        failed = true
+        // Anything that can come back on its own - a disconnected drive, a
+        // relettered volume, a folder the user can still point us at - is never
+        // remembered as failed, or it would stay broken after the situation is
+        // fixed. Only a real miss on the right volume is remembered.
+        const recoverable =
+          availability.status === 'drive-offline' ||
+          availability.status === 'volume-mismatch' ||
+          availability.status === 'folder-missing'
+        if (!recoverable) thumbFailed.add(p)
+        send(
+          availability.status === 'folder-missing'
+            ? THUMB_FOLDER_MISSING
+            : availability.status === 'no-access'
+              ? THUMB_NO_ACCESS
+              : recoverable
+                ? THUMB_VOLUME_OFFLINE
+                : THUMB_UNAVAILABLE
+        )
+        return
+      }
+      // Generated from wherever the original actually is now. A cached
+      // thumbnail that has gone missing is regenerated from a readable original
+      // rather than marking that original unavailable. A cache hit and a cold
+      // generation both come back from here; whether the file already existed
+      // is what separates "warm display" from "cold generation" in a measurement.
+      const tGen = Date.now()
+      const pathVolumeId = getCachedVolumeId(p.slice(0, 2))
+      const existedBefore = thumbCacheHit(availability.resolved, pathVolumeId)
+      const thumbPath = await generateThumbForFile(availability.resolved, extname(p).toLowerCase(), pathVolumeId)
+      generateMs = Date.now() - tGen
+      cacheHit = existedBefore && thumbPath !== null
+      if (thumbPath) {
+        // Delivered to the renderer BEFORE being recorded. The tile only needs
+        // the path; the catalogue write is bookkeeping, and making the pixels
+        // wait for it is what the write stage used to cost.
+        const tDeliver = Date.now()
+        send(thumbPath)
+        deliverMs = Date.now() - tDeliver
+        const tWrite = Date.now()
+        updateThumb(p, thumbPath)
+        writeMs = Date.now() - tWrite
+        if (background) backgroundProgress++
+      } else {
+        failed = true
+        thumbFailed.add(p)
+        // Also remembered on disk. In-memory only meant every launch retried
+        // every undecodable file, and the generation slots went to work already
+        // known to be hopeless while visible video waited behind it. Bounded -
+        // see MAX_THUMB_ATTEMPTS.
+        recordThumbFailure(p)
+        send(THUMB_UNAVAILABLE)
+      }
+    } catch (err) {
+      thumbFailed.add(p)
+      recordThumbFailure(p)
+      console.error('[thumb:onDemand]', p, err)
+      send(THUMB_UNAVAILABLE)
     } finally {
-      thumbPumping = false
-      // A request that arrived while the last worker was finishing would have
-      // seen thumbPumping true and returned; pick that work up now.
-      if (queuedCount(thumbQueue) > 0) void pumpThumbs()
+      thumbStages.add({ waitMs, lookupMs, generateMs, writeMs, deliverMs, cacheHit, failed, video: kindOf(p) === 'video' })
+      scheduleStageReport()
+      thumbInFlight.delete(p)
     }
   }
 
@@ -1759,6 +1720,7 @@ app.whenReady().then(() => {
    * talking to this main process still gets its visible tiles.
    */
   ipcMain.handle('prioritize-thumbnails', async (_event, raw: unknown) => {
+    lastViewportRequestAt = Date.now()
     if (thumbFailed.size > 5000) thumbFailed.clear()
     const payload = Array.isArray(raw)
       ? { visible: raw, prefetch: [] }
@@ -1779,6 +1741,7 @@ app.whenReady().then(() => {
       prefetch: requested.prefetch.filter((p) => !exhausted.has(p))
     }
     thumbQueue = mergeThumbRequest(thumbQueue, request, (p) => thumbInFlight.has(p) || thumbFailed.has(p))
+    diag('thumbs', `request: ${request.visible.length} on screen, ${request.prefetch.length} in the band`)
     const queuedNow = Date.now()
     for (const path of [...thumbQueue.visible, ...thumbQueue.prefetch]) {
       if (!thumbEnqueuedAt.has(path)) thumbEnqueuedAt.set(path, queuedNow)
@@ -2263,7 +2226,7 @@ app.whenReady().then(() => {
       diag('startup', `background passes: thumbnails=${runThumbs} exif=${runExif}`)
       if (!runThumbs && !runExif) return
       Promise.resolve()
-        .then(() => (runExif && !isQuitting ? enrichExifBackfill(() => isQuitting) : undefined))
+        .then(() => (runExif && !isQuitting ? enrichExifBackfill(() => isQuitting, whenViewportIdle) : undefined))
         .catch((err) => diag('startup', `background pass failed: ${err}`))
     }, 2000)
   })

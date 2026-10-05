@@ -1616,7 +1616,12 @@ let exifBackfillRunning = false
  * `exif_checked` makes the pass resumable, so a relaunch continues instead of
  * re-parsing the whole library.
  */
-export async function enrichExifBackfill(shouldStop?: () => boolean): Promise<number> {
+export async function enrichExifBackfill(
+  shouldStop?: () => boolean,
+  /** Resolves when nothing the user is looking at needs the drive. Metadata
+   *  is never more urgent than a visible thumbnail. */
+  whenIdle?: () => Promise<void>
+): Promise<number> {
   if (exifBackfillRunning) return 0
   exifBackfillRunning = true
   try {
@@ -1643,6 +1648,8 @@ export async function enrichExifBackfill(shouldStop?: () => boolean): Promise<nu
 
     async function worker(): Promise<void> {
       while (cursor < pending.length) {
+        if (shouldStop?.()) return
+        await whenIdle?.()
         if (shouldStop?.()) return
         const { path: fullPath, ext, volume_id: rowVolumeId } = pending[cursor++]
         const lowerExt = ext.toLowerCase()
@@ -2996,9 +3003,27 @@ export function clearPathStateCache(): void {
   dirCacheStamp = 0
 }
 
+/**
+ * checkPathAvailability for the thumbnail pump, which asks once per tile: the
+ * read check goes through the thread pool instead of blocking the main thread
+ * on the drive. Only a file that cannot be read - the rare case - falls back to
+ * the synchronous classifier to say why (its folder checks are memoised).
+ */
+export async function checkPathAvailabilityAsync(
+  filePath: string
+): Promise<ReturnType<typeof checkPathAvailability>> {
+  const readable = await fs.promises.access(resolveStoredPath(filePath), fs.constants.R_OK).then(
+    () => true,
+    () => false
+  )
+  return checkPathAvailability(filePath, undefined, readable || undefined)
+}
+
 export function checkPathAvailability(
   filePath: string,
-  recordedVolumeId?: string | null
+  recordedVolumeId?: string | null,
+  /** Already confirmed readable by the caller, so no filesystem call is made. */
+  knownReadable?: true
 ): {
   status: PathStatus
   volumeKnown: boolean
@@ -3020,7 +3045,8 @@ export function checkPathAvailability(
 
   const resolved = resolveStoredPath(filePath)
 
-  if (isLetterPath && !isDriveMounted(letter)) {
+  // A readable file means its drive is mounted; no need to stat the root.
+  if (isLetterPath && !knownReadable && !isDriveMounted(letter)) {
     return { status: 'drive-offline', volumeKnown: !!recorded, resolved }
   }
   if (recorded) {
@@ -3034,14 +3060,14 @@ export function checkPathAvailability(
   // a file that exists is not a missing file, and saying so sends the user
   // looking for the wrong thing.
   try {
-    fs.accessSync(resolved, fs.constants.R_OK)
+    if (!knownReadable) fs.accessSync(resolved, fs.constants.R_OK)
     // A path that resolves but never had a recorded identity is not proof of
     // anything - a legacy row and an unrelated file on a different, currently
     // mounted device can share the exact same path (camera folders reuse
     // names like DCIM\100APPLE\IMG_0001.JPG constantly). Treated the same as
     // a confirmed mismatch: recoverable, never served or deleted as if it
     // were verified.
-    if (!recorded && isLetterPath && isDriveMounted(letter)) {
+    if (!recorded && isLetterPath && (knownReadable || isDriveMounted(letter))) {
       return { status: 'volume-mismatch', volumeKnown: false, resolved }
     }
     return { status: 'ok', volumeKnown: !!recorded, resolved }
