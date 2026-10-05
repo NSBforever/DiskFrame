@@ -35,7 +35,8 @@ export default defineConfig({
           incrementalSyncWorker: resolve('src/main/incrementalSyncWorker.ts'),
           reconcileWorker: resolve('src/main/reconcileWorker.ts'),
           heicWorker: resolve('src/main/heicWorker.ts'),
-          libraryWorker: resolve('src/main/libraryWorker.ts')
+          libraryWorker: resolve('src/main/libraryWorker.ts'),
+          ffmpegWorker: resolve('src/main/ffmpegWorker.ts')
         }
       }
     }

@@ -1376,6 +1376,48 @@ export async function generateThumbForFile(
  * renderer serves thumbnails off disk through the media: protocol, and a
  * half-written JPEG at the final path would be served as a broken image.
  */
+/**
+ * ffmpeg runs started from a worker thread (see ffmpegWorker.ts), so process
+ * creation never blocks the main thread. null means the worker is unavailable
+ * and the caller spawns here instead, as it always did.
+ */
+let ffmpegWorker: Worker | null = null
+let ffmpegWorkerBroken = false
+let ffmpegNextId = 1
+const ffmpegPending = new Map<number, (ok: boolean) => void>()
+function runFfmpegOffMain(args: string[], outPath: string, timeoutMs: number): Promise<boolean> | null {
+  if (ffmpegWorkerBroken) return null
+  if (!ffmpegWorker) {
+    try {
+      const w = new Worker(join(__dirname, 'ffmpegWorker.js'), { workerData: { ffmpegPath: ffmpegExe } })
+      w.on('message', (m: { id: number; ok: boolean }) => {
+        const settle = ffmpegPending.get(m.id)
+        ffmpegPending.delete(m.id)
+        settle?.(m.ok)
+      })
+      const fail = (): void => {
+        ffmpegWorkerBroken = true
+        ffmpegWorker = null
+        for (const settle of ffmpegPending.values()) settle(false)
+        ffmpegPending.clear()
+      }
+      w.on('error', fail)
+      w.on('exit', fail)
+      w.unref()
+      ffmpegWorker = w
+    } catch {
+      ffmpegWorkerBroken = true
+      return null
+    }
+  }
+  const id = ffmpegNextId++
+  const worker = ffmpegWorker
+  return new Promise((settle) => {
+    ffmpegPending.set(id, settle)
+    worker.postMessage({ id, args, outPath, timeoutMs })
+  })
+}
+
 function extractScaledFrame(
   fullPath: string,
   seekSecs: number | string,
@@ -1408,6 +1450,8 @@ function extractScaledFrame(
       '-y',
       outPath
     ]
+    const offMain = runFfmpegOffMain(args, outPath, 15000)
+    if (offMain) return void offMain.then(resolve)
     const ff = cp.spawn(ffmpegExe, args)
     // Drained but not accumulated: a stalled ffmpeg whose stderr nobody reads
     // blocks on a full pipe, and buffering it was only ever feeding a
