@@ -94,6 +94,7 @@ import {
 import { parseSafeMode, subsystemEnabled } from './runtimeMode'
 import { resolveDriveLetters } from './driveIdentity'
 import { ThumbStageStats } from './thumbStages'
+import { heicToJpeg, stopHeicWorkers } from './heicPool'
 
 /** Which extensions go down the ffmpeg path, so video decode time can be
  *  reported separately from photo decode time - they differ by an order of
@@ -915,50 +916,16 @@ app.whenReady().then(() => {
     if (lower.endsWith('.heic') || lower.endsWith('.heif')) {
       try {
         const heicCacheDir = join(app.getPath('userData'), 'heic_cache')
-        if (!fs.existsSync(heicCacheDir)) {
-          fs.mkdirSync(heicCacheDir, { recursive: true })
-        }
+        await fs.promises.mkdir(heicCacheDir, { recursive: true })
         const { createHash } = await import('crypto')
         const hash = createHash('md5').update(filePath).digest('hex')
         const cachePath = join(heicCacheDir, `${hash}.jpg`)
-
-        if (fs.existsSync(cachePath) && fs.statSync(cachePath).size > 0) {
+        const cached = await fs.promises.stat(cachePath).then((s) => s.size > 0, () => false)
+        // Decoded on the HEIC worker, never here - the viewer used to freeze the
+        // whole app for ~7s per photo while heic-convert ran on this thread. The
+        // user is waiting on this one, so it goes ahead of queued thumbnails.
+        if (cached || (await heicToJpeg(filePath, cachePath, { quality: 92, urgent: true }))) {
           return net.fetch('file:///' + cachePath.replace(/\\/g, '/'))
-        }
-
-        if (fs.existsSync(filePath)) {
-          let converted = false
-          try {
-            // eslint-disable-next-line @typescript-eslint/no-var-requires
-            const convert = require('heic-convert')
-            const inputBuffer = fs.readFileSync(filePath)
-            const outputBuffer = await convert({
-              buffer: inputBuffer,
-              format: 'JPEG',
-              quality: 0.92
-            })
-            fs.writeFileSync(cachePath, outputBuffer)
-            converted = true
-          } catch (e) {
-            console.warn('[HEIC media protocol] heic-convert failed, attempting ffmpeg fallback:', e)
-          }
-
-          if (!converted) {
-            await new Promise<void>((resolve) => {
-              const ff = spawn(ffmpegExe, ['-i', filePath, '-y', cachePath])
-              ff.on('close', (code) => {
-                if (code === 0 && fs.existsSync(cachePath) && fs.statSync(cachePath).size > 0) {
-                  converted = true
-                }
-                resolve()
-              })
-              ff.on('error', () => resolve())
-            })
-          }
-
-          if (converted && fs.existsSync(cachePath)) {
-            return net.fetch('file:///' + cachePath.replace(/\\/g, '/'))
-          }
         }
       } catch (err) {
         console.error('[media protocol HEIC convert error]:', filePath, err)
@@ -2338,6 +2305,7 @@ app.whenReady().then(() => {
 function shutdown(): void {
   isQuitting = true
   watcherManager.closeAll()
+  stopHeicWorkers()
   syncService.cancel()
   closeMpv()
   closeStreamServer()

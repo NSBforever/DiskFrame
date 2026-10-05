@@ -33,7 +33,8 @@ export default defineConfig({
           index: resolve('src/main/index.ts'),
           scanUtility: resolve('src/main/scanUtility.ts'),
           incrementalSyncWorker: resolve('src/main/incrementalSyncWorker.ts'),
-          reconcileWorker: resolve('src/main/reconcileWorker.ts')
+          reconcileWorker: resolve('src/main/reconcileWorker.ts'),
+          heicWorker: resolve('src/main/heicWorker.ts')
         }
       }
     }

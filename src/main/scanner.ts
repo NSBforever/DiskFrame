@@ -35,6 +35,7 @@ import {
   thumbnailExts
 } from './validation'
 import { listMountedVolumes } from './driveEnum'
+import { heicToJpeg } from './heicPool'
 
 function resolveFfmpeg(): string {
   try {
@@ -1336,25 +1337,9 @@ export async function generateThumbForFile(
   }
 
   if (lowerExt === '.heic') {
-    try {
-      const thumbPath = thumbKeyFor(fullPath, volumeId).scoped
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const convert = require('heic-convert')
-      const inputBuffer = fs.readFileSync(fullPath)
-      const outputBuffer = await convert({
-        buffer: inputBuffer,
-        format: 'JPEG',
-        quality: 0.8
-      })
-      await sharp(outputBuffer)
-        .rotate()
-        .resize(THUMB_SIZE, THUMB_SIZE, { fit: 'cover', position: 'centre' })
-        .jpeg({ quality: 80 })
-        .toFile(thumbPath)
-      return fs.existsSync(thumbPath) ? thumbPath : null
-    } catch (err) {
-      return null
-    }
+    // Decoded on a worker thread - see heicWorker.ts for why never here.
+    const thumbPath = thumbKeyFor(fullPath, volumeId).scoped
+    return (await heicToJpeg(fullPath, thumbPath, { size: THUMB_SIZE, quality: 80 })) ? thumbPath : null
   }
 
   if (videoExts.includes(lowerExt)) {
