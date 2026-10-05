@@ -29,6 +29,7 @@ import {
 import {
   isUsableCaptureDate,
   isMassRemoval,
+  isSameFileVersion,
   isIndexableUserMedia,
   videoExts,
   allExts,
@@ -1990,6 +1991,16 @@ export async function updateFileInPlace(filePath: string, statInput?: fs.Stats):
        ORDER BY (volume_id IS NULL) LIMIT 1`
     )
     .get(filePath, volumeId) as ScannedFile | undefined
+
+  // Same size and modification time on a row that already has its identity:
+  // the content did not change, so there is nothing to record. The watcher is
+  // told about attribute and last-access changes too, and Windows updates last
+  // access when a file is READ - so generating a thumbnail used to come back
+  // here as a "change" that deleted the thumbnail it had just made,
+  // regenerated it outside the bounded pump, overwrote an EXIF-corrected
+  // capture date with mtime, and made the gallery re-read itself. Browsing
+  // was feeding itself work.
+  if (existing && existing.volume_id && isSameFileVersion(existing, stat)) return null
 
   // Invalidate old thumb if exists
   if (existing?.thumb && fs.existsSync(existing.thumb)) {

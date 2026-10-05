@@ -203,6 +203,19 @@ export function isMassRemoval(removedCount: number, knownCount: number): boolean
 }
 
 /**
+ * Whether a file on disk is still the version a catalogue row recorded: same
+ * size, same modification time to the millisecond. A change notification for
+ * a file that passes this is an attribute or last-access change - reading a
+ * file to thumbnail it produces one - not new content.
+ */
+export function isSameFileVersion(
+  row: { size?: number | null; mtime?: number | null },
+  stat: { size: number; mtimeMs: number }
+): boolean {
+  return row.size === stat.size && row.mtime != null && Math.round(row.mtime) === Math.round(stat.mtimeMs)
+}
+
+/**
  * Sent to the renderer (never written to the database) when the main process
  * has established that a file cannot produce a thumbnail - it is missing,
  * unreadable, or the decoder rejected it.

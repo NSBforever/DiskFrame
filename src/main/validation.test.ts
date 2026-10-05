@@ -7,6 +7,7 @@ import {
   safePathRefs,
   isUsableCaptureDate,
   isMassRemoval,
+  isSameFileVersion,
   isIndexableMedia,
   canHaveThumbnail,
   isGeneratedAsset,
@@ -191,4 +192,15 @@ test('isGeneratedAsset excludes the app own build output', () => {
   assert.ok(isGeneratedAsset('C:\\Users\\me\\diskframe\\out\\renderer\\assets\\earth-dark.jpg'))
   assert.ok(isGeneratedAsset('C:\\Users\\me\\diskframe\\dist\\win-unpacked\\x.png'))
   assert.ok(!isGeneratedAsset('C:\\Users\\me\\Pictures\\out\\holiday.jpg'), 'a user folder named out')
+})
+
+test('a read is not a change: same size and mtime means the same file version', () => {
+  // Windows updates last-access time when a file is read, and the watcher is
+  // told. Generating a thumbnail therefore came back as a "change" that
+  // deleted that thumbnail, regenerated it and overwrote the capture date.
+  const row = { size: 2_000_000, mtime: 1_700_000_000_123 }
+  assert.ok(isSameFileVersion(row, { size: 2_000_000, mtimeMs: 1_700_000_000_123.4 }))
+  assert.ok(!isSameFileVersion(row, { size: 2_000_001, mtimeMs: 1_700_000_000_123 }), 'size changed')
+  assert.ok(!isSameFileVersion(row, { size: 2_000_000, mtimeMs: 1_700_000_005_000 }), 'rewritten')
+  assert.ok(!isSameFileVersion({ size: 2_000_000, mtime: null }, { size: 2_000_000, mtimeMs: 1 }), 'never recorded')
 })
