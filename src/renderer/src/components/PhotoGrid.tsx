@@ -824,14 +824,18 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
     const oldRects = pending.oldRects
     if (!oldRects) return
     const s = pending.residual
-    const els = contentRef.current?.querySelectorAll<HTMLElement>('[data-tile]') ?? []
-    els.forEach(el => {
+    const els = [...(contentRef.current?.querySelectorAll<HTMLElement>('[data-tile]') ?? [])]
+    // Every position is read before any animation starts. Reading one tile's
+    // rect after starting the previous tile's animation forced a fresh style
+    // and layout pass per tile - measured as 280-400ms frames on each zoom step.
+    const afterRects = els.map(el => (oldRects.has(el.dataset.tile!) ? el.getBoundingClientRect() : null))
+    els.forEach((el, i) => {
       const before = oldRects.get(el.dataset.tile!)
       if (!before) {
         el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 220, easing: 'ease-out' })
         return
       }
-      const after = el.getBoundingClientRect()
+      const after = afterRects[i]!
       if (after.width === 0) return
       const dx = (before.left - after.left) / s
       const dy = (before.top - after.top) / s
