@@ -243,7 +243,12 @@ declare global {
       }>
       cancelIndexFolder: () => Promise<boolean>
       favouritePaths: () => Promise<string[]>
-      playMpv: (filePath: string, relativeBounds: { left: number; top: number; width: number; height: number }) => Promise<void>
+      playMpv: (
+        filePath: string,
+        relativeBounds: { left: number; top: number; width: number; height: number },
+        opts?: { deferShow?: boolean }
+      ) => Promise<void>
+      revealMpv: () => void
       sendMpvCommand: (command: string, args: any[]) => void
       resizeMpv: (bounds: { left: number; top: number; width: number; height: number }) => void
       closeMpv: () => void

@@ -44,6 +44,12 @@ interface ImageLoaderProps {
   /** True during the close animation, before unmount - stop audio immediately
    * rather than letting it play through the animation. */
   isClosing?: boolean
+  /** True while the viewer's opening animation is still in the air. Video is
+   *  started hidden and paused, and only revealed once this is false. */
+  holdVideo?: boolean
+  /** The video is now on screen (native player revealed, or the fallback
+   *  element playing, or failed) - the animation's poster can go. */
+  onVideoRevealed?: () => void
 }
 
 const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif']
@@ -126,7 +132,9 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   onFav,
   onShowHelp,
   onToggleTheatre,
-  isClosing
+  isClosing,
+  holdVideo = false,
+  onVideoRevealed
 }) => {
   const [highResSrc, setHighResSrc] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
@@ -164,6 +172,10 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   /** Played to its end and sitting on the last frame. The session is alive -
    *  mpv runs with --keep-open=yes - so this is a state, not a failure. */
   const [hasEnded, setHasEnded] = useState(false)
+  /** mpv has decoded a frame of this file (it reported its size or position). */
+  const [mpvFrameReady, setMpvFrameReady] = useState(false)
+  /** This file's video has been put on screen; see the reveal effect. */
+  const revealedRef = useRef(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [volume, setVolume] = useState(1)
@@ -248,6 +260,8 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
     setSeekOffset(0)
     setIsPlaying(false)
     setHasEnded(false)
+    setMpvFrameReady(false)
+    revealedRef.current = false
     setCurrentTime(0)
     setDuration(0)
     setVolume(1)
@@ -310,6 +324,23 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
 
       let active = true
 
+      // Listening from before the session exists. mpv reports its initial
+      // width/height/time-pos the moment the pipe connects, which is before
+      // playMpv() resolves and before the general listener below attaches -
+      // those values were simply missed, so the frame size often never
+      // arrived. The first of them also says a frame has been decoded, which
+      // is when the hidden window can be revealed without showing black.
+      const unbindFirstFrame = window.api.onMpvPropertyChange(({ name, value }) => {
+        if (!active || typeof value !== 'number') return
+        if (name === 'width') mpvWidthRef.current = value
+        else if (name === 'height') mpvHeightRef.current = value
+        else if (name !== 'time-pos') return
+        if (mpvWidthRef.current && mpvHeightRef.current) {
+          onImageLoaded({ width: mpvWidthRef.current, height: mpvHeightRef.current })
+        }
+        if (name === 'time-pos' || (mpvWidthRef.current && mpvHeightRef.current)) setMpvFrameReady(true)
+      })
+
       const startPlayback = async () => {
         if (!videoContainerRef.current) {
           await new Promise((r) => setTimeout(r, 50))
@@ -326,7 +357,9 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
         }
 
         try {
-          await window.api.playMpv(file.path, bounds)
+          // Hidden and paused at its final bounds; revealed by the effect
+          // below once the viewer has landed and a frame exists.
+          await window.api.playMpv(file.path, bounds, { deferShow: true })
           if (!active) return
           setVideoMode('mpv')
           setIsBuffering(false)
@@ -388,6 +421,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
       return () => {
         active = false
         clearTimeout(spinnerTimer)
+        unbindFirstFrame()
         unbindLost()
         unbindError()
         window.api.closeMpv()
@@ -403,6 +437,30 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
       clearTimeout(spinnerTimer)
     }
   }, [file.path, isPhoto, isVideo, onImageLoaded, retryNonce])
+
+  // Put the video on screen once the viewer has landed and there is a frame to
+  // show - never before, so the opening animation and its poster are not
+  // covered by a black native window, and the sound does not start under them.
+  // A file mpv is slow to report on is revealed anyway after a short wait
+  // rather than left hidden.
+  useEffect(() => {
+    if (!isVideo || holdVideo || revealedRef.current) return
+    const reveal = (): void => {
+      if (revealedRef.current) return
+      revealedRef.current = true
+      if (videoMode === 'mpv') window.api.revealMpv()
+      onVideoRevealed?.()
+    }
+    if (videoError) return reveal()
+    if (videoMode === 'mpv') {
+      if (mpvFrameReady) return reveal()
+      const t = window.setTimeout(reveal, 2500)
+      return () => window.clearTimeout(t)
+    }
+    // The fallback <video> lives in this window, so it is already layered
+    // correctly; it counts as revealed once it has something to show.
+    return undefined
+  }, [isVideo, holdVideo, videoMode, mpvFrameReady, videoError, onVideoRevealed])
 
   // Synchronize mpv window bounds on resize
   useEffect(() => {
@@ -1102,6 +1160,9 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
               {highResSrc && (
                 <img
                   src={highResSrc}
+                  // What the opening animation lands on and the closing one
+                  // leaves from: the photo's real on-screen rectangle.
+                  data-viewer-media=""
                   style={{
                     maxWidth: '100%',
                     maxHeight: '100%',
@@ -1174,8 +1235,15 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
                   onPlay={handlePlay}
                   onPause={handlePause}
                   onWaiting={() => setIsBuffering(true)}
-                  onPlaying={() => setIsBuffering(false)}
+                  onPlaying={() => {
+                    setIsBuffering(false)
+                    if (!revealedRef.current) {
+                      revealedRef.current = true
+                      onVideoRevealed?.()
+                    }
+                  }}
                   onError={() => setVideoError(true)}
+                  data-viewer-media=""
                   style={{
                     maxWidth: '100%',
                     maxHeight: '100%',

@@ -169,8 +169,13 @@ const api = {
     missingRoot: string | null
   }> => ipcRenderer.invoke('media-status', filePath),
   favouritePaths: () => ipcRenderer.invoke('favourite-paths'),
-  playMpv: (filePath: string, relativeBounds: { left: number; top: number; width: number; height: number }) =>
-    ipcRenderer.invoke('start-mpv', { filePath, relativeBounds }),
+  playMpv: (
+    filePath: string,
+    relativeBounds: { left: number; top: number; width: number; height: number },
+    opts: { deferShow?: boolean } = {}
+  ) => ipcRenderer.invoke('start-mpv', { filePath, relativeBounds, deferShow: !!opts.deferShow }),
+  /** Shows a session started with deferShow, and unpauses it. */
+  revealMpv: () => ipcRenderer.send('mpv-reveal'),
   // Used by the control overlay that runs inside the mpv window.
   setOverlayMeta: (meta: { name?: string; isFav?: boolean; toast?: string; show?: boolean }) =>
     ipcRenderer.send('overlay-meta', meta),

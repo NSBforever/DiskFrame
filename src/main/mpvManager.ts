@@ -165,10 +165,27 @@ function getOverlayPath(): string {
   return candidates[0]
 }
 
+/**
+ * Shows a session started with deferShow, and starts it playing.
+ *
+ * The viewer opens with an animation from the clicked tile, drawn in the main
+ * window - and mpv's window, an owned window, always sits above the main one.
+ * Shown at once, it covered the animation with black until its first frame and
+ * started the audio before there was a picture. So the session starts hidden
+ * and paused at its final bounds, and the viewer reveals it once the animation
+ * has landed and mpv has decoded a frame.
+ */
+export function revealMpv(): void {
+  if (!mpvWindow || mpvWindow.isDestroyed()) return
+  if (!mpvWindow.isVisible()) mpvWindow.show()
+  if (ipcSocket && !ipcSocket.destroyed) sendCommand(ipcSocket, ['set_property', 'pause', false])
+}
+
 export async function initMpv(
   filePath: string,
   relativeBounds: { left: number; top: number; width: number; height: number },
-  hostWindow: BrowserWindow
+  hostWindow: BrowserWindow,
+  opts: { deferShow?: boolean } = {}
 ) {
   closeMpv() // close any previous session
 
@@ -246,6 +263,8 @@ export async function initMpv(
     '--osc=no',
     '--no-config',
     '--input-default-bindings=no',
+    // Decoded and ready on its first frame, but silent until revealMpv().
+    ...(opts.deferShow ? ['--pause'] : []),
     filePath
   ]
 
@@ -270,7 +289,7 @@ export async function initMpv(
   mpvWindow.loadFile(getOverlayPath()).catch((e) => {
     console.error('[mpvManager] overlay failed to load:', e)
   })
-  mpvWindow.show()
+  if (!opts.deferShow) mpvWindow.show()
 
   mpvProcess.on('error', (err) => {
     console.error('[mpvManager] Spawn error:', err)

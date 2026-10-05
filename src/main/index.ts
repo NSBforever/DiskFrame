@@ -78,7 +78,7 @@ import type { LibraryQuery } from './libraryQuery'
 import { getMapClusters, getCatalogueVersion } from './scanner'
 
 import { initStreamServer, probeMedia, killActiveStream, closeStreamServer, authorizeStreamPath } from './streamServer'
-import { initMpv, sendMpvCommand, updateMpvBounds, closeMpv, refreshMpvBounds, setOverlayInteractive, sendToOverlay } from './mpvManager'
+import { initMpv, revealMpv, sendMpvCommand, updateMpvBounds, closeMpv, refreshMpvBounds, setOverlayInteractive, sendToOverlay } from './mpvManager'
 import { WatcherManager } from './watcher'
 import { SyncService, catalogueRoot } from './syncService'
 import {
@@ -2050,7 +2050,7 @@ app.whenReady().then(() => {
     return true
   })
 
-  ipcMain.handle('start-mpv', (_event, { filePath, relativeBounds }) => {
+  ipcMain.handle('start-mpv', (_event, { filePath, relativeBounds, deferShow }) => {
     if (!subsystemEnabled(safeMode, 'mpv')) {
       diag('safe-mode', 'mpv start refused (mpv subsystem off)')
       throw new Error('mpv disabled in safe mode')
@@ -2060,7 +2060,7 @@ app.whenReady().then(() => {
     if (!res.exists) {
       throw new Error(`File not found on disk: ${filePath}`)
     }
-    return initMpv(res.path, relativeBounds, mainWindow)
+    return initMpv(res.path, relativeBounds, mainWindow, { deferShow: deferShow === true })
   })
 
   ipcMain.on('mpv-command', (_event, { command, args }) => {
@@ -2070,6 +2070,8 @@ app.whenReady().then(() => {
   ipcMain.on('mpv-resize', (_event, bounds) => {
     updateMpvBounds(bounds)
   })
+
+  ipcMain.on('mpv-reveal', () => revealMpv())
 
   ipcMain.on('mpv-close', () => {
     closeMpv()

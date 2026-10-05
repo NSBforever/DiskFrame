@@ -9,7 +9,14 @@ import react from '@vitejs/plugin-react'
 // can be told apart from another with the same package.json version.
 function buildCommit(): string {
   try {
-    return execSync('git rev-parse --short HEAD', { cwd: __dirname }).toString().trim()
+    const sha = execSync('git rev-parse --short HEAD', { cwd: __dirname }).toString().trim()
+    // A build from uncommitted source must not carry a clean commit's name:
+    // it is not that commit, and About would say it was. Generated files the
+    // build itself rewrites (tsbuildinfo) do not count.
+    const dirty = execSync('git status --porcelain --untracked-files=no -- src electron.vite.config.ts package.json', { cwd: __dirname })
+      .toString()
+      .trim()
+    return dirty ? `${sha}-dirty` : sha
   } catch {
     return 'unknown'
   }

@@ -110,7 +110,7 @@ if (typeof window !== 'undefined' && !window.electron) {
   }
 }
 
-import MediaViewer from './components/media-viewer/MediaViewer'
+import MediaViewer, { findTileBox } from './components/media-viewer/MediaViewer'
 // three.js and the globe are most of the renderer bundle and only the Places
 // globe uses them; loading them on demand keeps them out of startup parsing.
 const GlobeView = React.lazy(() => import('./components/GlobeView'))
@@ -2498,8 +2498,13 @@ export default function App(): React.JSX.Element {
 
   const lastSelectedPathRef = useRef<string | null>(null)
 
-  const handleTileOpen = useCallback((file: ScannedFile, indexOrList: number | ScannedFile[], e?: React.MouseEvent): void => {
-    const rect = e?.currentTarget?.getBoundingClientRect()
+  const handleTileOpen = useCallback((file: ScannedFile, indexOrList: number | ScannedFile[], _e?: React.MouseEvent): void => {
+    // The viewer's opening flight starts from this file's own tile. Not the
+    // event target: "Open in Viewer" in the context menu would hand over the
+    // menu item's rectangle. No visible tile -> no rect -> the viewer fades in.
+    const rect = findTileBox(file.path)
+      ? (document.querySelector(`[data-tile="${CSS.escape(file.path)}"], [data-grid-tile="${CSS.escape(file.path)}"]`) as HTMLElement).getBoundingClientRect()
+      : undefined
     if (typeof indexOrList === 'number') {
       setLightbox({ file, index: indexOrList, rect })
     } else {
