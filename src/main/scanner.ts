@@ -197,6 +197,8 @@ async function getMovMetadata(filePath: string): Promise<{ date: Date | null; la
 
 
 const dbPath = join(app.getPath('userData'), 'diskframe.db')
+/** For workers that open their own connection to the catalogue. */
+export const catalogueDbPath = dbPath
 const db = new Database(dbPath)
 db.pragma('journal_mode = WAL')
 db.pragma('synchronous = NORMAL')
@@ -1793,37 +1795,6 @@ export function removeFileRecord(filePath: string, volumeId?: string | null): vo
 
 // ─── RECONCILIATION (see reconcile.ts) ───────────────────────────────────────
 
-/** Everything one reconciliation run needs to know about a volume. */
-export function getReconcileInput(volumeId: string): {
-  files: { path: string; size: number; mtime: number | null; ino: number | null }[]
-  ignorePaths: string[]
-  folders: Record<string, { mtime: number; children: string[] | null }>
-} {
-  const files = db
-    .prepare('SELECT path, size, mtime, ino FROM files WHERE volume_id = ? AND hidden = 0 AND trashed_at IS NULL')
-    .all(volumeId) as { path: string; size: number; mtime: number | null; ino: number | null }[]
-  const ignorePaths = (
-    db.prepare('SELECT path FROM files WHERE volume_id = ? AND (hidden = 1 OR trashed_at IS NOT NULL)').all(volumeId) as {
-      path: string
-    }[]
-  ).map((r) => r.path)
-  const folders: Record<string, { mtime: number; children: string[] | null }> = {}
-  for (const r of db.prepare('SELECT path, mtime, children FROM folder_snapshot WHERE volume_id = ?').all(volumeId) as {
-    path: string
-    mtime: number
-    children: string | null
-  }[]) {
-    let children: string[] | null = null
-    try {
-      children = r.children ? (JSON.parse(r.children) as string[]) : null
-    } catch {
-      children = null // re-listed next run
-    }
-    folders[r.path] = { mtime: r.mtime, children }
-  }
-  return { files, ignorePaths, folders }
-}
-
 interface FoundRow {
   path: string
   name: string
@@ -2944,7 +2915,11 @@ export async function refreshVolumeCache(extraLetters: string[] = []): Promise<v
   for (const l of extraLetters) letters.add(l.slice(0, 2).toUpperCase())
   for (const l of letters) {
     if (!/^[A-Z]:$/.test(l)) continue
-    volumeByLetter.set(l, isDriveMounted(l) ? await getVolumeId(l) : null)
+    // mountvol already says when nothing is mounted at a letter. A synchronous
+    // stat of the root in front of it ran on the main thread for every known
+    // letter every 30s - and the first touch of a just-connected or spun-down
+    // hard disk can take seconds.
+    volumeByLetter.set(l, await getVolumeId(l))
   }
 }
 

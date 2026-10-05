@@ -3,10 +3,10 @@ import { join } from 'path'
 import { homedir } from 'os'
 import * as fs from 'fs'
 import {
-  getReconcileInput,
   applyReconcileBatch,
   applyReconcileRemovals,
   getCachedVolumeId,
+  catalogueDbPath,
   getVolumeId
 } from './scanner'
 import { invalidateMountedVolumes } from './driveEnum'
@@ -34,6 +34,8 @@ interface Running {
   lastMessageAt: number
   watchdog: NodeJS.Timeout
   totals: { added: number; moved: number; changed: number }
+  /** Records the worker is judging, from its first message. */
+  knownCount: number
   finishing?: boolean
 }
 
@@ -116,13 +118,13 @@ export class SyncService {
       this.hooks.onFinished(drive, req.reason, { ok: false, removed: 0, message: 'drive not verified' })
       return
     }
-    const input = getReconcileInput(volumeId)
+    // The worker reads the catalogue itself (see reconcileWorker.ts) and says
+    // how many records it is judging in its first message.
     const worker = new Worker(join(__dirname, 'reconcileWorker.js'), {
       workerData: {
+        dbPath: catalogueDbPath,
+        volumeId,
         root,
-        files: input.files,
-        ignorePaths: input.ignorePaths,
-        folders: input.folders,
         full: req.full,
         exts: allExts,
         photoExts,
@@ -140,17 +142,18 @@ export class SyncService {
       watchdog: setInterval(() => {
         if (Date.now() - r.lastMessageAt > STALL_MS) this.stop(drive, r, 'device stopped answering')
       }, 10_000),
-      totals: { added: 0, moved: 0, changed: 0 }
+      totals: { added: 0, moved: 0, changed: 0 },
+      knownCount: 0
     }
     this.running.set(drive, r)
-    this.hooks.log(
-      `${drive}: reconcile started (${req.reason}${req.full ? ', full' : ''}) - ${input.files.length} records, ${Object.keys(input.folders).length} folders on record`
-    )
 
-    worker.on('message', (e: ReconcileEvent) => {
+    worker.on('message', (e: ReconcileEvent | { type: 'started'; files: number; folders: number }) => {
       if (this.running.get(drive) !== r) return
       r.lastMessageAt = Date.now()
-      if (e.type === 'batch') {
+      if (e.type === 'started') {
+        r.knownCount = e.files
+        this.hooks.log(`${drive}: reconcile started (${req.reason}${req.full ? ', full' : ''}) - ${e.files} records, ${e.folders} folders on record`)
+      } else if (e.type === 'batch') {
         // The letter must still be this volume. A drive swapped at the same
         // letter mid-run stops the run before any of its results land.
         if (getCachedVolumeId(drive) !== volumeId) return this.stop(drive, r, 'volume at this letter changed')
@@ -166,7 +169,7 @@ export class SyncService {
         // worker's 'exit' arrives during that await - without this it took the
         // run for a crash and threw away a completed result.
         r.finishing = true
-        void this.finish(drive, r, e, input.files.length)
+        void this.finish(drive, r, e, r.knownCount)
       }
     })
     worker.on('error', (err) => {
