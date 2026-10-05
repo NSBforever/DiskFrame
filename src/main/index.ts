@@ -1043,7 +1043,7 @@ app.whenReady().then(() => {
   })
 
   // ── relinking a moved folder ──
-  ipcMain.handle('list-unresolved-roots', (_event, drive: unknown) => {
+  ipcMain.handle('list-unresolved-roots', async (_event, drive: unknown) => {
     const d = normalizeDrive(drive)
     if (!d) return { roots: [] }
     // While reconciliation is still deciding, a missing folder may be one the
@@ -1051,7 +1051,7 @@ app.whenReady().then(() => {
     // something to ask them to locate. The banner asks again when it finishes.
     if (syncService.isRunning(d)) return { roots: [], pending: true }
     try {
-      return { roots: listUnresolvedRoots(getCachedVolumeId(d)) }
+      return { roots: await listUnresolvedRoots(getCachedVolumeId(d)) }
     } catch (err) {
       diag('relink', 'listing failed: ' + String(err))
       return { roots: [] }

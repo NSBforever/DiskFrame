@@ -20,6 +20,7 @@ import {
 } from './libraryQuery'
 import {
   applyMappings,
+  folderChecks,
   missingRootOf,
   normalisePrefix,
   scoreMapping,
@@ -3202,29 +3203,71 @@ export function checkPathAvailability(
  * each accounts for.
  *
  * Grouped by the folder rather than listed per file, because one answer from
- * the user fixes thousands of rows. Reads only the index and one existence
- * check per distinct folder.
+ * the user fixes thousands of rows.
+ *
+ * Checks folders, never files, and never synchronously. This used to call
+ * existsSync once per catalogued FILE on the main thread (the memo was keyed
+ * by full path, so it never hit): measured 7-11s single blocks on a 41k-file
+ * drive, twice per open - Windows' "Not Responding". A missing file under a
+ * present folder is not a relink candidate, so each distinct folder answers
+ * for every file in it (see folderChecks).
  */
+const unresolvedInFlight = new Map<string, Promise<{ root: string; count: number; sample: string }[]>>()
+
 export function listUnresolvedRoots(
   volumeId: string | null
-): { root: string; count: number; sample: string }[] {
-  if (!volumeId) return []
+): Promise<{ root: string; count: number; sample: string }[]> {
+  if (!volumeId) return Promise.resolve([])
+  // Asked again on every sync notification; one walk answers all of them.
+  const running = unresolvedInFlight.get(volumeId)
+  if (running) return running
+  const p = listUnresolvedRootsNow(volumeId).finally(() => unresolvedInFlight.delete(volumeId))
+  unresolvedInFlight.set(volumeId, p)
+  return p
+}
+
+async function listUnresolvedRootsNow(
+  volumeId: string
+): Promise<{ root: string; count: number; sample: string }[]> {
   const rows = db
     .prepare(
       'SELECT path FROM files WHERE volume_id = ? AND hidden = 0 AND trashed_at IS NULL LIMIT 250000'
     )
     .all(volumeId) as { path: string }[]
 
-  const byRoot = new Map<string, { count: number; sample: string }>()
+  const byFolder = new Map<string, { count: number; sample: string; resolved: string }>()
   for (const r of rows) {
     const resolved = resolveStoredPath(r.path)
-    // Only the first absent component matters; dirExists memoises so this is
-    // a few stat calls per distinct folder, not one per file.
-    const root = missingRootOf(resolved, dirExists)
+    const folder = resolved.slice(0, resolved.lastIndexOf('\\'))
+    const cur = byFolder.get(folder)
+    if (cur) cur.count++
+    else byFolder.set(folder, { count: 1, sample: r.path, resolved })
+  }
+
+  // A few at a time on the thread pool, so a slow or busy drive delays only
+  // this answer, never the main thread.
+  const present = new Set<string>()
+  const queue = folderChecks(byFolder.keys())
+  await Promise.all(
+    Array.from({ length: 8 }, async () => {
+      for (let d = queue.pop(); d !== undefined; d = queue.pop()) {
+        try {
+          await fs.promises.access(d)
+          present.add(d.toLowerCase())
+        } catch {
+          /* absent or unreadable: reported as missing, as existsSync did */
+        }
+      }
+    })
+  )
+
+  const byRoot = new Map<string, { count: number; sample: string }>()
+  for (const f of byFolder.values()) {
+    const root = missingRootOf(f.resolved, (p) => present.has(p.toLowerCase()))
     if (!root) continue
     const cur = byRoot.get(root.missingRoot)
-    if (cur) cur.count++
-    else byRoot.set(root.missingRoot, { count: 1, sample: r.path })
+    if (cur) cur.count += f.count
+    else byRoot.set(root.missingRoot, { count: f.count, sample: f.sample })
   }
   return [...byRoot.entries()]
     .map(([root, v]) => ({ root, count: v.count, sample: v.sample }))

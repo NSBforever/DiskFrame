@@ -100,6 +100,30 @@ export function missingRootOf(
 }
 
 /**
+ * Every folder missingRootOf can ask about for files in these folders: each
+ * drive root and every ancestor, spelled exactly as missingRootOf spells them.
+ *
+ * missingRootOf ignores a missing file under a present folder, so its answer
+ * for a file depends only on the file's folder. Checking these folders once
+ * answers it for every file in them - a few hundred existence checks for a
+ * drive, instead of one per catalogued file.
+ */
+export function folderChecks(folders: Iterable<string>): string[] {
+  const out = new Set<string>()
+  for (const f of folders) {
+    if (f.length < 3) continue
+    out.add(f.slice(0, 3))
+    let cur = f.slice(0, 2)
+    for (const part of f.slice(3).split(SEP)) {
+      if (!part) continue
+      cur = cur + SEP + part
+      out.add(cur)
+    }
+  }
+  return [...out]
+}
+
+/**
  * Whether a proposed mapping is corroborated by the files the index expects
  * under it.
  *

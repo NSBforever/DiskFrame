@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyMappings, missingRootOf, normalisePrefix, scoreMapping } from './pathMapping.ts'
+import { applyMappings, folderChecks, missingRootOf, normalisePrefix, scoreMapping } from './pathMapping.ts'
 
 const M = (from: string, to: string) => ({ from, to })
 
@@ -96,6 +96,28 @@ test('an offline drive yields no missing root, so it is never offered for relink
   // a completely different state from a moved folder.
   const exists = fsLike([])
   assert.equal(missingRootOf('E:\\College Memories\\a.jpg', exists), null)
+})
+
+test('checking each folder chain once gives the same answer as checking every file', () => {
+  // listUnresolvedRoots asks once per folder rather than once per file (a
+  // per-file existsSync on the main thread froze the app for 7-11s on a 41k
+  // file drive). That is only valid if the folder chain alone decides the
+  // answer, whether or not the file itself exists.
+  const present = ['E:\\', 'E:\\Camera', 'E:\\Camera\\a.jpg', 'E:\\TO EDIT']
+  const files = [
+    'E:\\Camera\\a.jpg',
+    'E:\\Camera\\gone.jpg',
+    'E:\\College Memories\\x\\a.jpg',
+    'E:\\TO EDIT\\Project VARANASI\\Samsung\\a.mp4'
+  ]
+  const folders = files.map((f) => f.slice(0, f.lastIndexOf('\\')))
+  const checks = folderChecks(folders)
+  // Only folders are ever asked about, never a file.
+  assert.ok(checks.every((c) => !/\.(jpg|mp4)$/i.test(c)))
+  assert.ok(checks.includes('E:\\') && checks.includes('E:\\TO EDIT\\Project VARANASI\\Samsung'))
+  const known = new Set(checks.filter((c) => fsLike(present)(c)).map((c) => c.toLowerCase()))
+  const folderOnly = (p: string): boolean => known.has(p.toLowerCase())
+  for (const f of files) assert.deepEqual(missingRootOf(f, folderOnly), missingRootOf(f, fsLike(present)), f)
 })
 
 // ─── mapping corroboration ───────────────────────────────────────────────
