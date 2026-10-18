@@ -1,4 +1,4 @@
-import { test } from 'node:test'
+import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
@@ -6,9 +6,16 @@ import * as path from 'node:path'
 import { runReconcile, nodeFs, type ReconcileEvent, type ReconcileInput, type KnownFile, type FsAdapter } from './reconcile.ts'
 
 // Real files in a disposable temp tree: the move detection depends on genuine
-// NTFS file ids, which a fake filesystem would only pretend to have.
+// NTFS file ids, which a fake filesystem would only pretend to have. Removed
+// when the file's tests finish (they used to pile up in %TEMP%).
+const roots: string[] = []
+after(() => {
+  for (const r of roots) fs.rmSync(r, { recursive: true, force: true })
+})
+
 function tree(files: string[]): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'df-reconcile-'))
+  roots.push(root)
   for (const f of files) {
     const p = path.join(root, f)
     fs.mkdirSync(path.dirname(p), { recursive: true })
@@ -209,4 +216,55 @@ test('the first run does not walk folders the catalogue never tracked', () => {
   assert.deepEqual(second.added, ['later\\new.jpg'])
   // An explicit full check does walk everything.
   assert.deepEqual(run(input(root, k, { full: true })).added.sort(), ['later\\new.jpg', 'project\\out\\icon.jpg'])
+})
+
+/** Every entry under root with its size and exact mtime: what "untouched" means. */
+function snapshot(root: string): string[] {
+  const out: string[] = []
+  const walk = (d: string): void => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name)
+      const st = fs.lstatSync(p, { bigint: true })
+      out.push(`${path.relative(root, p)} ${st.size} ${st.mtimeNs}`)
+      if (e.isDirectory()) walk(p)
+    }
+  }
+  walk(root)
+  return out.sort()
+}
+
+test('scanning only reads: the gallery is unchanged and a rescan adds nothing', () => {
+  const root = tree(['a\\k.jpg', 'b\\one.jpg', 'b\\c\\two.mp4'])
+  const before = snapshot(root)
+  const k = known(root, ['a\\k.jpg'])
+  const first = run(input(root, k, { full: true }))
+  assert.deepEqual(first.added.sort(), ['b\\c\\two.mp4', 'b\\one.jpg'])
+  const all = known(root, ['a\\k.jpg', 'b\\one.jpg', 'b\\c\\two.mp4'])
+  const second = run(input(root, all, { folders: first.folders, full: true }))
+  assert.deepEqual(second.added, [])
+  assert.deepEqual(second.removed, [])
+  // No copy, cache or marker was written into the gallery, nothing was modified.
+  assert.deepEqual(snapshot(root), before)
+})
+
+test('junctions are never followed: no loop, no second copy of a mounted drive', () => {
+  const root = tree(['a\\k.jpg'])
+  const elsewhere = tree(['DCIM\\100APPLE\\IMG_0001.jpg']) // stands in for another drive
+  const k = known(root, ['a\\k.jpg'])
+  const base = run(input(root, k)).folders
+  const loop = path.join(root, 'a', 'loop')
+  const mount = path.join(root, 'mounted')
+  fs.symlinkSync(root, loop, 'junction') // a folder that contains itself
+  fs.symlinkSync(elsewhere, mount, 'junction')
+  try {
+    const r = run(input(root, k, { folders: base, full: true }))
+    assert.equal(r.aborted, undefined)
+    assert.equal(r.done?.type, 'done')
+    assert.deepEqual(r.added, [])
+    assert.deepEqual(r.removed, [])
+  } finally {
+    fs.unlinkSync(loop) // the links only, never what they point at
+    fs.unlinkSync(mount)
+  }
+  assert.ok(fs.existsSync(path.join(elsewhere, 'DCIM', '100APPLE', 'IMG_0001.jpg')))
 })

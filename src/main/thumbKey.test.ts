@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { thumbNames } from './cacheBudget.ts'
 
 /**
  * The thumbnail cache key, mirrored from scanner.ts.
@@ -48,4 +49,11 @@ test('the legacy key stays derivable, so an existing cache entry is findable', (
   // if the old key remains computable from the path alone.
   assert.equal(legacyKey(FILE), md5(FILE) + '.jpg')
   assert.notEqual(legacyKey(FILE), scopedKey(FILE, VOL_A))
+})
+
+test("the orphan sweep's key names are exactly scanner's keys", () => {
+  // libraryWorker decides which thumbnails are still wanted from thumbNames();
+  // a drift from thumbKeyFor() would delete live thumbnails.
+  assert.deepEqual(thumbNames(FILE, null), [legacyKey(FILE)])
+  assert.deepEqual(thumbNames(FILE, VOL_A), [legacyKey(FILE), scopedKey(FILE, VOL_A)])
 })

@@ -2,6 +2,8 @@ import { parentPort, workerData } from 'worker_threads'
 import Database from 'better-sqlite3'
 import { LibraryReads, type ReadDb } from './libraryReads'
 import type { LibraryQuery } from './libraryQuery'
+import { basename } from 'path'
+import { sweepOrphans, thumbNames } from './cacheBudget'
 
 /**
  * Library reads on their own connection, off the main thread.
@@ -31,10 +33,46 @@ const run = db.transaction((m: Request) => {
   return reads.clusters(m.query, m.zoom)
 })
 
-parentPort?.on('message', (m: Request) => {
+type SweepRequest = { id: number; kind: 'thumbOrphans'; thumbDir: string; before: number }
+
+/**
+ * Deletes thumbnails no catalogue row can use again: neither of a row's keys,
+ * nor the file its `thumb` column names. Rows are read in chunks with a yield
+ * between them, so library reads queued meanwhile are answered (one pass over
+ * 144k rows was a 1.9s block). Chunks are not one snapshot; the `before`
+ * cut-off is what protects a thumbnail written for a row added meanwhile.
+ */
+async function sweepThumbOrphans(m: SweepRequest): Promise<{ removed: number; freed: number }> {
+  type Row = {
+    id: number
+    path: string
+    volume_id: string | null
+    thumb: string | null
+    vault_path: string | null
+  }
+  const chunk = db.prepare(
+    'SELECT id, path, volume_id, thumb, vault_path FROM files WHERE id > ? ORDER BY id LIMIT 5000'
+  )
+  const live = new Set<string>()
+  for (let last = 0; ; ) {
+    const rows = chunk.all(last) as Row[]
+    if (rows.length === 0) break
+    for (const r of rows) {
+      for (const n of thumbNames(r.path, r.volume_id)) live.add(n)
+      if (r.vault_path) for (const n of thumbNames(r.vault_path, r.volume_id)) live.add(n)
+      if (r.thumb) live.add(basename(r.thumb).toLowerCase())
+    }
+    last = rows[rows.length - 1].id
+    await new Promise((resolve) => setImmediate(resolve))
+  }
+  return sweepOrphans(m.thumbDir, live, m.before)
+}
+
+parentPort?.on('message', async (m: Request | SweepRequest) => {
   const t = Date.now()
   try {
-    parentPort?.postMessage({ id: m.id, ok: true, result: run(m), ms: Date.now() - t })
+    const result = m.kind === 'thumbOrphans' ? await sweepThumbOrphans(m) : run(m)
+    parentPort?.postMessage({ id: m.id, ok: true, result, ms: Date.now() - t })
   } catch (err) {
     parentPort?.postMessage({ id: m.id, ok: false, error: String(err) })
   }

@@ -95,6 +95,14 @@ import { parseSafeMode, subsystemEnabled } from './runtimeMode'
 import { resolveDriveLetters } from './driveIdentity'
 import { ThumbStageStats } from './thumbStages'
 import { heicToJpeg, stopHeicWorkers } from './heicPool'
+import { pruneToBudget, touch, freeBytes } from './cacheBudget'
+
+// Caches on the system drive, least recently used first out. Full-size HEIC
+// conversions for the viewer are ~3MB each; transcodes ~25MB (measured: 650MB
+// for 25 videos before this limit existed).
+const HEIC_VIEW_CACHE_BYTES = 256e6
+const TRANSCODE_CACHE_BYTES = 1e9
+const TRANSCODE_MIN_FREE = 2e9
 import { readLibrary, stopLibraryWorker } from './libraryWorkerClient'
 
 /** Which extensions go down the ffmpeg path, so video decode time can be
@@ -138,6 +146,34 @@ function diag(subsystem: string, message: string): void {
 // The scanner module opens and migrates the database as it is imported, so
 // this is the cost of everything before Electron is ready, DB included.
 diag('startup', `main module loaded at ${uptimeMs()}ms`)
+
+/**
+ * One-time removal of thumbnails no row can use. When the app's own thumbs
+ * folder was indexed as photos, each thumbnail got a thumbnail of its own;
+ * purgeGeneratedAssetRows() removed those rows but (rightly) not files, so the
+ * thumbnails-of-thumbnails stayed (measured: 25,964 files, 418MB). Runs on the
+ * library worker, never this thread; skipped entirely if the worker is down.
+ * ponytail: once per marker version, not every launch - a relinked folder's
+ * thumbnails are keyed by the resolved path, which the sweep cannot see, so
+ * a recurring sweep would regenerate them forever. Bump the marker if a new
+ * orphan source is ever found.
+ */
+function sweepThumbOrphansOnce(): void {
+  const marker = join(app.getPath('userData'), 'thumbs-orphans-swept-1')
+  if (fs.existsSync(marker)) return
+  const thumbDir = join(app.getPath('userData'), 'thumbs')
+  readLibrary<{ removed: number; freed: number } | null>(
+    catalogueDbPath,
+    { kind: 'thumbOrphans', thumbDir, before: Date.now() },
+    () => null
+  )
+    .then((r) => {
+      if (!r) return
+      fs.writeFileSync(marker, JSON.stringify({ at: new Date().toISOString(), ...r }))
+      diag('thumbs', `orphan sweep removed ${r.removed} files, ${(r.freed / 1e6).toFixed(1)}MB`)
+    })
+    .catch((err) => console.error('[thumbs] orphan sweep failed', err))
+}
 
 // A second launch (double-click, dev-mode relaunch) must not run alongside the
 // first - two instances hold two DB connections, two watchers, two scanners,
@@ -791,6 +827,7 @@ app.whenReady().then(() => {
         diag('safe-mode', 'startup trash auto-purge suppressed (no destructive work in diagnostic mode)')
       } else {
         autoPurgeTrash().catch((err) => console.error('Error running auto-purge on startup:', err))
+        sweepThumbOrphansOnce()
       }
     }, 1500)
   })
@@ -849,7 +886,12 @@ app.whenReady().then(() => {
         // Decoded on the HEIC worker, never here - the viewer used to freeze the
         // whole app for ~7s per photo while heic-convert ran on this thread. The
         // user is waiting on this one, so it goes ahead of queued thumbnails.
-        if (cached || (await heicToJpeg(filePath, cachePath, { quality: 92, urgent: true }))) {
+        if (cached) {
+          touch(cachePath)
+          return net.fetch('file:///' + cachePath.replace(/\\/g, '/'))
+        }
+        if (await heicToJpeg(filePath, cachePath, { quality: 92, urgent: true })) {
+          pruneToBudget(heicCacheDir, HEIC_VIEW_CACHE_BYTES, cachePath)
           return net.fetch('file:///' + cachePath.replace(/\\/g, '/'))
         }
       } catch (err) {
@@ -2081,6 +2123,7 @@ app.whenReady().then(() => {
     const outPath = join(transcodeDir, `${hash}.mp4`)
 
     if (fs.existsSync(outPath) && fs.statSync(outPath).size > 0) {
+      touch(outPath)
       event.reply('transcode-done', { inputPath, outPath })
       return
     }
@@ -2090,6 +2133,14 @@ app.whenReady().then(() => {
       try {
         fs.unlinkSync(outPath)
       } catch {}
+    }
+
+    // A transcode can be hundreds of MB on the system drive. Refuse rather
+    // than fill it; the viewer shows its normal "cannot play" state.
+    if (freeBytes(transcodeDir) < TRANSCODE_MIN_FREE) {
+      console.warn('[transcode] refused: under', TRANSCODE_MIN_FREE / 1e9, 'GB free on the cache drive')
+      event.reply('transcode-error', { inputPath })
+      return
     }
 
     const ff = spawn(ffmpegExe, [
@@ -2149,6 +2200,7 @@ app.whenReady().then(() => {
 
     ff.on('close', (code: number) => {
       if (code === 0 && fs.existsSync(outPath) && fs.statSync(outPath).size > 0) {
+        pruneToBudget(transcodeDir, TRANSCODE_CACHE_BYTES, outPath)
         if (mainWindow) mainWindow.webContents.send('transcode-done', { inputPath, outPath })
       } else {
         console.error('[transcode] failed code=', code, 'stderr:', stderrBuf.slice(-500))
