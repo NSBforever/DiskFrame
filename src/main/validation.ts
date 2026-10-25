@@ -244,3 +244,11 @@ export const THUMB_FOLDER_MISSING = '!folder-missing'
 
 /** The file is there but cannot be read: a permission problem, not a miss. */
 export const THUMB_NO_ACCESS = '!no-access'
+
+/**
+ * The file is there and was read, but no picture could be made from it: an
+ * audio-only .mp4, a corrupt or unsupported video. These were reported as
+ * THUMB_UNAVAILABLE, and the tile said "not found" for a file that is not
+ * missing at all.
+ */
+export const THUMB_NO_PREVIEW = '!no-preview'

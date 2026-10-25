@@ -3336,7 +3336,7 @@ export default function App(): React.JSX.Element {
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <circle cx="12" cy="12" r="10" stroke="#e11d2e" strokeWidth="1.5" strokeDasharray="3 3" />
             <circle cx="12" cy="12" r="5" stroke="var(--app-fg, #f2f2f0)" strokeWidth="1.5" />
-            <path d="M12 2C12 7M12 17C12 22M2 12C7 12M17 12C22 12" stroke="#e11d2e" strokeWidth="1" strokeLinecap="round" />
+            <path d="M12 2L12 7M12 17L12 22M2 12L7 12M17 12L22 12" stroke="#e11d2e" strokeWidth="1" strokeLinecap="round" />
           </svg>
         </button>
       )}

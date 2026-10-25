@@ -194,6 +194,13 @@ export const catalogueDbPath = dbPath
 const db = new Database(dbPath)
 db.pragma('journal_mode = WAL')
 db.pragma('synchronous = NORMAL')
+// This connection never checkpoints. SQLite's automatic checkpoint runs inside
+// whichever commit pushes the WAL past 1000 pages, so every few hundred
+// thumbnail writes one of them stopped to copy the WAL into the database and
+// fsync it - measured on a copy of a catalogue: 3 writes in 3000 over 20ms,
+// worst 208ms, on the thread that routes input. The library worker does the
+// same PASSIVE checkpoint on a timer instead; see checkpointCatalogue below.
+db.pragma('wal_autocheckpoint = 0')
 
 const thumbDir = join(app.getPath('userData'), 'thumbs')
 
@@ -1247,6 +1254,21 @@ export function owedThumbnailPaths(volumeId: string, limit: number = THUMB_BACKF
 }
 
 /**
+ * Moves the WAL into the database file, on the library worker's thread.
+ *
+ * Stands in for the automatic checkpoint this process turned off (see the
+ * pragmas at the top). PASSIVE, as the automatic one is: it copies what it can
+ * without waiting for readers, and the next run picks up the rest. If the
+ * worker is unavailable, the main connection goes back to checkpointing itself.
+ */
+function checkpointCatalogue(): void {
+  void readLibrary(catalogueDbPath, { kind: 'checkpoint' }, () => {
+    db.pragma('wal_autocheckpoint = 1000')
+  })
+}
+setInterval(checkpointCatalogue, 30_000).unref()
+
+/**
  * Clears the historical 'NO_FILE' sentinel out of the thumbnail path column.
  *
  * It was written when a file could not be read, but it lives in a column that
@@ -1423,6 +1445,14 @@ function extractScaledFrame(
 ): Promise<boolean> {
   return new Promise((resolve) => {
     const args = [
+      // One decoder thread. Several of these run at once by design, and
+      // letting each fan out across every core is how thumbnailing starves the
+      // renderer. It has to come before -i: ffmpeg options apply to the next
+      // file named, so the -threads 1 below only ever limited the JPEG
+      // encoder, and every 4K HEVC decode still started a thread per core.
+      // Measured, six 4K HEVC clips at once: 3.5s -> 1.7s wall, same bytes out.
+      '-threads',
+      '1',
       // Before -i: ffmpeg seeks by keyframe without decoding the frames it
       // skips. After -i it would decode from zero every time.
       '-ss',
@@ -1439,9 +1469,7 @@ function extractScaledFrame(
       'mjpeg',
       '-q:v',
       '4',
-      // One thread. Several of these run at once by design, and letting each
-      // spawn fan out across every core is how thumbnailing starves the
-      // renderer instead of the other way round.
+      // And one encoder thread.
       '-threads',
       '1',
       '-y',
@@ -1530,10 +1558,16 @@ async function generateVideoThumb(
  *  something genuinely undecodable stops consuming generation slots. */
 export const MAX_THUMB_ATTEMPTS = 3
 
-/** The file as it is now, so a changed file earns fresh attempts. */
-function thumbFailSignature(filePath: string): string | null {
+/**
+ * The file as it is now, so a changed file earns fresh attempts.
+ *
+ * Asynchronous: this stats the ORIGINAL, on whatever drive it lives on, and it
+ * runs for every exhausted tile in every viewport request. A statSync here
+ * held the main thread for as long as a sleeping external disk took to spin up.
+ */
+async function thumbFailSignature(filePath: string): Promise<string | null> {
   try {
-    const st = fs.statSync(filePath)
+    const st = await fs.promises.stat(filePath)
     return `${st.size}:${Math.round(st.mtimeMs)}`
   } catch {
     return null
@@ -1556,11 +1590,9 @@ export function thumbCacheHit(fullPath: string, volumeId?: string | null): boole
   }
 }
 
-export function updateThumb(filePath: string, thumbPath: string): void {
+export function updateThumb(filePath: string, thumbPath: string, volumeId: string | null): void {
   // Success clears the failure history: whatever was wrong no longer is.
-  db
-    .prepare('UPDATE files SET thumb = ?, thumb_fail_count = 0, thumb_fail_sig = NULL WHERE path = ?')
-    .run(thumbPath, filePath)
+  db.prepare(UPDATE_THUMB_SQL).run(thumbPath, filePath, volumeId, volumeId)
 }
 
 /**
@@ -1572,43 +1604,47 @@ export function updateThumb(filePath: string, thumbPath: string): void {
  * sentinel into that path column, which the renderer then tried to load and
  * the backfill treated as done, so those rows could never recover.
  */
-export function recordThumbFailure(filePath: string): void {
-  const sig = thumbFailSignature(filePath)
-  db
-    .prepare(
-      `UPDATE files SET
-         thumb_fail_count = CASE WHEN thumb_fail_sig IS ? THEN IFNULL(thumb_fail_count, 0) + 1 ELSE 1 END,
-         thumb_fail_sig = ?
-       WHERE path = ?`
-    )
-    .run(sig, sig, filePath)
+export async function recordThumbFailure(filePath: string, volumeId: string | null): Promise<boolean> {
+  const sig = await thumbFailSignature(filePath)
+  db.prepare(RECORD_THUMB_FAILURE_SQL).run(sig, sig, filePath, volumeId, volumeId)
+  // Whether the file is there at all, which the caller reports differently.
+  return sig !== null
 }
 
 /**
  * Of these paths, the ones that have exhausted their attempts and have not
- * changed since. Callers skip them so the generation slots go to work that can
- * actually succeed.
+ * changed since, each with whether the file is there at all. Callers skip them
+ * so the generation slots go to work that can actually succeed.
  */
-export function exhaustedThumbPaths(paths: string[]): Set<string> {
-  const out = new Set<string>()
+export async function exhaustedThumbPaths(paths: string[]): Promise<Map<string, boolean>> {
+  const out = new Map<string, boolean>()
   if (paths.length === 0) return out
   // Chunked: SQLite has a bound-parameter limit and a viewport request can
   // carry hundreds of paths.
   const CHUNK = 400
+  const rows: { path: string; volume_id: string | null; thumb_fail_sig: string | null }[] = []
   for (let i = 0; i < paths.length; i += CHUNK) {
     const slice = paths.slice(i, i + CHUNK)
     const ph = slice.map(() => "?").join(",")
-    const rows = db
-      .prepare(
-        `SELECT path, thumb_fail_sig FROM files
-         WHERE path IN (${ph}) AND IFNULL(thumb_fail_count, 0) >= ?`
-      )
-      .all(...slice, MAX_THUMB_ATTEMPTS) as { path: string; thumb_fail_sig: string | null }[]
-    for (const r of rows) {
-      // Only still exhausted if the file is as it was when it failed.
-      if (r.thumb_fail_sig === thumbFailSignature(r.path)) out.add(r.path)
-    }
+    rows.push(
+      ...(db
+        .prepare(
+          `SELECT path, volume_id, thumb_fail_sig FROM files
+           WHERE path IN (${ph}) AND IFNULL(thumb_fail_count, 0) >= ?`
+        )
+        .all(...slice, MAX_THUMB_ATTEMPTS) as typeof rows)
+    )
   }
+  await Promise.all(
+    rows.map(async (r) => {
+      // Another volume's row at the same path says nothing about this file.
+      const mounted = getCachedVolumeId(r.path.slice(0, 2))
+      if (mounted && r.volume_id && r.volume_id !== mounted) return
+      // Only still exhausted if the file is as it was when it failed.
+      const sig = await thumbFailSignature(r.path)
+      if (r.thumb_fail_sig === sig) out.set(r.path, sig !== null)
+    })
+  )
   return out
 }
 

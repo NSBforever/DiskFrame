@@ -89,7 +89,8 @@ import {
   THUMB_UNAVAILABLE,
   THUMB_VOLUME_OFFLINE,
   THUMB_FOLDER_MISSING,
-  THUMB_NO_ACCESS
+  THUMB_NO_ACCESS,
+  THUMB_NO_PREVIEW
 } from './validation'
 import { parseSafeMode, subsystemEnabled } from './runtimeMode'
 import { resolveDriveLetters } from './driveIdentity'
@@ -446,7 +447,9 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
       webSecurity: false,
-      webviewTag: true
+      // Nothing renders a <webview>, and with web security off one would be a
+      // second, unguarded way to load content into this process.
+      webviewTag: false
     }
   })
   diag('startup', `window created at ${uptimeMs()}ms (fullscreen=${appFullscreen})`)
@@ -1695,6 +1698,8 @@ app.whenReady().then(() => {
     if (backgroundInFlight === 0) void refillBackground()
   }
 
+  let thumbRequestSeq = 0
+
   async function generateOne(p: string, background: boolean): Promise<void> {
     thumbInFlight.add(p)
     markOwnRead(p)
@@ -1709,6 +1714,15 @@ app.whenReady().then(() => {
     let failed = false
     const send = (thumbPath: string): void => {
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath })
+    }
+    const pathVolumeId = getCachedVolumeId(p.slice(0, 2))
+    /** Remembers the failure; resolves to whether the file is there at all. */
+    const recordFailure = (): Promise<boolean> => {
+      thumbFailed.add(p)
+      return recordThumbFailure(p, pathVolumeId).catch((err) => {
+        console.error('[thumb] could not record failure', p, err)
+        return false
+      })
     }
     try {
       // Shared with the media protocol and file actions, so a tile, a preview
@@ -1745,7 +1759,6 @@ app.whenReady().then(() => {
       // generation both come back from here; whether the file already existed
       // is what separates "warm display" from "cold generation" in a measurement.
       const tGen = Date.now()
-      const pathVolumeId = getCachedVolumeId(p.slice(0, 2))
       const existedBefore = thumbCacheHit(availability.resolved, pathVolumeId)
       const thumbPath = await generateThumbForFile(availability.resolved, extname(p).toLowerCase(), pathVolumeId)
       generateMs = Date.now() - tGen
@@ -1758,22 +1771,21 @@ app.whenReady().then(() => {
         send(thumbPath)
         deliverMs = Date.now() - tDeliver
         const tWrite = Date.now()
-        updateThumb(p, thumbPath)
+        updateThumb(p, thumbPath, pathVolumeId)
         writeMs = Date.now() - tWrite
         if (background) backgroundProgress++
       } else {
         failed = true
-        thumbFailed.add(p)
         // Also remembered on disk. In-memory only meant every launch retried
         // every undecodable file, and the generation slots went to work already
         // known to be hopeless while visible video waited behind it. Bounded -
         // see MAX_THUMB_ATTEMPTS.
-        recordThumbFailure(p)
-        send(THUMB_UNAVAILABLE)
+        // Availability checks folders, not files, so whether this one is
+        // missing or merely has no picture in it is only known from the stat.
+        send((await recordFailure()) ? THUMB_NO_PREVIEW : THUMB_UNAVAILABLE)
       }
     } catch (err) {
-      thumbFailed.add(p)
-      recordThumbFailure(p)
+      void recordFailure()
       console.error('[thumb:onDemand]', p, err)
       send(THUMB_UNAVAILABLE)
     } finally {
@@ -1790,8 +1802,12 @@ app.whenReady().then(() => {
    *
    * Accepts the older bare-array form too, so a renderer from a previous build
    * talking to this main process still gets its visible tiles.
+   *
+   * Requests can finish out of order now that the exhausted check awaits stats;
+   * only the newest viewport may set the queue.
    */
   ipcMain.handle('prioritize-thumbnails', async (_event, raw: unknown) => {
+    const seq = ++thumbRequestSeq
     lastViewportRequestAt = Date.now()
     if (thumbFailed.size > 5000) thumbFailed.clear()
     const payload = Array.isArray(raw)
@@ -1804,7 +1820,8 @@ app.whenReady().then(() => {
     // Files that have exhausted their attempts never enter the queue, so a
     // screen holding a few undecodable sidecars cannot push decodable video
     // behind them. One indexed lookup for the whole request, not per file.
-    const exhausted = exhaustedThumbPaths([...requested.visible, ...requested.prefetch])
+    const exhausted = await exhaustedThumbPaths([...requested.visible, ...requested.prefetch])
+    if (seq !== thumbRequestSeq) return []
     if (exhausted.size > 0) {
       diag('thumbs', `skipped ${exhausted.size} path(s) with exhausted thumbnail attempts`)
     }
@@ -1825,8 +1842,8 @@ app.whenReady().then(() => {
     }
     // The renderer still has to stop showing a spinner for them.
     if (mainWindow && !mainWindow.isDestroyed()) {
-      for (const p of exhausted) {
-        mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath: THUMB_UNAVAILABLE })
+      for (const [p, present] of exhausted) {
+        mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath: present ? THUMB_NO_PREVIEW : THUMB_UNAVAILABLE })
       }
     }
     void pumpThumbs()

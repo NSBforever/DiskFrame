@@ -17,7 +17,8 @@ import {
   THUMB_UNAVAILABLE,
   THUMB_VOLUME_OFFLINE,
   THUMB_FOLDER_MISSING,
-  THUMB_NO_ACCESS
+  THUMB_NO_ACCESS,
+  THUMB_NO_PREVIEW
 } from '../../../main/validation'
 import type { ScannedFile } from '../App'
 import { cellCountOf, cellSpan, mediaCountOf } from '../../../main/compactCells'
@@ -371,10 +372,14 @@ const GridTile = memo(function GridTile({
   const folderMissing = thumb === THUMB_FOLDER_MISSING
   // Present but unreadable: a permission problem, not a missing file.
   const noAccess = thumb === THUMB_NO_ACCESS
+  // Present and read, but nothing to show (an audio-only .mp4, say). Shown as
+  // unavailable, but it must not say "not found" about a file that is there.
+  const noPreview = thumb === THUMB_NO_PREVIEW
   const usableThumb =
     thumb &&
     thumb !== 'NO_FILE' &&
     !reportedUnavailable &&
+    !noPreview &&
     !volumeOffline &&
     !folderMissing &&
     !noAccess
@@ -386,7 +391,7 @@ const GridTile = memo(function GridTile({
   // full-size original off the drive (6.6MB on average on the reporter's drive,
   // up to 45MB) through the main process and decoded it at up to 24MP, for a
   // tile a few hundred pixels wide - on every screen scrolled past.
-  const thumbAttemptFailed = reportedUnavailable || thumbFailed
+  const thumbAttemptFailed = reportedUnavailable || noPreview || thumbFailed
   const src =
     usableThumb && !thumbFailed ? usableThumb : canUseOriginal && thumbAttemptFailed && !originalFailed ? file.path : null
   const showImg = !!src
@@ -398,7 +403,7 @@ const GridTile = memo(function GridTile({
     !volumeOffline &&
     !folderMissing &&
     !noAccess &&
-    (reportedUnavailable || thumbFailed || originalFailed)
+    (reportedUnavailable || noPreview || thumbFailed || originalFailed)
   const compact = size < 72
   const reducedMotion = useReducedMotionPref()
   const imgRef = useRef<HTMLImageElement>(null)
@@ -420,11 +425,18 @@ const GridTile = memo(function GridTile({
   // rather than keeping it in its resource cache for possible scroll-back -
   // measured: unmounting the DOM node alone did not bound renderer memory,
   // since that cache is keyed by "recently touched", not "currently mounted".
+  //
+  // The element is captured when the effect runs. Reading imgRef in the
+  // cleanup got the wrong one both ways: on unmount React has already
+  // detached the ref (so nothing was released), and when a thumbnail arrived
+  // the ref already pointed at the NEW <img> - which was blanked, failed, and
+  // only appeared after the 400ms retry.
   useEffect(() => {
+    const img = imgRef.current
     return () => {
-      if (imgRef.current) imgRef.current.src = ''
+      if (img) img.src = ''
     }
-  }, [src])
+  }, [src, attempt])
 
   // Video hover preview - thumbnail stays visible underneath until the video
   // actually has a decoded frame ready, then fades in on top of it.
@@ -513,7 +525,7 @@ const GridTile = memo(function GridTile({
           : noAccess
             ? file.path + '\n\nThis file exists but could not be read.'
             : unavailable
-              ? file.path + '\n\nNot found at this path.'
+              ? file.path + (noPreview ? '\n\nThis file is there, but no preview could be made from it.' : '\n\nNot found at this path.')
               : volumeOffline
                 ? file.path + '\n\nThe drive holding this file is not connected.'
                 : // A healthy tile used to carry no tooltip at all, which is
@@ -563,7 +575,7 @@ const GridTile = memo(function GridTile({
               volumeOffline
                 ? file.path + ' - drive not connected'
                 : unavailable
-                  ? file.path + ' - unavailable, the file could not be read'
+                  ? file.path + (noPreview ? ' - no preview could be made from this file' : ' - unavailable, the file could not be read')
                   : undefined
             }
           >
@@ -587,7 +599,9 @@ const GridTile = memo(function GridTile({
                     : noAccess
                       ? 'no access'
                       : unavailable
-                        ? 'not found'
+                        ? noPreview
+                          ? 'no preview'
+                          : 'not found'
                         : ext.replace('.', '')}
               </span>
             )}
@@ -889,7 +903,18 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
     const el = scrollerRef.current
     if (!el) return
     let raf = 0
+    let settleTimer: number | undefined
     const onScroll = (): void => {
+      // Tiles take no pointer input while the grid is moving. A wheel scroll
+      // leaves the cursor parked over the grid, so every tile sliding under it
+      // was hovered for a frame: a hit test, mouseenter/leave, a React update
+      // mounting the name/check/heart overlay and a hover transition promoting
+      // a compositor layer, then all of it undone. Measured on a fast scroll:
+      // input acknowledgement p50 222ms -> 96ms with tiles inert. Hover (and
+      // the video preview it arms) comes back once scrolling has stopped.
+      el.classList.add('is-scrolling')
+      window.clearTimeout(settleTimer)
+      settleTimer = window.setTimeout(() => el.classList.remove('is-scrolling'), 150)
       if (raf) return
       raf = requestAnimationFrame(() => {
         raf = 0
@@ -905,6 +930,7 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
     return () => {
       el.removeEventListener('scroll', onScroll)
       cancelAnimationFrame(raf)
+      window.clearTimeout(settleTimer)
     }
   }, [])
 

@@ -68,10 +68,24 @@ async function sweepThumbOrphans(m: SweepRequest): Promise<{ removed: number; fr
   return sweepOrphans(m.thumbDir, live, m.before)
 }
 
-parentPort?.on('message', async (m: Request | SweepRequest) => {
+type CheckpointRequest = { id: number; kind: 'checkpoint' }
+
+/**
+ * The catalogue's WAL checkpoint, which the main connection no longer runs
+ * (see scanner.ts). Its own connection: the read one is read-only, and a
+ * checkpoint writes the database file.
+ */
+let checkpointDb: Database.Database | null = null
+function checkpoint(): unknown {
+  checkpointDb ??= new Database(workerData.dbPath as string, { fileMustExist: true })
+  return checkpointDb.pragma('wal_checkpoint(PASSIVE)')
+}
+
+parentPort?.on('message', async (m: Request | SweepRequest | CheckpointRequest) => {
   const t = Date.now()
   try {
-    const result = m.kind === 'thumbOrphans' ? await sweepThumbOrphans(m) : run(m)
+    const result =
+      m.kind === 'thumbOrphans' ? await sweepThumbOrphans(m) : m.kind === 'checkpoint' ? checkpoint() : run(m)
     parentPort?.postMessage({ id: m.id, ok: true, result, ms: Date.now() - t })
   } catch (err) {
     parentPort?.postMessage({ id: m.id, ok: false, error: String(err) })

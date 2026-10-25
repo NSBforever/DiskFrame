@@ -21,6 +21,10 @@
   width: 100%;
   contain: strict;
 }
+/* Set by PhotoGrid for 150ms after each scroll event - see its scroll handler. */
+.pg-scroller.is-scrolling .pg-content {
+  pointer-events: none;
+}
 
 /* Section header */
 .pg-header {
