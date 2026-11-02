@@ -159,3 +159,68 @@ Ordered by dependency. Each step is a separate commit on `release/v1.0`.
 5. **Security and reliability:** M1, M2, M3 and M5.
 6. **Testing:** unit tests for the range parser and URL encoding; the harness kept in `scratch/` as an acceptance check; full `npm test`, typecheck and build.
 7. **Packaging:** L1 metadata, `build:win`, then check the installer's contents. M7 (Electron) waits for a decision.
+
+## Status after the V1.0 pass (2026-11-03)
+
+| Finding | Status | Evidence |
+|---|---|---|
+| C1 `media:` video | Fixed and verified | Harness: every clip loads; seeks land on target. In the app, safe mode: H.264 plays through Chromium, `readyState` 4, seek to 90% lands at 4.16/4.16 s. |
+| C2 mpv missing from builds | Fixed and verified | `verify-pack.cjs` rejects an output without the binaries (negative test) and passes on `win-unpacked`. |
+| H1 `#` / `%` names | Fixed and verified | `clip #2 100%.mp4` plays in mpv and through Chromium in the app. |
+| H2 HEIC throughput | Fixed and verified | 12 thumbnails: 12.4 s -> 6.4 s. Viewer decode behind them: 1.50 s -> 1.13 s. |
+| M1, M2, M3 window, link and IPC guards | Fixed | Typecheck, tests and a launch smoke test. The navigation guard was not exercised by a real drag-and-drop. |
+| M4 legacy rebuild columns | Fixed and verified | The rebuild SQL was run against a legacy schema: columns kept, rows and favourites intact. |
+| M5 crash recovery | Fixed | Not exercised by a forced renderer crash. |
+| M6 backup failure message | Fixed | Not exercised: it needs a full disk. |
+| M7 Electron advisories | Open, owner's decision | Needs Electron 42.11.16 or later, a three-major upgrade. |
+| L1 metadata | Fixed | `appId` kept, so an install upgrades in place. |
+| L2 lint debt | Open | Pre-existing; touched files add no new errors. |
+| L3 locale month names | Open | Recorded only. |
+
+Found during QA and fixed: the mpv re-parent PowerShell step failed on every video open and cost about 325 ms each time. The call is removed.
+
+### QA run
+- **Setup:** an isolated profile (`--user-data-dir` in the session scratchpad, with `USERPROFILE` pointed at a fixture). The owner's catalogue at `%APPDATA%\diskframe` was not opened.
+- **Fixture:**
+  - 3 iPhone HEICs;
+  - 4 JPEGs;
+  - 4K H.264 `.mp4`;
+  - 4K HEVC `.MOV`;
+  - an audio-only `.mp4`;
+  - a `#`/`%` name;
+  - a corrupt `.jpg`;
+  - a zero-byte `.mp4`;
+  - a folder with listing denied.
+- **Passed:**
+  - **Launch and empty state:** clean first launch; the drive list appears at 2.3 s.
+  - **Scan and thumbnails:** "not indexed" empty state, then Scan now; 11 files indexed and thumbnails generated (HEIC, video, JPEG).
+  - **Broken and blocked files:** the zero-byte and audio-only files show "No preview"; the locked folder is skipped and counted as unreadable, with no error dialog.
+  - **Viewer:**
+    - mpv plays H.264 and HEVC 4K with `d3d11va` hardware decoding;
+    - photos and full-size HEIC open through `media://local/`.
+  - **Safe mode:** with mpv off, Chromium plays H.264 and the stream server plays HEVC.
+  - **Restart:** the catalogue persists, and a removed file is dropped on reopen.
+  - **Live changes:** a file added to a watched media folder is indexed live.
+  - **Shutdown:** a clean quit leaves no electron, mpv or ffmpeg processes behind.
+- **Not tested here:** USB HDD (including asleep), SD card, large libraries (the perf fixture's media is gone), HDR rendering, and a real install or upgrade of the built installer.
+
+### Known limitations
+- **Small photos skipped:** photos under 50 KB are deliberately not indexed (`MIN_PHOTO_SIZE`), which also skips small genuine images.
+- **Root-folder files missed (open, confirmed in QA):**
+  - Reproduction: index C: (your user folder), then move a photo directly into the user folder itself.
+  - Result: neither the reopen reconcile nor a full Check for changes indexes it. The original row is dropped, so the photo disappears from DiskFrame until a full rescan.
+  - Not root-caused in this pass. Files in subfolders are unaffected.
+- **No embedded HEIC thumbnails:** libheif-js does not expose them (see H2), so every HEIC tile is a full decode, now two at a time.
+- **No HEVC in safe mode:** with GPU acceleration off, HEVC cannot play through Chromium. Safe mode uses the ffmpeg stream (re-encode), which does not seek.
+- **Electron 39 advisories:** see M7.
+
+### Build (2026-11-03)
+- **Command:** `npm run build:win`, exit 0. `verify-pack` reported all 5 runtime binaries present.
+- **Installer:** `dist\diskframe-1.0.0-setup.exe` (270,094,158 bytes; sha256 begins `7e8d7fb7bc4d9c11`).
+- **Portable:** `dist\diskframe 1.0.0.exe` (269,777,036 bytes).
+- **Packaged-app smoke test** (`dist\win-unpacked\diskframe.exe`, isolated profile):
+  - scan indexed 13 files;
+  - HEIC and video thumbnails generated with the packaged ffmpeg and libheif;
+  - the bundled mpv played a 4K H.264 file named `clip #2 100%.mp4` with `d3d11va`;
+  - a clean quit left no processes.
+- **Not done:** running the NSIS installer. Installing it would upgrade the owner's existing install at `%LOCALAPPDATA%\Programs\diskframe`, so that is left to the owner.
