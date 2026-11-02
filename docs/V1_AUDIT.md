@@ -206,10 +206,11 @@ Found during QA and fixed: the mpv re-parent PowerShell step failed on every vid
 
 ### Known limitations
 - **Small photos skipped:** photos under 50 KB are deliberately not indexed (`MIN_PHOTO_SIZE`), which also skips small genuine images.
-- **Root-folder files missed (open, confirmed in QA):**
-  - Reproduction: index C: (your user folder), then move a photo directly into the user folder itself.
-  - Result: neither the reopen reconcile nor a full Check for changes indexes it. The original row is dropped, so the photo disappears from DiskFrame until a full rescan.
-  - Not root-caused in this pass. Files in subfolders are unaffected.
+- **New files under system-folder names are not picked up after the first scan:**
+  - This was first recorded here as "files moved into the user-folder root are missed". It was a test-fixture artefact, not that bug.
+  - Root cause: the QA fixture lived under `AppData\Local\Temp`. Reconcile and the live watcher ignore any path with an `appdata`, `programdata`, `windows` or `program files` segment *anywhere* in it (`isWatchIgnoredPath`). The scan applies the same names only to folders *below* the one it scans.
+  - Evidence: `runReconcile` run directly on the fixture reports the moved file as added. With the worker's real exclusion rule it reports nothing. `isWatchIgnoredPath` is false for `C:\Users\<you>\IMG_1.HEIC` and true only for the fixture path.
+  - Real-world impact: none for drives and the normal `C:` user folder. It only affects a folder you index explicitly from inside one of those system folders. Such a folder is scanned once, but files added later are only found by a rescan. Left as is.
 - **No embedded HEIC thumbnails:** libheif-js does not expose them (see H2), so every HEIC tile is a full decode, now two at a time.
 - **No HEVC in safe mode:** with GPU acceleration off, HEVC cannot play through Chromium. Safe mode uses the ffmpeg stream (re-encode), which does not seek.
 - **Electron 39 advisories:** see M7.
