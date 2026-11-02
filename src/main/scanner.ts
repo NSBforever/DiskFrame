@@ -336,8 +336,14 @@ function backupBeforeMigration(tag: string): void {
       }
     }
   } catch (e) {
-    console.error('[migrate] backup FAILED, skipping migration:', e)
-    throw e
+    console.error('[migrate] backup FAILED, not migrating:', e)
+    // Refusing to migrate without a copy is deliberate; this only makes the
+    // startup error say why, instead of a bare SQLite stack.
+    throw new Error(
+      'DiskFrame needs to update its catalogue for this version, and backs it up first. ' +
+        `The backup could not be written to ${join(app.getPath('userData'), 'backups')} (${(e as Error).message}). ` +
+        'Usually this means the disk is full. Free some space and start DiskFrame again. Your catalogue has not been changed.'
+    )
   }
 }
 
@@ -479,7 +485,12 @@ if (/path\s+TEXT\s+UNIQUE\b/i.test(filesTableSql)) {
         hash TEXT,
         ino INTEGER,
         volume_id TEXT,
-        exif_checked INTEGER DEFAULT 0
+        exif_checked INTEGER DEFAULT 0,
+        -- Added above, before this rebuild runs: left out, they vanished for
+        -- the rest of the launch and every statement naming them threw. Not
+        -- copied - they are only failure counters, and start again at zero.
+        thumb_fail_count INTEGER DEFAULT 0,
+        thumb_fail_sig TEXT
       );
       INSERT INTO files_new
         (id, path, name, ext, size, date, year, month, lat, lng, drive, favourited, thumb, locked, hidden, vault_path, trashed_at, mtime, hash, ino, volume_id, exif_checked)

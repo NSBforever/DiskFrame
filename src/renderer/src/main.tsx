@@ -2,6 +2,7 @@ import './assets/main.css'
 
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import ErrorBoundary from './components/ErrorBoundary'
 
 // The app is loaded after the first frame, not before it. Evaluating the bundle
 // is one long task, and Chromium does not paint until it ends - so the static
@@ -13,7 +14,9 @@ requestAnimationFrame(() => {
     void import('./App').then(({ default: App }) => {
       createRoot(document.getElementById('root')!).render(
         <StrictMode>
-          <App />
+          <ErrorBoundary>
+            <App />
+          </ErrorBoundary>
         </StrictMode>
       )
     })

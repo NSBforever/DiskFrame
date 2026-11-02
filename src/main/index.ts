@@ -86,6 +86,7 @@ import { SyncService, catalogueRoot } from './syncService'
 import {
   normalizeDrive,
   isSafeLocalPath,
+  isIndexableMedia,
   safePathList,
   safePathRefs,
   THUMB_UNAVAILABLE,
@@ -460,9 +461,29 @@ function createWindow(): void {
   })
   mainWindow.on('move', () => refreshMpvBounds())
   mainWindow.on('resize', () => refreshMpvBounds())
+  // Links open in the browser; nothing else reaches the OS. With webSecurity
+  // off, passing any scheme through would let page content launch file:,
+  // ms-settings: or any registered protocol handler.
   mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    if (/^https?:\/\//i.test(details.url)) void shell.openExternal(details.url)
     return { action: 'deny' }
+  })
+  // The window only ever shows the app. A dropped file or a stray link would
+  // otherwise navigate this privileged window away from it.
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (url !== mainWindow.webContents.getURL()) {
+      event.preventDefault()
+      diag('security', `blocked navigation to ${url.slice(0, 120)}`)
+    }
+  })
+  // A renderer that dies leaves a blank window with no way back but a
+  // restart. Reload it instead - unless it keeps dying, which would loop.
+  let rendererDeaths = 0
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[renderer] process gone:', details.reason, details.exitCode)
+    diag('crash', `renderer gone: ${details.reason} (exit ${details.exitCode})`)
+    if (details.reason === 'clean-exit' || isQuitting || mainWindow.isDestroyed()) return
+    if (++rendererDeaths <= 3) mainWindow.webContents.reload()
   })
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
@@ -961,8 +982,9 @@ app.whenReady().then(() => {
   ipcMain.on('reveal-file', (_event, filePath: string) => {
     if (isSafeLocalPath(filePath)) shell.showItemInFolder(resolveStoredPath(filePath))
   })
+  // Media only: shell.openPath on an .exe or .bat would run it.
   ipcMain.on('open-file', (_event, filePath: string) => {
-    if (isSafeLocalPath(filePath)) shell.openPath(resolveStoredPath(filePath))
+    if (isSafeLocalPath(filePath) && isIndexableMedia(filePath)) void shell.openPath(resolveStoredPath(filePath))
   })
 
   // ── relinking a moved folder ──
