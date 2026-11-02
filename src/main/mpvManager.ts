@@ -3,7 +3,6 @@ import { join } from 'path'
 import * as fs from 'fs'
 import { spawn, ChildProcess } from 'child_process'
 import * as net from 'net'
-import { exec } from 'child_process'
 
 let mpvWindow: BrowserWindow | null = null
 let mpvProcess: ChildProcess | null = null
@@ -84,29 +83,6 @@ function getHwndString(win: BrowserWindow): string {
   } else {
     return buf.readInt32LE(0).toString()
   }
-}
-
-function setWindowZOrder(childHwnd: string, parentHwnd: string) {
-  const psCommand = `
-    $code = @'
-      [DllImport("user32.dll")]
-      public static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
-      [DllImport("user32.dll")]
-      public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint Flags);
-    '@
-    $Win32 = Add-Type -MemberDefinition $code -Name "Win32API" -Namespace Win32Functions -PassThru
-    $child = [IntPtr][long](${childHwnd})
-    $parent = [IntPtr][long](${parentHwnd})
-    $Win32::SetParent($child, $parent)
-    $Win32::SetWindowPos($child, [IntPtr]1, 0, 0, 0, 0, 0x0001 -bor 0x0002 -bor 0x0010)
-  `
-  return new Promise<void>((resolve) => {
-    exec(`powershell -NoProfile -Command "${psCommand.replace(/\n/g, ' ')}"`, (err) => {
-      if (err) console.error('[mpvManager] Z-order PowerShell failed:', err)
-      // Resolve either way: a failed re-parent must not hang video startup.
-      resolve()
-    })
-  })
 }
 
 /** Push a message to the control overlay, if it is alive. */
@@ -237,14 +213,13 @@ export async function initMpv(
   // for interactivity only while its control bar is actually showing.
   mpvWindow.setIgnoreMouseEvents(true, { forward: true })
 
+  // The video window is an owned child BrowserWindow (parent: hostWindow), and
+  // that is the arrangement that ships. A PowerShell SetParent/SetWindowPos
+  // pass used to run here, but its here-string was flattened onto one line
+  // and it failed with a parse error on every open since it was added - while
+  // each open still waited ~325ms for it. Removed rather than revived: making
+  // it work would change window behaviour that has never been exercised.
   const mpvHwnd = getHwndString(mpvWindow)
-  const mainHwnd = getHwndString(hostWindow)
-
-  // Start re-parenting now but do not block on it: the PowerShell round trip
-  // is the single slowest step in opening a video (Add-Type compiles on every
-  // call), and spawning mpv does not depend on it. Awaiting it before the
-  // spawn made startup the SUM of the two instead of the longer one.
-  const reparented = setWindowZOrder(mpvHwnd, mainHwnd)
 
   // Generate unique named pipe name
   const randId = Math.random().toString(36).substring(2, 9)
@@ -271,10 +246,8 @@ export async function initMpv(
   mpvProcess = spawn(mpvExe, args)
   console.log('[mpvManager] Spawning MPV process PID:', mpvProcess?.pid, 'Exe:', mpvExe, 'Args:', args.join(' '))
 
-  // Only now is it safe to show: the window is a child of the host, sunk to
-  // the bottom of the z-order, and restated at its final bounds. Showing
-  // earlier is what put the video in a corner for a few hundred milliseconds.
-  await reparented
+  // Restated at its final bounds before it is ever shown. Showing earlier is
+  // what put the video in a corner for a few hundred milliseconds.
   if (!mpvWindow || mpvWindow.isDestroyed()) return
   mpvWindow.setBounds({ x: childX, y: childY, width: childW, height: childH })
 
