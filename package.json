@@ -35,7 +35,7 @@
     "lucide-react": "^1.25.0",
     "react-globe.gl": "^2.38.0",
     "react-virtuoso": "^4.18.11",
-    "sharp": "^0.34.5",
+    "sharp": "^0.35.5",
     "three": "^0.185.1",
     "trash": "^10.1.1"
   },
