@@ -10,7 +10,13 @@ import { join } from 'path'
  * measured) and never shrinks, so a long-lived worker would hold that for the
  * rest of the session. A decode that hangs is cut off by terminating its worker.
  */
-const WORKERS = 1
+/** Thumbnail decodes at once. Two, matching the thumbnail pump's two generation
+ *  slots: with one worker both slots queued here and a screen of iPhone HEICs
+ *  decoded strictly one at a time (1.4-4.0s each, measured). */
+const THUMB_WORKERS = 2
+/** One more is held back for the viewer, so the photo the user just opened
+ *  never waits behind a thumbnail decode. */
+const WORKERS = THUMB_WORKERS + 1
 const IDLE_MS = 20_000
 const JOB_TIMEOUT_MS = 60_000
 
@@ -20,6 +26,7 @@ interface Job {
   output: string
   size?: number
   quality: number
+  urgent: boolean
   resolve: (ok: boolean) => void
 }
 
@@ -69,8 +76,10 @@ function pump(): void {
   if (idleTimer) clearTimeout(idleTimer)
   idleTimer = null
   while (queue.length > 0) {
+    // Urgent jobs sit at the front of the queue, so only the head can be one.
+    if (!queue[0].urgent && slots.filter((s) => s.job).length >= THUMB_WORKERS) break
     const slot = slots.find((s) => !s.job) ?? (slots.length < WORKERS ? spawn() : null)
-    if (!slot) return
+    if (!slot) break
     const job = queue.shift()!
     slot.job = job
     slot.timer = setTimeout(() => {
@@ -97,7 +106,7 @@ export function heicToJpeg(
   opts: { size?: number; quality: number; urgent?: boolean }
 ): Promise<boolean> {
   return new Promise((resolve) => {
-    const job: Job = { id: nextId++, input, output, size: opts.size, quality: opts.quality, resolve }
+    const job: Job = { id: nextId++, input, output, size: opts.size, quality: opts.quality, urgent: opts.urgent === true, resolve }
     if (opts.urgent) queue.unshift(job)
     else queue.push(job)
     pump()
