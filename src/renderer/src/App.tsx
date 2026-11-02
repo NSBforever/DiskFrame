@@ -171,6 +171,7 @@ import {
   Maximize2,
   Minimize2
 } from 'lucide-react'
+import { mediaUrl } from '../../main/mediaUrl'
 
 /**
  * Enters or leaves the app's own full screen (F11 does the same). Always
@@ -266,7 +267,7 @@ const ScanProgressDisplay: React.FC<{ scanning: boolean; scanCount: number }> = 
 })
 function thumbUrl(file: ScannedFile): string {
   const src = file.thumb || file.path
-  return 'media:///' + src.replace(/\\/g, '/')
+  return mediaUrl(src)
 }
 
 export const FileTile = React.memo(({
@@ -532,12 +533,12 @@ function MapView({ files, onOpen }: { files: ScannedFile[]; onOpen: (f: ScannedF
       const count = clusterFiles.length
       const hasThumb = !!first.thumb
       const iconHtml = hasThumb
-        ? `<div style="width:44px;height:44px;border-radius:4px;overflow:hidden;border:2px solid #e11d2e;box-shadow:none;position:relative;"><img src="media:///${first.thumb!.replace(/\\/g, '/')}" style="width:100%;height:100%;object-fit:cover;" />${count > 1 ? `<div style="position:absolute;bottom:2px;right:2px;background:rgba(225,29,46,0.9);color:#fff;font-size:9px;font-weight:700;border-radius:2px;padding:1px 3px;">${count}</div>` : ''}</div>`
+        ? `<div style="width:44px;height:44px;border-radius:4px;overflow:hidden;border:2px solid #e11d2e;box-shadow:none;position:relative;"><img src="${mediaUrl(first.thumb!)}" style="width:100%;height:100%;object-fit:cover;" />${count > 1 ? `<div style="position:absolute;bottom:2px;right:2px;background:rgba(225,29,46,0.9);color:#fff;font-size:9px;font-weight:700;border-radius:2px;padding:1px 3px;">${count}</div>` : ''}</div>`
         : `<div style="width:36px;height:36px;border-radius:4px;background:#e11d2e;border:2px solid #fff;box-shadow:none;display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:white;"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg></div>`
       const icon = L.divIcon({ html: iconHtml, className: '', iconSize: hasThumb ? [44, 44] : [36, 36], iconAnchor: hasThumb ? [22, 44] : [18, 36] })
       const marker = L.marker([first.lat, first.lng], { icon })
       const thumbsHtml = clusterFiles.slice(0, 4).map(f => {
-        const src = f.thumb ? `media:///${f.thumb.replace(/\\/g, '/')}` : ''
+        const src = f.thumb ? mediaUrl(f.thumb) : ''
         return src ? `<img src="${src}" style="width:56px;height:56px;object-fit:cover;border-radius:4px;" />` : `<div style="width:56px;height:56px;background:#222226;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:18px;">${videoExts.includes(f.ext) ? '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--app-fg-dim, #8a8a8f);"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="17" x2="7" y2="17"/><line x1="17" y1="17" x2="22" y2="17"/><line x1="17" y1="7" x2="22" y2="7"/></svg>' : '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--app-fg-dim, #8a8a8f);"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>'}</div>`
       }).join('')
       marker.bindPopup(`<div style="font-size:12px;min-width:140px;font-family:system-ui,sans-serif;"><div style="font-weight:600;margin-bottom:6px;color:var(--app-fg, #f2f2f0);">${count} file${count > 1 ? 's' : ''}</div><div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px;">${thumbsHtml}</div><div style="font-size:10px;color:var(--app-fg-dim, #8a8a8f);">${new Date(first.date).toLocaleDateString()}</div>${count > 4 ? `<div style="font-size:10px;color:#e11d2e;margin-top:2px;">+${count - 4} more</div>` : ''}</div>`, { maxWidth: 200 })

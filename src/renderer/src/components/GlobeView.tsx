@@ -8,6 +8,7 @@ import {
   Play,
   X
 } from 'lucide-react'
+import { mediaUrl } from '../../../main/mediaUrl'
 
 const videoExts = ['.mp4', '.mov', '.avi', '.mkv', '.wmv']
 
@@ -40,9 +41,10 @@ export default function GlobeView({ files, onOpen }: GlobeViewProps): React.JSX.
   const [hasError, setHasError] = useState(false)
   const [errorMsg, setErrorMsg] = useState('')
 
-  const textureUrl = useMemo(() => {
-    return import.meta.env.DEV ? earthDark : 'media:///' + earthDark
-  }, [])
+  // The bundled asset URL resolves against the app's own page in both dev and
+  // the packaged build. Wrapped in media: it was a relative path, which the
+  // handler refuses (403), so the packaged globe had no texture.
+  const textureUrl = earthDark
 
   // Earth texture loading validation logger
   useEffect(() => {
@@ -228,7 +230,7 @@ export default function GlobeView({ files, onOpen }: GlobeViewProps): React.JSX.
             const count = d.files.length
             const first = d.files[0]
             const hasThumb = !!first.thumb
-            const src = hasThumb ? 'media:///' + first.thumb.replace(/\\/g, '/') : null
+            const src = hasThumb ? mediaUrl(first.thumb) : null
 
             el.className = 'globe-marker'
             el.style.cursor = 'pointer'
@@ -351,7 +353,7 @@ export default function GlobeView({ files, onOpen }: GlobeViewProps): React.JSX.
             {selectedCluster.files.map((file: ScannedFile) => {
               const isVideo = videoExts.includes(file.ext.toLowerCase())
               const src = file.thumb || file.path
-              const imgUrl = 'media:///' + src.replace(/\\/g, '/')
+              const imgUrl = mediaUrl(src)
               return (
                 <div
                   key={file.path}

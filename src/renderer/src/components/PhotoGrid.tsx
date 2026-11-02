@@ -24,6 +24,7 @@ import type { ScannedFile } from '../App'
 import { cellCountOf, cellSpan, mediaCountOf } from '../../../main/compactCells'
 import type { LibraryGroup } from '../hooks/useLibrary'
 import { useReducedMotionPref } from '../hooks/useReducedMotionPref'
+import { mediaUrl } from '../../../main/mediaUrl'
 import './PhotoGrid.css'
 
 // ─── Geometry ────────────────────────────────────────────────────────────────
@@ -181,9 +182,6 @@ export interface GridActions {
   dragPaths: (file: ScannedFile) => string[]
 }
 
-function mediaUrl(p: string): string {
-  return 'media:///' + p.replace(/\\/g, '/')
-}
 
 /**
  * The folder a file sits in, which is what distinguishes two copies of the same

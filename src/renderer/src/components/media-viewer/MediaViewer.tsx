@@ -8,6 +8,7 @@ import { MetadataPanel } from './MetadataPanel'
 import { MapPin, ArrowLeft } from 'lucide-react'
 import { useReducedMotionPref } from '../../hooks/useReducedMotionPref'
 import { containFit, visibleFraction, provisionalBox, boxesDiffer, type Box } from '../../../../main/viewerGeometry'
+import { mediaUrl } from '../../../../main/mediaUrl'
 
 const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif']
 const videoExts = ['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.wmv', '.webm']
@@ -27,7 +28,7 @@ interface FlightState {
 }
 
 function toUrl(p: string): string {
-  return 'media:///' + p.replace(/\\/g, '/')
+  return mediaUrl(p)
 }
 function toBox(r: { left: number; top: number; width: number; height: number }): Box {
   return { x: r.left, y: r.top, w: r.width, h: r.height }
@@ -621,7 +622,7 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
 
   const handleDownload = () => {
     const a = document.createElement('a')
-    a.href = 'media:///' + file.path.replace(/\\/g, '/')
+    a.href = mediaUrl(file.path)
     a.download = file.name
     document.body.appendChild(a)
     a.click()

@@ -4,6 +4,7 @@ import 'leaflet/dist/leaflet.css'
 import './MapPage.css'
 import type { ScannedFile } from '../App'
 import { useReducedMotionPref } from '../hooks/useReducedMotionPref'
+import { mediaUrl } from '../../../main/mediaUrl'
 
 export interface MapBounds {
   minLat: number
@@ -47,9 +48,6 @@ const PLACE_PAGE = 60
 /** Below this the map stops splitting and opens the place instead. */
 const MAX_SPLIT_ZOOM = 17
 
-function mediaUrl(p: string): string {
-  return 'media:///' + p.replace(/\\/g, '/')
-}
 
 function escapeAttr(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;')

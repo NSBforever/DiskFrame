@@ -1,7 +1,9 @@
-import { app, shell, BrowserWindow, ipcMain, protocol, net, crashReporter, Menu, dialog, powerMonitor } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, protocol, crashReporter, Menu, dialog, powerMonitor } from 'electron'
 import { join, basename, extname } from 'path'
 import { spawn } from 'child_process'
 import * as fs from 'fs'
+import { fileResponse } from './mediaRange'
+import { mediaUrl, mediaUrlPath } from './mediaUrl'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { listMountedVolumes, probeDrives, invalidateMountedVolumes } from './driveEnum'
@@ -386,6 +388,9 @@ protocol.registerSchemesAsPrivileged([
   {
     scheme: 'media',
     privileges: {
+      // Standard, so Chromium's media loader will play <video> from it; see
+      // mediaUrl.ts for the URL form this implies.
+      standard: true,
       secure: true,
       supportFetchAPI: true,
       bypassCSP: true,
@@ -825,13 +830,8 @@ app.whenReady().then(() => {
     // that Blink stops serving its cached failure for the same URL; without
     // stripping it the '?retry=1' would be decoded as part of the path and
     // every retry would look for a file that does not exist.
-    const url = request.url.replace('media:///', '').split('?')[0]
-    let filePath: string
-    try {
-      filePath = decodeURIComponent(url).replace(/\//g, '\\')
-    } catch {
-      return new Response('Bad request', { status: 400 })
-    }
+    let filePath = mediaUrlPath(request.url)
+    if (filePath === null) return new Response('Bad request', { status: 400 })
 
     // The renderer runs with webSecurity disabled so it can paint local media,
     // which means any page content that reaches it could ask this handler for
@@ -877,18 +877,18 @@ app.whenReady().then(() => {
         // user is waiting on this one, so it goes ahead of queued thumbnails.
         if (cached) {
           touch(cachePath)
-          return net.fetch('file:///' + cachePath.replace(/\\/g, '/'))
+          return fileResponse(cachePath, null)
         }
         if (await heicToJpeg(filePath, cachePath, { quality: 92, urgent: true })) {
           pruneToBudget(heicCacheDir, HEIC_VIEW_CACHE_BYTES, cachePath)
-          return net.fetch('file:///' + cachePath.replace(/\\/g, '/'))
+          return fileResponse(cachePath, null)
         }
       } catch (err) {
         console.error('[media protocol HEIC convert error]:', filePath, err)
       }
     }
 
-    return net.fetch('file:///' + filePath.replace(/\\/g, '/'))
+    return fileResponse(filePath, request.headers.get('range'))
   })
 
   electronApp.setAppUserModelId('com.electron')
@@ -2109,7 +2109,7 @@ app.whenReady().then(() => {
     if (probe.isNative) {
       return {
         mode: 'native',
-        url: 'media:///' + targetPath.replace(/\\/g, '/'),
+        url: mediaUrl(targetPath),
         duration: probe.duration
       }
     }

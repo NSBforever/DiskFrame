@@ -11,6 +11,7 @@ import {
   SkipBack,
   SkipForward
 } from 'lucide-react'
+import { mediaUrl } from '../../../../main/mediaUrl'
 
 interface ScannedFile {
   path: string
@@ -56,7 +57,7 @@ const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif']
 const videoExts = ['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.wmv', '.webm']
 
 function toUrl(p: string): string {
-  return 'media:///' + p.replace(/\\/g, '/')
+  return mediaUrl(p)
 }
 
 /** Activity anywhere in the player - DOM or mpv's own forwarded mouse-pos. */

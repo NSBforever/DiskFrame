@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import exifr from 'exifr'
+import { mediaUrl } from '../../../../main/mediaUrl'
 
 interface ScannedFile {
   path: string
@@ -72,8 +73,8 @@ export const MetadataPanel: React.FC<MetadataPanelProps> = ({
         let exifData: any = {}
 
         if (isPhoto) {
-          const mediaUrl = 'media:///' + file.path.replace(/\\/g, '/')
-          const res = await fetch(mediaUrl)
+          const url = mediaUrl(file.path)
+          const res = await fetch(url)
           const buffer = await res.arrayBuffer()
           exifData = await exifr.parse(buffer, true) || {}
         }
