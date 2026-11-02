@@ -39,6 +39,10 @@
 
 The installer is not code-signed yet, so Windows SmartScreen may say "Windows protected your PC". Choose **More info**, then **Run anyway**. Your catalogue and thumbnails live in `%APPDATA%\diskframe`; upgrading or uninstalling leaves them in place.
 
+### macOS and Linux
+
+Not yet. DiskFrame 1.0 is Windows-only, and not just because of the installer: it finds drives through Windows volume IDs, works in drive letters, plays video by embedding mpv in a Windows window, and moves deleted files to the Windows Recycle Bin. A Mac version means porting those four parts. If you'd use one, [tell me in an issue](https://github.com/NSBforever/DiskFrame/issues/new?title=macOS%20version&body=I%27d%20use%20DiskFrame%20on%20a%20Mac%20for%3A%20) (or 👍 an existing one). That's how I'll know it's worth building.
+
 ## What it does
 
 | | |
