@@ -25,6 +25,12 @@
   <img src="assets/readme/stats.png" alt="0.46 s from drive to first thumbnail · 67 ms scroll response · 100% read in place · 0 codec packs needed" width="100%">
 </p>
 
+<p align="center">
+  <img src="assets/readme/screenshot-grid.jpg" alt="DiskFrame's gallery grid: a drive's photos and videos grouped by day, with a year scrubber on the right and the dock at the bottom" width="49%">
+  <img src="assets/readme/screenshot-viewer.jpg" alt="DiskFrame's viewer: a photo opened full size over the dimmed grid, with zoom, rotate, favourite and share controls" width="49%">
+</p>
+<p align="center"><sub>Shown with generated sample images.</sub></p>
+
 > **Every phone dump I copied to a drive turned into folders of `IMG_4821.HEIC` I couldn't browse.** Windows Photos wants to import everything first, and it can't show iPhone HEIC photos or HEVC videos without a codec pack. So I built DiskFrame: plug in a drive, open it, and scroll through it like a phone gallery.
 
 ## Download
