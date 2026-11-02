@@ -124,6 +124,7 @@ import AppearanceSetting from './components/AppearanceSetting'
 import AboutConnect from './components/AboutConnect'
 import GlassSelect from './components/GlassSelect'
 import DateScrubber from './components/DateScrubber'
+import TransferMenu, { type TransferDrive } from './components/TransferMenu'
 import { progressiveUpdateAction, groupSelectionRange } from '../../main/progressiveLibrary'
 import { useLibrary, type LibraryGroup, type LibraryQuery } from './hooks/useLibrary'
 
@@ -227,6 +228,8 @@ export interface ScannedFile {
 
 const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic']
 const videoExts = ['.mp4', '.mov', '.avi', '.mkv', '.wmv']
+/** What a Years card can show: photos and videos, never documents. */
+const PREVIEW_EXTS = new Set([...photoExts, ...videoExts])
 const docExts = ['.pdf', '.docx', '.doc', '.txt', '.xlsx', '.pptx', '.csv']
 
 const ScanProgressDisplay: React.FC<{ scanning: boolean; scanCount: number }> = React.memo(({ scanning, scanCount }) => {
@@ -485,10 +488,21 @@ export const FileTile = React.memo(({
 
 
 
-function YearThumb({ src }: { src: string }): React.JSX.Element {
+/** A generated thumbnail path, as opposed to nothing yet or a '!' status sentinel. */
+function isUsableThumb(thumb: string | null | undefined): thumb is string {
+  return !!thumb && thumb !== 'NO_FILE' && !thumb.startsWith('!')
+}
+
+/**
+ * One cell of a Years card. Thumbnails only - never the original, which for a
+ * HEIC or a video meant a full decode (or a broken image) per cell - and over
+ * file:, as the grid loads them, rather than through the main process.
+ */
+function YearThumb({ path }: { path: string }): React.JSX.Element {
   const [err, setErr] = useState(false)
-  if (err) return <Camera size={20} style={{ opacity: 0.15 }} />
-  return <img src={src} onError={() => setErr(true)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+  if (err) return <Camera size={18} aria-hidden="true" />
+  const src = 'file:///' + encodeURI(path.replace(/\\/g, '/')).replace(/#/g, '%23')
+  return <img src={src} alt="" loading="lazy" decoding="async" onError={() => setErr(true)} />
 }
 
 function MapView({ files, onOpen }: { files: ScannedFile[]; onOpen: (f: ScannedFile, list: ScannedFile[], e?: React.MouseEvent) => void }): React.JSX.Element {
@@ -810,12 +824,12 @@ const MainContentArea: React.FC<{
     }
     const yearNum = (y: string): number => (/^\d+$/.test(y) ? Number(y) : -Infinity)
     const years = Object.keys(yearTotals).sort((a, b) => yearNum(b) - yearNum(a))
-    const yearsPerRow = Math.max(1, Math.floor((windowWidth - 260) / (200 + 16)))
-    chunkArray(years, yearsPerRow).forEach((rowYears, rowIndex) => {
-      items.push({ type: 'years-row', key: `years-row-${rowIndex}`, rowYears, yearTotals, getRow, yearPreviews })
-    })
+    // One grid for every year: CSS decides the columns from the real width.
+    // Rows used to be chunked by a width estimate that did not match the
+    // grid's own column count, which left a blank band at the right.
+    items.push({ type: 'years-grid', key: 'years-grid', years, yearTotals, yearPreviews })
     return items
-  }, [libraryGroups, activeView, windowWidth, getRow, yearPreviews])
+  }, [libraryGroups, activeView, yearPreviews])
 
   // 4. Favourites Items construction
   const favouritesItems = useMemo(() => {
@@ -967,58 +981,50 @@ const MainContentArea: React.FC<{
       }
       case 'years-header': {
         return (
-          <div style={{ fontSize: '22px', fontWeight: 700, color: '#ffffff', letterSpacing: '-0.5px', marginBottom: '14px' }}>
-            All Years {yearFilter && <span onClick={() => setYearFilter(null)} style={{ fontSize: '13px', color: '#e11d2e', cursor: 'pointer', fontWeight: 400, marginLeft: '10px' }}>× {yearFilter}</span>}
+          <div className="years-head">
+            <h1 className="years-title">All years</h1>
+            {yearFilter && (
+              <button type="button" className="years-filter" onClick={() => setYearFilter(null)}>
+                <X size={12} aria-hidden="true" /> {yearFilter}
+              </button>
+            )}
           </div>
         )
       }
-      case 'years-row': {
-        // `yearMap` never existed on this item. When the years view moved to
-        // the paged summary the item started carrying `yearTotals` (a count
-        // and a starting offset per year) instead of arrays of file rows, but
-        // this branch still destructured the old name - so `yearMap[year]`
-        // threw on the first render and took the whole app down with it,
-        // which is the blank screen on opening Years.
-        const { rowYears, yearTotals, getRow: getYearRow, yearPreviews: previews } = item
+      case 'years-grid': {
+        const { years, yearTotals, yearPreviews: previews } = item as {
+          years: string[]
+          yearTotals: Record<string, { count: number; offset: number }>
+          yearPreviews: Record<string, ScannedFile[]>
+        }
         return (
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '16px', marginBottom: '16px' }}>
-            {rowYears.map((year: string) => {
-              const info = yearTotals?.[year] as { count: number; offset: number } | undefined
-              // Prefer the four rows fetched for this year. Resident grid
-              // rows are only a fallback for the moment before they land.
-              let previewFiles: ScannedFile[] = previews?.[year] ?? []
-              if (previewFiles.length === 0 && info && typeof getYearRow === 'function') {
-                const fallback: ScannedFile[] = []
-                for (let i = 0; i < 40 && fallback.length < 4; i++) {
-                  const f = getYearRow(info.offset + i) as ScannedFile | undefined
-                  if (f && f.thumb) fallback.push(f)
-                }
-                previewFiles = fallback
-              }
+          <div className="years-grid">
+            {years.map((year) => {
+              const count = yearTotals[year]?.count ?? 0
+              const previewFiles = previews?.[year] ?? []
               return (
-                <div key={year} onClick={() => handleYearClick(year)}
-                  style={{ background: 'var(--app-surface, var(--app-surface, #111114))', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.04)', overflow: 'hidden', cursor: 'pointer', transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.25s' }}
-                  onMouseEnter={e => { const el = e.currentTarget as HTMLDivElement; el.style.borderColor = '#e11d2e' }}
-                  onMouseLeave={e => { const el = e.currentTarget as HTMLDivElement; el.style.borderColor = 'rgba(255,255,255,0.04)' }}
-                  onMouseDown={e => { e.currentTarget.style.transform = 'scale(0.97)' }}
-                  onMouseUp={e => { e.currentTarget.style.transform = 'scale(1)' }}
+                <button
+                  type="button"
+                  key={year}
+                  className="year-card"
+                  onClick={() => handleYearClick(year)}
+                  aria-label={`${year}, ${count.toLocaleString()} files`}
                 >
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gridTemplateRows: '1fr 1fr', height: '140px' }}>
-                    {[0, 1, 2, 3].map(i => {
-                      const f = previewFiles[i]
-                      const src = f ? ('media:///' + (f.thumb || f.path).replace(/\\/g, '/')) : null
+                  <span className="year-previews">
+                    {[0, 1, 2, 3].map((i) => {
+                      const thumb = previewFiles[i]?.thumb
                       return (
-                        <div key={i} style={{ background: 'var(--app-surface-2, var(--app-surface-2, #161619))', overflow: 'hidden', borderRight: i % 2 === 0 ? '1px solid var(--app-bg, #0a0a0c)' : undefined, borderBottom: i < 2 ? '1px solid var(--app-bg, #0a0a0c)' : undefined, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                          {src ? <YearThumb src={src} /> : <Camera size={20} style={{ opacity: 0.15 }} />}
-                        </div>
+                        <span key={i} className="year-cell">
+                          {isUsableThumb(thumb) ? <YearThumb path={thumb} /> : <Camera size={18} aria-hidden="true" />}
+                        </span>
                       )
                     })}
-                  </div>
-                  <div style={{ padding: '12px 14px 14px' }}>
-                    <div style={{ fontSize: '18px', fontWeight: 700, color: 'var(--app-fg, #f2f2f0)', letterSpacing: '-0.3px' }}>{year}</div>
-                    <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{info?.count ?? 0} files</div>
-                  </div>
-                </div>
+                  </span>
+                  <span className="year-label">
+                    <span className="year-name">{year}</span>
+                    <span className="year-count">{count.toLocaleString()} files</span>
+                  </span>
+                </button>
               )
             })}
           </div>
@@ -1814,6 +1820,8 @@ export default function App(): React.JSX.Element {
   // current library instance without being torn down and rebuilt.
   const patchLibraryThumbRef = useRef<(path: string, thumb: string) => boolean>(() => false)
   const [thumbVersion, setThumbVersion] = useState(0)
+  // Each Years card's four preview rows; see the effect that fills it.
+  const [yearPreviews, setYearPreviews] = useState<Record<string, ScannedFile[]>>({})
 
   // Bumped on every call; a response whose id has since been superseded (the
   // user switched drives while it was in flight) is dropped rather than
@@ -1898,6 +1906,21 @@ export default function App(): React.JSX.Element {
       }
       if (unmatched.length > 0) thumbQueueRef.current.unshift(...unmatched.slice(0, 2000))
       if (patched) setThumbVersion(v => v + 1)
+
+      // Years cards hold their own rows, outside the page cache.
+      setYearPreviews((prev) => {
+        let changed = false
+        const next: Record<string, ScannedFile[]> = {}
+        for (const [year, rows] of Object.entries(prev)) {
+          next[year] = rows.map((f) => {
+            const t = batchMap.get(f.path)
+            if (!t || t === f.thumb) return f
+            changed = true
+            return { ...f, thumb: t }
+          })
+        }
+        return changed ? next : prev
+      })
 
       setTrashedFiles(prev => {
         let hasChanges = false
@@ -2305,32 +2328,47 @@ export default function App(): React.JSX.Element {
   // fell back to grey camera placeholders and nothing ever filled them in -
   // a screen of empty blocks that looked like a broken gallery.
   //
-  // This reads a dozen rows per year directly, outside the page cache, so the
-  // whole view costs about twenty small LIMIT queries however large the
+  // This reads a few dozen rows per year directly, outside the page cache, so
+  // the whole view costs about twenty small LIMIT queries however large the
   // library is. The grid's bounded cache is untouched.
-  const [yearPreviews, setYearPreviews] = useState<Record<string, ScannedFile[]>>({})
+  //
+  // It used to keep only rows that already had a thumbnail among the first 12,
+  // and never asked for one: a year whose first files had none stayed on
+  // camera placeholders for good, and a '!' status sentinel counted as a
+  // thumbnail. It now picks four photos or videos, and the ones still owed a
+  // thumbnail are requested; they fill in as they arrive (see the drain above).
   useEffect(() => {
     if (activeView !== 'Years' || !libraryQuery || library.groups.length === 0) return
-    const totals: Record<string, { offset: number }> = {}
+    const firstOffset: Record<string, number> = {}
     for (const g of library.groups) {
       const y = (g.maxDate || g.key).slice(0, 4) || 'Unknown'
-      if (!totals[y]) totals[y] = { offset: g.offset }
+      if (firstOffset[y] === undefined) firstOffset[y] = g.offset
     }
     let cancelled = false
     const q = libraryQuery
     void (async () => {
       const next: Record<string, ScannedFile[]> = {}
-      for (const [year, info] of Object.entries(totals)) {
+      const owed: string[] = []
+      for (const [year, offset] of Object.entries(firstOffset)) {
         if (cancelled) return
         try {
-          const res = await window.api.libraryPage(q, info.offset, 12)
-          const rows = (res.rows as ScannedFile[]).filter((r) => r.thumb).slice(0, 4)
-          if (rows.length) next[year] = rows
+          const res = await window.api.libraryPage(q, offset, 40)
+          const media = (res.rows as ScannedFile[]).filter(
+            (r) =>
+              PREVIEW_EXTS.has((r.ext || '').toLowerCase()) &&
+              // The window can run into the next year when this one is short.
+              (!/^\d{4}$/.test(year) || (r.date || '').startsWith(year))
+          )
+          const pick = [...media.filter((r) => isUsableThumb(r.thumb)), ...media.filter((r) => !r.thumb)].slice(0, 4)
+          if (pick.length) next[year] = pick
+          for (const r of pick) if (!r.thumb) owed.push(r.path)
         } catch {
           // Leave that one card on its placeholder rather than failing the view.
         }
       }
-      if (!cancelled) setYearPreviews(next)
+      if (cancelled) return
+      setYearPreviews(next)
+      if (owed.length) window.api.prioritizeThumbnails({ visible: owed, prefetch: [] }).catch(() => {})
     })()
     return () => {
       cancelled = true
@@ -2643,6 +2681,40 @@ export default function App(): React.JSX.Element {
       setShowBatchDeleteConfirm(true)
     }
   }, [selected])
+
+  // Copy or move the selection into a folder the user picked. The progress
+  // overlay follows the main process's per-file events; the toast says what
+  // landed, and the first reason anything did not.
+  const handleTransfer = useCallback(
+    async (mode: 'copy' | 'move', destDir: string): Promise<void> => {
+      const paths = Array.from(selected)
+      if (paths.length === 0) return
+      const drive = destDir.slice(0, 2).toUpperCase()
+      setIoProgress({ completed: 0, total: paths.length, currentFile: 'Starting…' })
+      try {
+        const res =
+          mode === 'copy'
+            ? await window.api.fsCopyPaste(paths, drive, destDir)
+            : await window.api.fsCutPaste(paths, drive, destDir)
+        const ok = res?.success?.length ?? 0
+        const failed = res?.failed ?? []
+        const verb = mode === 'copy' ? 'Copied' : 'Moved'
+        setToastMsg(
+          `${verb} ${ok} of ${paths.length} to ${destDir}` +
+            (failed.length ? ` · ${failed.length} not ${mode === 'copy' ? 'copied' : 'moved'}: ${failed[0].error}` : '')
+        )
+        setSelected(new Set())
+        // Moved files have left this drive's gallery.
+        if (mode === 'move' && ok > 0) void libraryRef.current?.refresh()
+      } catch (err) {
+        console.error('[transfer]', err)
+        setToastMsg('Transfer failed')
+      } finally {
+        setIoProgress(null)
+      }
+    },
+    [selected]
+  )
 
   const handleTileContextMenu = useCallback((file: ScannedFile, currentList: ScannedFile[], e: React.MouseEvent) => {
     e.preventDefault()
@@ -3032,11 +3104,29 @@ export default function App(): React.JSX.Element {
             </div>
 
             {selected.size > 0 && activeNav !== 'trash' && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '10px', color: 'var(--app-fg, #f2f2f0)', background: 'rgba(225,29,46,0.08)', border: '1px solid rgba(225,29,46,0.35)', borderRadius: '2px', padding: '3px 10px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-                <span>{selected.size} selected</span>
-                <button onClick={handleBatchFavorite} style={{ background: 'transparent', border: 'none', color: '#e11d2e', cursor: 'pointer', fontWeight: 700, textTransform: 'uppercase' }}>❤️ Fav</button>
-                <button onClick={handleBatchDelete} style={{ background: 'transparent', border: 'none', color: '#e11d2e', cursor: 'pointer', fontWeight: 700, textTransform: 'uppercase' }}>🗑️ Delete</button>
-                <span onClick={() => setSelected(new Set())} style={{ cursor: 'pointer', color: 'var(--app-fg-dim, #8a8a8f)', marginLeft: '2px' }}>✕</span>
+              <div className="sel-bar" role="toolbar" aria-label="Selection">
+                <span className="sel-count">{selected.size.toLocaleString()} selected</span>
+                <button type="button" className="sel-action" onClick={handleBatchFavorite}>
+                  <Heart size={14} aria-hidden="true" /> Favourite
+                </button>
+                <TransferMenu
+                  count={selected.size}
+                  drives={drives as TransferDrive[]}
+                  currentDrive={selectedDrive}
+                  onTransfer={handleTransfer}
+                />
+                <button type="button" className="sel-action" onClick={handleBatchDelete}>
+                  <Trash2 size={14} aria-hidden="true" /> Delete
+                </button>
+                <button
+                  type="button"
+                  className="sel-clear"
+                  aria-label="Clear selection"
+                  title="Clear selection"
+                  onClick={() => setSelected(new Set())}
+                >
+                  <X size={14} aria-hidden="true" />
+                </button>
               </div>
             )}
 
@@ -3745,7 +3835,8 @@ export default function App(): React.JSX.Element {
               <button
                 onClick={async () => {
                   try {
-                    await window.electron.ipcRenderer.invoke('delete-files-permanently', [{ path: fileToDeletePermanently.path, volumeId: fileToDeletePermanently.volume_id }])
+                    const res = await window.electron.ipcRenderer.invoke('delete-files-permanently', [{ path: fileToDeletePermanently.path, volumeId: fileToDeletePermanently.volume_id }])
+                    if (res?.failed?.length) setToastMsg(`Could not delete "${fileToDeletePermanently.name}" - it is still in Trash (drive offline, or it has no Recycle Bin)`)
                     refreshTrash()
                   } catch (err) {
                     console.error(err)
@@ -3821,7 +3912,8 @@ export default function App(): React.JSX.Element {
                 onClick={async () => {
                   try {
                     if (currentDriveRef.current) {
-                      await window.electron.ipcRenderer.invoke('empty-trash', currentDriveRef.current)
+                      const res = await window.electron.ipcRenderer.invoke('empty-trash', currentDriveRef.current)
+                      if (res?.left) setToastMsg(`${res.left} item${res.left > 1 ? 's' : ''} could not be sent to the Recycle Bin and ${res.left > 1 ? 'are' : 'is'} still in Trash`)
                     }
                     refreshTrash()
                   } catch (err) {

@@ -169,8 +169,8 @@ declare global {
         callback: (data: { inputPath: string; secs: number; totalSecs?: number }) => void
       ) => () => void
       onTranscodeError: (callback: (data: { inputPath: string }) => void) => () => void
-      fsCopyPaste: (filePaths: string[], destDrive: string) => Promise<{ success: string[]; failed: { path: string; error: string }[] }>
-      fsCutPaste: (filePaths: string[], destDrive: string) => Promise<{ success: string[]; failed: { path: string; error: string }[] }>
+      fsCopyPaste: (filePaths: string[], destDrive: string, destDir?: string) => Promise<{ success: string[]; failed: { path: string; error: string }[] }>
+      fsCutPaste: (filePaths: string[], destDrive: string, destDir?: string) => Promise<{ success: string[]; failed: { path: string; error: string }[] }>
       onFsIoProgress: (
         callback: (data: { completed: number; total: number; currentFile: string }) => void
       ) => () => void
@@ -208,7 +208,7 @@ declare global {
         /** A wider band above and below, not mounted. Generated after `visible`. */
         prefetch: string[]
       }) => Promise<string[]>
-      pickFolder: () => Promise<string | null>
+      pickFolder: (opts?: { title?: string; startIn?: string }) => Promise<string | null>
       indexFolder: (
         folder: string,
         maxFiles?: number

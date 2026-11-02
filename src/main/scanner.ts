@@ -29,6 +29,9 @@ import { listMountedVolumes } from './driveEnum'
 import { heicToJpeg } from './heicPool'
 import { readLibrary } from './libraryWorkerClient'
 import { LibraryReads, EPOCH_SCHEMA_SQL, type MapCluster } from './libraryReads'
+import { recycle, driveTypes } from './recycleBin'
+import { UPDATE_THUMB_SQL, RECORD_THUMB_FAILURE_SQL } from './thumbRecords'
+import { moveVolumeToLetter, type LetterDb } from './driveLetter'
 
 function resolveFfmpeg(): string {
   try {
@@ -893,20 +896,15 @@ export function restoreFiles(refs: PathRef[]): { success: string[]; failed: stri
   return { success, failed }
 }
 
+/**
+ * Recycle Bin or nothing - see recycleBin.ts. This used to swallow a failed
+ * recycle and unlink the file instead, so the 30-day auto-purge could destroy
+ * media on an external drive at startup with no prompt. Now it throws and the
+ * file stays put; every caller skips its row DELETE on a throw, so the row
+ * stays in DiskFrame's Trash to be retried or reported.
+ */
 async function safeDelete(filePath: string): Promise<void> {
-  try {
-    if (fs.existsSync(filePath)) {
-      const trash = (await import('trash')).default
-      await trash(filePath)
-    }
-  } catch (err) {
-    console.error(`[safeDelete] Failed to send to Recycle Bin: ${filePath}`, err)
-    try {
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath)
-      }
-    } catch {}
-  }
+  await recycle(filePath, await driveTypes(), (await import('trash')).default)
 }
 
 export async function deleteFilesPermanently(refs: PathRef[]): Promise<{ success: string[]; failed: string[] }> {
@@ -987,8 +985,8 @@ export async function deleteFilesPermanently(refs: PathRef[]): Promise<{ success
  * must never touch another drive's trashed files. `volumeId` null (identity
  * unresolved) empties nothing rather than guessing.
  */
-export async function emptyTrash(volumeId: string | null): Promise<{ success: boolean; count: number }> {
-  if (!volumeId) return { success: true, count: 0 }
+export async function emptyTrash(volumeId: string | null): Promise<{ success: boolean; count: number; left: number }> {
+  if (!volumeId) return { success: true, count: 0, left: 0 }
   const toPurge = db
     .prepare('SELECT * FROM files INDEXED BY idx_files_trashed WHERE trashed_at IS NOT NULL AND volume_id = ?')
     .all(volumeId) as ScannedFile[]
@@ -1017,10 +1015,12 @@ export async function emptyTrash(volumeId: string | null): Promise<{ success: bo
       db.prepare('DELETE FROM files WHERE path = ? AND volume_id IS ?').run(file.path, file.volume_id ?? null)
       count++
     } catch (err) {
-      console.error(`[emptyTrash] Failed to permanently delete ${file.path}:`, err)
+      console.error(`[emptyTrash] ${file.path} left in Trash:`, err)
     }
   }
-  return { success: true, count }
+  // `left` is what the renderer reports back: files still in Trash because they
+  // could not be verified or could not go to the Recycle Bin.
+  return { success: true, count, left: toPurge.length - count }
 }
 
 export async function autoPurgeTrash(): Promise<void> {
@@ -1048,10 +1048,12 @@ export async function autoPurgeTrash(): Promise<void> {
         db.prepare('DELETE FROM files WHERE path = ? AND volume_id IS ?').run(file.path, file.volume_id ?? null)
         count++
       } catch (err) {
-        console.error(`[auto-purge] Failed to permanently delete ${file.path}:`, err)
+        // Most often a drive with no Recycle Bin. The row stays trashed and is
+        // retried next startup; the file is never removed any other way.
+        console.error(`[auto-purge] ${file.path} left in Trash, retried next startup:`, err)
       }
     }
-    console.log(`[auto-purge] Purged ${count} files successfully.`)
+    console.log(`[auto-purge] Recycled ${count} files, ${toPurge.length - count} left in Trash.`)
   } else {
     console.log('[auto-purge] No files older than 30 days to purge.')
   }
@@ -1697,7 +1699,10 @@ export async function enrichExifBackfill(
   shouldStop?: () => boolean,
   /** Resolves when nothing the user is looking at needs the drive. Metadata
    *  is never more urgent than a visible thumbnail. */
-  whenIdle?: () => Promise<void>
+  whenIdle?: () => Promise<void>,
+  /** Only this volume's files - the drive actually connected. Unscoped, the
+   *  pass also walked every unplugged drive's rows. */
+  volumeId?: string
 ): Promise<number> {
   if (exifBackfillRunning) return 0
   exifBackfillRunning = true
@@ -1708,9 +1713,10 @@ export async function enrichExifBackfill(
       .prepare(
         `SELECT path, ext, volume_id FROM files
          WHERE exif_checked = 0 AND trashed_at IS NULL AND ext IN (${placeholders})
+           ${volumeId ? 'AND volume_id = ?' : ''}
          ORDER BY date DESC`
       )
-      .all(...extList) as { path: string; ext: string; volume_id: string | null }[]
+      .all(...extList, ...(volumeId ? [volumeId] : [])) as { path: string; ext: string; volume_id: string | null }[]
 
     const total = pending.length
     if (total === 0) return 0
@@ -1730,6 +1736,14 @@ export async function enrichExifBackfill(
         if (shouldStop?.()) return
         const { path: fullPath, ext, volume_id: rowVolumeId } = pending[cursor++]
         const lowerExt = ext.toLowerCase()
+        // A file that cannot be reached right now (drive unplugged, path on a
+        // letter the volume no longer has) is left unchecked for a later pass.
+        // It used to be marked checked like a file with no metadata, so a
+        // drive that was offline during one pass lost its dates and GPS for good.
+        if (!(await fs.promises.access(fullPath).then(() => true, () => false))) {
+          checked++
+          continue
+        }
         try {
           let date: Date | null = null
           let lat: number | null = null
@@ -2946,62 +2960,12 @@ export function reconcileDriveLetterForVolume(volumeId: string, newLetter: strin
   const key = volumeId + '|' + letter
   if (lettersReconciled.has(key)) return
   lettersReconciled.add(key)
-  const oldLetters = (
-    db
-      .prepare('SELECT DISTINCT drive FROM files WHERE volume_id = ? AND drive IS NOT NULL AND drive != ?')
-      .all(volumeId, letter) as { drive: string }[]
-  )
-    .map((r) => r.drive)
-    .filter((d) => /^[A-Z]:$/.test(d))
-
-  if (oldLetters.length === 0) {
-    saveVolumeDrive(volumeId, letter)
-    return
-  }
-
-  // Scoped by volume_id as well as path: two different volumes can now share
-  // a literal path (see the files-table migration note), and a bare path
-  // WHERE would move both of them, not only the one actually being
-  // reconciled here.
-  const updateFile = db.prepare('UPDATE files SET drive = ?, path = ? WHERE path = ? AND volume_id = ?')
-  // No OR REPLACE: a destination collision here must fail loudly (caught
-  // below) rather than silently deleting whatever other file was favourited
-  // at that path.
-  const updateFav = db.prepare('UPDATE favourite_paths SET path = ? WHERE path = ? AND volume_id IS ?')
-  let moved = 0
-  let collided = 0
-  db.transaction(() => {
-    for (const old of oldLetters) {
-      const rows = db
-        .prepare('SELECT path FROM files WHERE volume_id = ? AND drive = ?')
-        .all(volumeId, old) as { path: string }[]
-      for (const { path } of rows) {
-        const newPath = letter + path.slice(2)
-        // Each row is its own failure unit - SQLite's default ABORT
-        // resolution undoes only the statement that violated the UNIQUE
-        // constraint on `path`, not the whole transaction, so one colliding
-        // file (two volumes sharing a folder layout, e.g. DCIM\...\IMG_0001.JPG)
-        // does not strand every other row on its old, now-wrong letter.
-        try {
-          updateFile.run(letter, newPath, path, volumeId)
-        } catch (err) {
-          collided++
-          console.error(`[reconcile] ${path} -> ${newPath} collided, left on ${old}:`, err)
-          continue
-        }
-        try {
-          updateFav.run(newPath, path, volumeId)
-        } catch (err) {
-          console.error(`[reconcile] favourite at ${path} could not follow to ${newPath}:`, err)
-        }
-        moved++
-      }
-    }
-    saveVolumeDrive(volumeId, letter)
-  })()
+  const result = db.transaction(() => moveVolumeToLetter(db as unknown as LetterDb, volumeId, letter))()
+  saveVolumeDrive(volumeId, letter)
+  if (result.moved === 0 && result.left === 0) return
   clearPathStateCache()
   console.log(
-    `[reconcile] ${volumeId} moved from ${oldLetters.join(', ')} to ${letter}: ${moved} rows moved, ${collided} left in place`
+    `[reconcile] ${volumeId} moved from ${result.oldLetters.join(', ')} to ${letter}: ${result.moved} rows moved, ${result.left} left in place`
   )
 }
 

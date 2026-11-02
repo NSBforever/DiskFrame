@@ -1,5 +1,5 @@
 import { app, shell, BrowserWindow, ipcMain, protocol, net, crashReporter, Menu, dialog, powerMonitor } from 'electron'
-import { join, basename, extname, dirname } from 'path'
+import { join, basename, extname } from 'path'
 import { spawn } from 'child_process'
 import * as fs from 'fs'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -380,20 +380,6 @@ function sendFilesUpdated(drive: string, reason: 'initial' | 'background' | 'ind
     drive,
     reason
   })
-}
-
-function getUniqueDestPath(destPath: string): string {
-  if (!fs.existsSync(destPath)) return destPath
-  const dir = dirname(destPath)
-  const ext = extname(destPath)
-  const base = basename(destPath, ext)
-  let counter = 1
-  let candidate = join(dir, `${base} (${counter})${ext}`)
-  while (fs.existsSync(candidate)) {
-    counter++
-    candidate = join(dir, `${base} (${counter})${ext}`)
-  }
-  return candidate
 }
 
 protocol.registerSchemesAsPrivileged([
@@ -1213,6 +1199,19 @@ app.whenReady().then(() => {
           void generateThumbsForDrive(drive)
         }, 3000)
       }
+      // Capture dates and GPS for this volume's files that were never read.
+      // This only ran after a full scan, so a drive that was indexed once and
+      // then only ever opened - or whose rows were just repaired onto its new
+      // letter - never got its locations, and the map stayed empty for it.
+      // Yields to anything on screen, and stops if the user opens another drive.
+      if (liveVolumeId && indexed > 0 && subsystemEnabled(safeMode, 'exif')) {
+        setTimeout(() => {
+          if (isQuitting || currentOpenDrive !== drive) return
+          enrichExifBackfill(() => isQuitting || currentOpenDrive !== drive, whenViewportIdle, liveVolumeId).catch((err) =>
+            console.error('[exif backfill]', err)
+          )
+        }, 5000)
+      }
       // Changes made outside DiskFrame - in Explorer, by another app, or while
       // DiskFrame was closed. Only the open drive is watched and reconciled;
       // a run for a drive just left is cancelled. Delayed so the first page
@@ -1853,11 +1852,15 @@ app.whenReady().then(() => {
   // Pick one folder and index just that folder, through the normal library
   // path. Bounded by file count and depth; no drive-wide traversal, and no
   // thumbnail work - those are produced on demand for what is on screen.
-  ipcMain.handle('pick-folder', async () => {
+  // Also the destination picker for Transfer, which opens it on the chosen
+  // drive and lets the user make a new folder there.
+  ipcMain.handle('pick-folder', async (_event, opts: unknown) => {
     if (!mainWindow || mainWindow.isDestroyed()) return null
+    const { title, startIn } = (opts ?? {}) as { title?: unknown; startIn?: unknown }
     const res = await dialog.showOpenDialog(mainWindow, {
-      title: 'Choose a folder to index',
-      properties: ['openDirectory']
+      title: typeof title === 'string' ? title.slice(0, 120) : 'Choose a folder to index',
+      defaultPath: typeof startIn === 'string' && isSafeLocalPath(startIn) ? startIn : undefined,
+      properties: ['openDirectory', 'createDirectory']
     })
     if (res.canceled || !res.filePaths.length) return null
     return res.filePaths[0]
@@ -1983,35 +1986,89 @@ app.whenReady().then(() => {
   // carried over, so they share one implementation. Both used to open their own
   // better-sqlite3 connection alongside the scanner's, which meant two writers
   // on one WAL database for the duration of a transfer.
+  /**
+   * Copies `src` to a name that does not exist yet in `dir`: "IMG_1.JPG", then
+   * "IMG_1 (1).JPG"... COPYFILE_EXCL makes the check and the write one step,
+   * so nothing already at the destination is ever overwritten. Asynchronous:
+   * a synchronous copy ran on this thread, which also routes input, so
+   * transferring a few gigabytes of video froze the window until it finished.
+   */
+  async function copyToFreeName(src: string, dir: string): Promise<string> {
+    const ext = extname(src)
+    const stem = basename(src, ext)
+    for (let n = 0; n < 1000; n++) {
+      const dest = join(dir, n === 0 ? `${stem}${ext}` : `${stem} (${n})${ext}`)
+      try {
+        await fs.promises.copyFile(src, dest, fs.constants.COPYFILE_EXCL)
+        return dest
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+      }
+    }
+    throw new Error('No free file name at the destination')
+  }
+
+  /** A name that does not exist yet in `dir`, for a same-volume rename. */
+  async function freeName(src: string, dir: string): Promise<string> {
+    const ext = extname(src)
+    const stem = basename(src, ext)
+    for (let n = 0; n < 1000; n++) {
+      const dest = join(dir, n === 0 ? `${stem}${ext}` : `${stem} (${n})${ext}`)
+      if (!(await fs.promises.access(dest).then(() => true, () => false))) return dest
+    }
+    throw new Error('No free file name at the destination')
+  }
+
   async function transferFiles(
     payload: unknown,
     mode: 'copy' | 'move'
   ): Promise<{ success: string[]; failed: { path: string; error: string }[] }> {
-    const { filePaths, destDrive } = (payload ?? {}) as { filePaths?: unknown; destDrive?: unknown }
+    const { filePaths, destDrive, destDir } = (payload ?? {}) as { filePaths?: unknown; destDrive?: unknown; destDir?: unknown }
     const sources = safePathList(filePaths)
     const drive = normalizeDrive(destDrive)
     if (!drive || sources.length === 0) return { success: [], failed: [] }
 
-    const destRoot = `${drive}\\`
+    // A folder the user picked on the destination drive, or that drive's root.
+    // Anything else - another drive, a relative path, a folder that is not
+    // there - is refused rather than guessed at.
+    let destRoot = `${drive}\\`
+    if (destDir !== undefined && destDir !== null && destDir !== '') {
+      const dir = String(destDir)
+      const isDir = isSafeLocalPath(dir) && (await fs.promises.stat(dir).then((s) => s.isDirectory(), () => false))
+      if (!isDir || normalizeDrive(dir.slice(0, 2)) !== drive) {
+        return { success: [], failed: sources.map((p) => ({ path: p, error: 'Destination folder is not on that drive' })) }
+      }
+      destRoot = dir
+    }
     const success: string[] = []
     const failed: { path: string; error: string }[] = []
     let completed = 0
 
     for (const src of sources) {
       try {
-        if (!fs.existsSync(src)) throw new Error('Source file does not exist')
-        const dest = getUniqueDestPath(join(destRoot, basename(src)))
+        // The file as it is now, which for a relinked folder is not the stored path.
+        const real = resolveStoredPath(src)
+        if (!(await fs.promises.access(real).then(() => true, () => false))) throw new Error('Source file does not exist')
 
         if (mode === 'copy') {
-          fs.copyFileSync(src, dest)
+          const dest = await copyToFreeName(real, destRoot)
           recordCopiedFile(src, dest, drive)
         } else {
+          let dest: string
           try {
-            fs.renameSync(src, dest)
-          } catch (renameErr: any) {
-            if (renameErr.code !== 'EXDEV') throw renameErr
-            fs.copyFileSync(src, dest)
-            fs.unlinkSync(src)
+            dest = await freeName(real, destRoot)
+            await fs.promises.rename(real, dest)
+          } catch (renameErr) {
+            if ((renameErr as NodeJS.ErrnoException).code !== 'EXDEV') throw renameErr
+            // Across drives a move is a copy and a delete. The original goes
+            // only once the copy is complete; a short copy is removed instead.
+            dest = await copyToFreeName(real, destRoot)
+            const [a, b] = await Promise.all([fs.promises.stat(real), fs.promises.stat(dest)])
+            if (a.size !== b.size) {
+              await fs.promises.unlink(dest).catch(() => {})
+              throw new Error('Copy did not complete; the original was kept')
+            }
+            await fs.promises.unlink(real)
           }
           recordMovedFile(src, dest, drive)
         }

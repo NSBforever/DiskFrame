@@ -118,10 +118,10 @@ const api = {
       ipcRenderer.removeListener('transcode-error', listener)
     }
   },
-  fsCopyPaste: (filePaths: string[], destDrive: string) =>
-    ipcRenderer.invoke('fs-copy-paste', { filePaths, destDrive }),
-  fsCutPaste: (filePaths: string[], destDrive: string) =>
-    ipcRenderer.invoke('fs-cut-paste', { filePaths, destDrive }),
+  fsCopyPaste: (filePaths: string[], destDrive: string, destDir?: string) =>
+    ipcRenderer.invoke('fs-copy-paste', { filePaths, destDrive, destDir }),
+  fsCutPaste: (filePaths: string[], destDrive: string, destDir?: string) =>
+    ipcRenderer.invoke('fs-cut-paste', { filePaths, destDrive, destDir }),
   onFsIoProgress: (cb: (d: { completed: number; total: number; currentFile: string }) => void) => {
     const listener = (_e: unknown, d: any) => cb(d)
     ipcRenderer.on('fs-io-progress', listener)
@@ -154,7 +154,7 @@ const api = {
   // must never be able to displace what is visible - see thumbQueue.ts.
   prioritizeThumbnails: (req: { visible: string[]; prefetch: string[] }) =>
     ipcRenderer.invoke('prioritize-thumbnails', req),
-  pickFolder: () => ipcRenderer.invoke('pick-folder'),
+  pickFolder: (opts?: { title?: string; startIn?: string }) => ipcRenderer.invoke('pick-folder', opts),
   indexFolder: (folder: string, maxFiles?: number) => ipcRenderer.invoke('index-folder', folder, maxFiles),
   cancelIndexFolder: () => ipcRenderer.invoke('cancel-index-folder'),
   driveAvailability: () => ipcRenderer.invoke('drive-availability'),

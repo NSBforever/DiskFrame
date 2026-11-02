@@ -525,6 +525,168 @@ body.viewer-open .gallery-chrome {
   --app-fg-muted: #6f6f7a;
 }
 
+/* ── Selection bar ────────────────────────────────────────────────────────
+   One row of labelled actions on a tone step, not a red frame: colour is kept
+   for the data and the one primary action. 32px controls, 13px sentence case. */
+.sel-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 36px;
+  padding: 0 4px 0 12px;
+  border-radius: 8px;
+  background: var(--app-surface-2, #161619);
+  color: var(--app-fg, #f2f2f0);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.sel-count {
+  margin-right: 8px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.sel-action,
+.sel-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-fg, #f2f2f0);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.sel-clear {
+  padding: 0 8px;
+  color: var(--app-fg-dim, #8a8a8f);
+}
+.sel-action svg {
+  color: var(--app-fg-dim, #8a8a8f);
+}
+.sel-action:hover,
+.sel-clear:hover,
+.sel-action[aria-expanded='true'] {
+  background: var(--app-surface, #111114);
+}
+.sel-action:focus-visible,
+.sel-clear:focus-visible {
+  outline: 2px solid var(--app-accent, #e11d2e);
+  outline-offset: 1px;
+}
+
+/* ── Years ────────────────────────────────────────────────────────────────
+   One grid for every year, its columns set by the real width. Each card keeps
+   one shape at any width: the 2x2 previews are 4:3, so a wide window makes
+   larger cards rather than squashed strips of photos. */
+.years-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.years-title {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--app-fg, #f2f2f0);
+}
+.years-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--app-surface-2, #161619);
+  color: var(--app-fg, #f2f2f0);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.years-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 16px;
+  /* Clears the floating dock. */
+  padding-bottom: 96px;
+}
+.year-card {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--app-surface, #111114);
+  color: var(--app-fg, #f2f2f0);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--df-motion), transform var(--df-motion);
+}
+.year-card:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.year-card:active {
+  transform: scale(0.985);
+}
+.year-card:focus-visible {
+  outline: 2px solid var(--app-accent, #e11d2e);
+  outline-offset: 2px;
+}
+.year-previews {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 2px;
+  aspect-ratio: 4 / 3;
+  background: var(--app-bg, #0a0a0c);
+}
+.year-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  background: var(--app-surface-2, #161619);
+  color: var(--app-fg-muted, #52525b);
+}
+.year-cell img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.year-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px 12px;
+}
+.year-name {
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.year-count {
+  font-size: 12px;
+  color: var(--app-fg-dim, #8a8a8f);
+  font-variant-numeric: tabular-nums;
+}
+@media (prefers-reduced-motion: reduce) {
+  .year-card,
+  .year-card:active {
+    transition: none;
+    transform: none;
+  }
+}
+
 /* ── Settings page ────────────────────────────────────────────────────────
    Cards share .glass-panel with Appearance, the dock and the viewer chrome,
    so Settings reads as one surface. No blurred thumbnails, no continuous
