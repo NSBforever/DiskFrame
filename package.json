@@ -1,10 +1,10 @@
 {
   "name": "diskframe",
   "version": "1.0.0",
-  "description": "An Electron application with React and TypeScript",
+  "description": "Browse photos and videos straight off your drives, without importing them.",
   "main": "./out/main/index.js",
-  "author": "example.com",
-  "homepage": "https://electron-vite.org",
+  "author": "Nagi Reddy SaiBaba",
+  "homepage": "https://github.com/NSBforever/DiskFrame",
   "scripts": {
     "format": "prettier --write .",
     "lint": "eslint --cache .",

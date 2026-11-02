@@ -2,16 +2,18 @@ appId: com.electron.app
 productName: diskframe
 directories:
   buildResources: build
+# An allowlist: the built app, its runtime resources and package.json.
+# Production node_modules are added by electron-builder. A blocklist here used
+# to ship scratch/, graphify-out/, .claude/, test scripts and images inside
+# app.asar.
 files:
-  - '!**/.vscode/*'
-  - '!src/*'
-  - '!electron.vite.config.{js,ts,mjs,cjs}'
-  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
-  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
-  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - out/**/*
+  - resources/**/*
+  - package.json
 asarUnpack:
   - resources/**
   - node_modules/ffmpeg-static/**/*
+  - node_modules/ffprobe-static/bin/win32/**/*
 win:
   target:
     - target: nsis
@@ -51,6 +53,6 @@ linux:
 appImage:
   artifactName: ${name}-${version}.${ext}
 npmRebuild: false
-publish:
-  provider: generic
-  url: https://example.com/auto-updates
+afterPack: scripts/verify-pack.cjs
+# No publish target: DiskFrame has no auto-updater, and builds are installed by hand.
+publish: null
