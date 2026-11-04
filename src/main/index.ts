@@ -73,6 +73,7 @@ import {
   getCachedVolumeId,
   hasCachedVolumeId,
   reconcileDriveLetterForVolume,
+  backupBeforeMigration,
   getFavouritePaths,
   catalogueDbPath
 } from './scanner'
@@ -252,7 +253,51 @@ const syncService = new SyncService({
       mainWindow.webContents.send('scan-complete', { count: getFileCount(getCachedVolumeId(drive)), drive })
     }
   },
-  log: (m) => diag('sync', m)
+  log: (m) => diag('sync', m),
+  async confirmMassRemoval(drive, removed, knownCount) {
+    if (!mainWindow || mainWindow.isDestroyed()) return false
+    // Name the folders that went, biggest first: "61,448 files" alone gives the
+    // user nothing to check against what they did to the drive.
+    const root = catalogueRoot(drive).toLowerCase()
+    const byFolder = new Map<string, number>()
+    for (const p of removed) {
+      const rel = p.slice(root.length).replace(/^\\+/, '')
+      const top = rel.includes('\\') ? rel.slice(0, rel.indexOf('\\')) : '(top of the drive)'
+      byFolder.set(top, (byFolder.get(top) ?? 0) + 1)
+    }
+    const folders = [...byFolder.entries()].sort((a, b) => b[1] - a[1])
+    const list = folders
+      .slice(0, 6)
+      .map(([name, n]) => `  ${name}  (${n.toLocaleString()} files)`)
+      .join('\n')
+    const more = folders.length > 6 ? `\n  …and ${folders.length - 6} more folders` : ''
+    const { response } = await dialog.showMessageBox(mainWindow, {
+      type: 'question',
+      title: 'Files no longer on this drive',
+      message: `${removed.length.toLocaleString()} of ${knownCount.toLocaleString()} files DiskFrame knows on ${drive} are no longer there.`,
+      detail:
+        `These folders were moved, renamed or deleted on the drive:\n${list}${more}\n\n` +
+        'Remove them from DiskFrame? Nothing on the drive is touched - only DiskFrame’s list. ' +
+        'A copy of the catalogue is saved first, so this can be undone.',
+      // The safe answer is first and the default, so Enter, a reflex click on
+      // the first button, or anything that auto-accepts dialogs keeps the rows.
+      // Only an explicit click on "Remove" removes anything.
+      buttons: ['Keep them', 'Remove from DiskFrame'],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true
+    })
+    if (response !== 1) return false
+    try {
+      backupBeforeMigration('mass-removal')
+    } catch (err) {
+      console.error('[sync] backup before mass removal failed - nothing removed', err)
+      dialog.showErrorBox('Nothing was removed', 'DiskFrame could not save a copy of its catalogue first (is the disk full?), so it left everything as it was.')
+      return false
+    }
+    diag('sync', `${drive}: user confirmed removing ${removed.length} rows after a catalogue backup`)
+    return true
+  }
 })
 
 /**
@@ -1754,6 +1799,7 @@ app.whenReady().then(() => {
       lookupMs = Date.now() - tLookup
       if (availability.status !== 'ok') {
         failed = true
+        if (process.env.DF_TRACE_THUMBS) diag('thumbs', `unavailable ${availability.status}: ${p}`)
         // Anything that can come back on its own - a disconnected drive, a
         // relettered volume, a folder the user can still point us at - is never
         // remembered as failed, or it would stay broken after the situation is

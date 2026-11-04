@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Check, ChevronDown } from 'lucide-react'
 import './GlassSelect.css'
 
@@ -23,6 +24,10 @@ interface Props<T extends string> {
  * it belonged to a different program. This renders the list itself: arrow keys
  * and Home/End move, Enter or Space choose, Escape closes and returns focus,
  * the current option carries a check, and a click anywhere outside dismisses.
+ *
+ * The list is portalled to <body> at a fixed position under the button. Drawn
+ * inside the toolbar it shared the toolbar's stacking context, so the gallery
+ * tiles painted over it whatever its z-index - and took its clicks.
  */
 export default function GlassSelect<T extends string>({
   value,
@@ -31,7 +36,13 @@ export default function GlassSelect<T extends string>({
   label
 }: Props<T>): React.JSX.Element {
   const [open, setOpen] = useState(false)
-  const [active, setActive] = useState(() => Math.max(0, options.findIndex((o) => o.value === value)))
+  const [pos, setPos] = useState<{ top: number; left: number; minWidth: number } | null>(null)
+  const [active, setActive] = useState(() =>
+    Math.max(
+      0,
+      options.findIndex((o) => o.value === value)
+    )
+  )
   const rootRef = useRef<HTMLDivElement>(null)
   const btnRef = useRef<HTMLButtonElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
@@ -58,18 +69,38 @@ export default function GlassSelect<T extends string>({
   useEffect(() => {
     if (!open) return
     const onDown = (e: PointerEvent): void => {
-      if (!rootRef.current?.contains(e.target as Node)) setOpen(false)
+      const t = e.target as Node
+      if (!rootRef.current?.contains(t) && !listRef.current?.contains(t)) setOpen(false)
     }
+    // A fixed menu would drift from its button; closing is what native menus do.
+    const onMove = (): void => setOpen(false)
     window.addEventListener('pointerdown', onDown, true)
-    return () => window.removeEventListener('pointerdown', onDown, true)
+    window.addEventListener('resize', onMove)
+    window.addEventListener('scroll', onMove, true)
+    return () => {
+      window.removeEventListener('pointerdown', onDown, true)
+      window.removeEventListener('resize', onMove)
+      window.removeEventListener('scroll', onMove, true)
+    }
   }, [open])
+
+  const openMenu = (): void => {
+    const r = btnRef.current?.getBoundingClientRect()
+    if (r) setPos({ top: r.bottom + 6, left: r.left, minWidth: r.width })
+    setOpen(true)
+  }
 
   useEffect(() => {
     if (open) listRef.current?.focus()
   }, [open])
 
   useEffect(() => {
-    setActive(Math.max(0, options.findIndex((o) => o.value === value)))
+    setActive(
+      Math.max(
+        0,
+        options.findIndex((o) => o.value === value)
+      )
+    )
   }, [value, options])
 
   const onListKey = (e: React.KeyboardEvent): void => {
@@ -107,11 +138,11 @@ export default function GlassSelect<T extends string>({
         aria-label={label}
         aria-haspopup="listbox"
         aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => (open ? setOpen(false) : openMenu())}
         onKeyDown={(e) => {
           if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
             e.preventDefault()
-            setOpen(true)
+            openMenu()
           }
         }}
       >
@@ -119,37 +150,45 @@ export default function GlassSelect<T extends string>({
         <ChevronDown size={12} aria-hidden="true" />
       </button>
 
-      {open && (
-        <div
-          ref={listRef}
-          className="glass-select-menu glass-panel"
-          role="listbox"
-          tabIndex={-1}
-          aria-label={label}
-          aria-activedescendant={id + '-' + active}
-          onKeyDown={onListKey}
-        >
-          {options.map((o, i) => {
-            const isSel = o.value === value
-            return (
-              <div
-                key={o.value}
-                id={id + '-' + i}
-                role="option"
-                aria-selected={isSel}
-                className={
-                  'glass-select-option' + (i === active ? ' is-active' : '') + (isSel ? ' is-selected' : '')
-                }
-                onPointerEnter={() => setActive(i)}
-                onClick={() => commit(i)}
-              >
-                <span className="glass-select-check">{isSel && <Check size={12} aria-hidden="true" />}</span>
-                <span>{o.label}</span>
-              </div>
-            )
-          })}
-        </div>
-      )}
+      {open &&
+        pos &&
+        createPortal(
+          <div
+            ref={listRef}
+            className="glass-select-menu glass-panel"
+            style={{ top: pos.top, left: pos.left, minWidth: pos.minWidth }}
+            role="listbox"
+            tabIndex={-1}
+            aria-label={label}
+            aria-activedescendant={id + '-' + active}
+            onKeyDown={onListKey}
+          >
+            {options.map((o, i) => {
+              const isSel = o.value === value
+              return (
+                <div
+                  key={o.value}
+                  id={id + '-' + i}
+                  role="option"
+                  aria-selected={isSel}
+                  className={
+                    'glass-select-option' +
+                    (i === active ? ' is-active' : '') +
+                    (isSel ? ' is-selected' : '')
+                  }
+                  onPointerEnter={() => setActive(i)}
+                  onClick={() => commit(i)}
+                >
+                  <span className="glass-select-check">
+                    {isSel && <Check size={12} aria-hidden="true" />}
+                  </span>
+                  <span>{o.label}</span>
+                </div>
+              )
+            })}
+          </div>,
+          document.body
+        )}
     </div>
   )
 }

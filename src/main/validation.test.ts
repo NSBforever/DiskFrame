@@ -204,3 +204,11 @@ test('a read is not a change: same size and mtime means the same file version', 
   assert.ok(!isSameFileVersion(row, { size: 2_000_000, mtimeMs: 1_700_000_005_000 }), 'rewritten')
   assert.ok(!isSameFileVersion({ size: 2_000_000, mtime: null }, { size: 2_000_000, mtimeMs: 1 }), 'never recorded')
 })
+
+test('macOS AppleDouble sidecars are never indexed; the real file beside them is', () => {
+  assert.ok(isGeneratedAsset('G:\\NSB Phone 2025\\._IMG_0167.MOV'))
+  assert.ok(!isIndexableUserMedia('G:\\NSB Phone 2025\\._IMG_0167.MOV'))
+  assert.ok(isIndexableUserMedia('G:\\NSB Phone 2025\\IMG_0167.MOV'))
+  // Only the '._' prefix: other names starting with a dot or underscore stay.
+  assert.ok(isIndexableUserMedia('G:\\Trips\\_IMG_0001.JPG'))
+})

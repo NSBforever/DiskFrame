@@ -22,8 +22,18 @@ export interface SyncHooks {
   /** Rows changed for this drive; the renderer should re-read it. */
   onChanged(drive: string): void
   /** A run finished (or gave up). `reason` is what asked for it. */
-  onFinished(drive: string, reason: string, outcome: { ok: boolean; removed: number; message: string }): void
+  onFinished(
+    drive: string,
+    reason: string,
+    outcome: { ok: boolean; removed: number; message: string }
+  ): void
   log(message: string): void
+  /**
+   * A run the user asked for found more removals than an automatic run will
+   * believe (see isMassRemoval). Resolves true only if the user confirmed them,
+   * after a copy of the catalogue was taken. Absent, they are never applied.
+   */
+  confirmMassRemoval?(drive: string, removed: string[], knownCount: number): Promise<boolean>
 }
 
 interface Running {
@@ -67,20 +77,32 @@ export class SyncService {
     return this.running.has(drive)
   }
 
-  request(drive: string, opts: { reason: string; full?: boolean; delayMs?: number; minGapMs?: number }): void {
+  request(
+    drive: string,
+    opts: { reason: string; full?: boolean; delayMs?: number; minGapMs?: number }
+  ): void {
     const prev = this.pending.get(drive)
-    this.pending.set(drive, { full: !!opts.full || !!prev?.full, reason: prev && !opts.full ? prev.reason : opts.reason })
+    this.pending.set(drive, {
+      full: !!opts.full || !!prev?.full,
+      reason: prev && !opts.full ? prev.reason : opts.reason
+    })
     if (this.running.has(drive)) return // picked up when the current run ends
     const sinceLast = Date.now() - (this.lastRunAt.get(drive) ?? 0)
-    const delay = Math.max(opts.delayMs ?? 0, opts.full ? 0 : (opts.minGapMs ?? MIN_GAP_MS) - sinceLast)
+    const delay = Math.max(
+      opts.delayMs ?? 0,
+      opts.full ? 0 : (opts.minGapMs ?? MIN_GAP_MS) - sinceLast
+    )
     const existing = this.timers.get(drive)
     if (existing) clearTimeout(existing)
     this.timers.set(
       drive,
-      setTimeout(() => {
-        this.timers.delete(drive)
-        void this.start(drive)
-      }, Math.max(0, delay))
+      setTimeout(
+        () => {
+          this.timers.delete(drive)
+          void this.start(drive)
+        },
+        Math.max(0, delay)
+      )
     )
   }
 
@@ -114,8 +136,14 @@ export class SyncService {
     const volumeId = await getVolumeId(drive)
     const root = catalogueRoot(drive)
     if (!volumeId || !fs.existsSync(root)) {
-      this.hooks.log(`${drive}: reconcile skipped - ${volumeId ? 'root not present' : 'volume identity not verified'}`)
-      this.hooks.onFinished(drive, req.reason, { ok: false, removed: 0, message: 'drive not verified' })
+      this.hooks.log(
+        `${drive}: reconcile skipped - ${volumeId ? 'root not present' : 'volume identity not verified'}`
+      )
+      this.hooks.onFinished(drive, req.reason, {
+        ok: false,
+        removed: 0,
+        message: 'drive not verified'
+      })
       return
     }
     // The worker reads the catalogue itself (see reconcileWorker.ts) and says
@@ -147,31 +175,37 @@ export class SyncService {
     }
     this.running.set(drive, r)
 
-    worker.on('message', (e: ReconcileEvent | { type: 'started'; files: number; folders: number }) => {
-      if (this.running.get(drive) !== r) return
-      r.lastMessageAt = Date.now()
-      if (e.type === 'started') {
-        r.knownCount = e.files
-        this.hooks.log(`${drive}: reconcile started (${req.reason}${req.full ? ', full' : ''}) - ${e.files} records, ${e.folders} folders on record`)
-      } else if (e.type === 'batch') {
-        // The letter must still be this volume. A drive swapped at the same
-        // letter mid-run stops the run before any of its results land.
-        if (getCachedVolumeId(drive) !== volumeId) return this.stop(drive, r, 'volume at this letter changed')
-        const res = applyReconcileBatch(volumeId, drive, e)
-        r.totals.added += res.added
-        r.totals.moved += res.moved
-        r.totals.changed += res.changed
-        if (res.added || res.moved || res.changed) this.hooks.onChanged(drive)
-      } else if (e.type === 'aborted') {
-        this.stop(drive, r, e.reason)
-      } else {
-        // Claimed synchronously: finish() awaits a fresh identity read, and the
-        // worker's 'exit' arrives during that await - without this it took the
-        // run for a crash and threw away a completed result.
-        r.finishing = true
-        void this.finish(drive, r, e, r.knownCount)
+    worker.on(
+      'message',
+      (e: ReconcileEvent | { type: 'started'; files: number; folders: number }) => {
+        if (this.running.get(drive) !== r) return
+        r.lastMessageAt = Date.now()
+        if (e.type === 'started') {
+          r.knownCount = e.files
+          this.hooks.log(
+            `${drive}: reconcile started (${req.reason}${req.full ? ', full' : ''}) - ${e.files} records, ${e.folders} folders on record`
+          )
+        } else if (e.type === 'batch') {
+          // The letter must still be this volume. A drive swapped at the same
+          // letter mid-run stops the run before any of its results land.
+          if (getCachedVolumeId(drive) !== volumeId)
+            return this.stop(drive, r, 'volume at this letter changed')
+          const res = applyReconcileBatch(volumeId, drive, e)
+          r.totals.added += res.added
+          r.totals.moved += res.moved
+          r.totals.changed += res.changed
+          if (res.added || res.moved || res.changed) this.hooks.onChanged(drive)
+        } else if (e.type === 'aborted') {
+          this.stop(drive, r, e.reason)
+        } else {
+          // Claimed synchronously: finish() awaits a fresh identity read, and the
+          // worker's 'exit' arrives during that await - without this it took the
+          // run for a crash and threw away a completed result.
+          r.finishing = true
+          void this.finish(drive, r, e, r.knownCount)
+        }
       }
-    })
+    )
     worker.on('error', (err) => {
       if (this.running.get(drive) === r) this.stop(drive, r, `worker error: ${err.message}`)
     })
@@ -181,7 +215,12 @@ export class SyncService {
     })
   }
 
-  private async finish(drive: string, r: Running, done: ReconcileDone, knownCount: number): Promise<void> {
+  private async finish(
+    drive: string,
+    r: Running,
+    done: ReconcileDone,
+    knownCount: number
+  ): Promise<void> {
     clearInterval(r.watchdog)
     // Fresh, not cached: removals are the one thing that cannot be undone.
     invalidateMountedVolumes()
@@ -191,7 +230,39 @@ export class SyncService {
     if (now !== r.volumeId || !fs.existsSync(catalogueRoot(drive))) {
       note = ` - ${done.removed.length} removals NOT applied: the volume is no longer the one checked`
     } else if (isMassRemoval(done.removed.length, knownCount)) {
-      note = ` - ${done.removed.length} of ${knownCount} removals NOT applied: too many to believe without an explicit rescan`
+      // Automatic runs never act on this many: a drive that briefly lists as
+      // empty must not empty its catalogue. When the user asked for the check,
+      // they are shown what is missing and decide. Without this path nothing
+      // could ever clear rows for folders reorganised on the drive - 61,448 of
+      // 101,151 on the owner's G: drew as broken tiles for good.
+      const confirmed =
+        r.reason === 'manual' &&
+        this.hooks.confirmMassRemoval !== undefined &&
+        (await this.hooks.confirmMassRemoval(drive, done.removed, knownCount))
+      // The dialog can stay open for minutes: the drive must still be this one.
+      invalidateMountedVolumes()
+      if (
+        confirmed &&
+        (await getVolumeId(drive)) === r.volumeId &&
+        fs.existsSync(catalogueRoot(drive))
+      ) {
+        // In slices, yielding between them: 61,448 rows in one transaction
+        // held the main thread for ~7s (measured). Each removal stands alone
+        // and a backup was taken first, so per-slice transactions are safe.
+        const SLICE = 2000
+        for (let i = 0; i < done.removed.length; i += SLICE) {
+          const last = i + SLICE >= done.removed.length
+          removed += applyReconcileRemovals(
+            r.volumeId,
+            done.removed.slice(i, i + SLICE),
+            last ? done.folders : [],
+            last ? done.goneFolders : []
+          )
+          await new Promise((res) => setImmediate(res))
+        }
+      } else {
+        note = ` - ${done.removed.length} of ${knownCount} removals NOT applied: too many to believe without an explicit rescan`
+      }
     } else {
       removed = applyReconcileRemovals(r.volumeId, done.removed, done.folders, done.goneFolders)
     }

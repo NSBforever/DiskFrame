@@ -616,6 +616,18 @@ body.viewer-open .gallery-chrome {
   /* Clears the floating dock. */
   padding-bottom: 96px;
 }
+.years-decade {
+  grid-column: 1 / -1;
+  margin: 12px 0 -4px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--app-fg-dim, #8a8a8f);
+}
+.years-decade:first-child {
+  margin-top: 0;
+}
 .year-card {
   display: flex;
   flex-direction: column;

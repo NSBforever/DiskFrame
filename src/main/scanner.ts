@@ -313,7 +313,7 @@ db.exec(`
  * the app running and does not need the journal checkpointed first. Only taken
  * when there is actually a migration to run, so a normal launch costs nothing.
  */
-function backupBeforeMigration(tag: string): void {
+export function backupBeforeMigration(tag: string): void {
   try {
     const dir = join(app.getPath('userData'), 'backups')
     fs.mkdirSync(dir, { recursive: true })

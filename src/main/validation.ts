@@ -80,6 +80,14 @@ export function isGeneratedAsset(filePath: string): boolean {
   const slash = p.lastIndexOf('\\')
   const name = slash === -1 ? p : p.slice(slash + 1)
   if (name.startsWith('df_raw_')) return true
+  // macOS AppleDouble sidecars ('._IMG_0167.MOV'): a few KB of Finder
+  // metadata that a Mac writes beside every file it copies to a FAT/exFAT/NTFS
+  // drive. They carry the media extension but hold no picture, so each one was
+  // indexed as a photo or video and drawn as an empty tile next to the real
+  // file - 2,833 of them in the owner's catalogue. Excluded here, every
+  // indexing path skips them and the startup purge drops their rows (rows
+  // only; the files stay on disk).
+  if (name.startsWith('._')) return true
   return false
 }
 

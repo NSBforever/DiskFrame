@@ -1,6 +1,6 @@
 {
   "name": "diskframe",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Browse photos and videos straight off your drives, without importing them.",
   "main": "./out/main/index.js",
   "author": "Nagi Reddy SaiBaba",

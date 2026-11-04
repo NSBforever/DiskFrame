@@ -490,6 +490,11 @@ export const FileTile = React.memo(({
 
 
 /** A generated thumbnail path, as opposed to nothing yet or a '!' status sentinel. */
+/** '2010s' for '2014'; anything that is not a four-digit year groups as itself. */
+function decadeOf(year: string | undefined): string {
+  return year && /^\d{4}$/.test(year) ? year.slice(0, 3) + '0s' : (year ?? '')
+}
+
 function isUsableThumb(thumb: string | null | undefined): thumb is string {
   return !!thumb && thumb !== 'NO_FILE' && !thumb.startsWith('!')
 }
@@ -1000,13 +1005,23 @@ const MainContentArea: React.FC<{
         }
         return (
           <div className="years-grid">
-            {years.map((year) => {
+            {years.map((year, yi) => {
               const count = yearTotals[year]?.count ?? 0
               const previewFiles = previews?.[year] ?? []
+              // A heading per decade: thirty-odd identical cards in one run
+              // read as a wall, and the gaps between years (2008, 2004, 2002)
+              // were easy to miss.
+              const decade = decadeOf(year)
+              const newDecade = decade !== decadeOf(years[yi - 1])
               return (
+                <React.Fragment key={year}>
+                {newDecade && (
+                  <h2 className="years-decade">
+                    {decade}
+                  </h2>
+                )}
                 <button
                   type="button"
-                  key={year}
                   className="year-card"
                   onClick={() => handleYearClick(year)}
                   aria-label={`${year}, ${count.toLocaleString()} files`}
@@ -1026,6 +1041,7 @@ const MainContentArea: React.FC<{
                     <span className="year-count">{count.toLocaleString()} files</span>
                   </span>
                 </button>
+                </React.Fragment>
               )
             })}
           </div>
@@ -2037,7 +2053,15 @@ export default function App(): React.JSX.Element {
     // what is genuinely unresolved (a deleted folder has been confirmed and
     // dropped by then, rather than shown as something to locate).
     const unsubSync = window.api.onSyncFinished?.((d) => {
-      if (d.drive === currentDriveRef.current) setUnresolvedKey((n) => n + 1)
+      if (d.drive !== currentDriveRef.current) return
+      setUnresolvedKey((n) => n + 1)
+      // An automatic check never removes most of a drive on its own; say so,
+      // or the missing files just sit there as broken tiles with no way out.
+      if (d.reason !== 'manual' && /too many to believe/.test(d.message)) {
+        setToastMsg(`Many files on ${d.drive} are no longer on the drive. Use “Check for changes” to review them.`)
+      } else if (d.reason === 'manual' && d.removed > 0) {
+        setToastMsg(`Removed ${d.removed.toLocaleString()} files that are no longer on ${d.drive}.`)
+      }
     }) ?? (() => {})
     const unsubThumb = window.api.onThumbReady((d) => {
       thumbQueueRef.current.push(d)
@@ -2353,14 +2377,26 @@ export default function App(): React.JSX.Element {
       for (const [year, offset] of Object.entries(firstOffset)) {
         if (cancelled) return
         try {
-          const res = await window.api.libraryPage(q, offset, 40)
+          // A wider window than the four cells need: the first rows of a year
+          // are often ones that cannot show a picture (a drive not connected,
+          // a file that failed), and with 40 most cards came up empty.
+          const res = await window.api.libraryPage(q, offset, 160)
           const media = (res.rows as ScannedFile[]).filter(
             (r) =>
               PREVIEW_EXTS.has((r.ext || '').toLowerCase()) &&
               // The window can run into the next year when this one is short.
               (!/^\d{4}$/.test(year) || (r.date || '').startsWith(year))
           )
-          const pick = [...media.filter((r) => isUsableThumb(r.thumb)), ...media.filter((r) => !r.thumb)].slice(0, 4)
+          // Four different pictures: copies of one photo in two folders would
+          // otherwise fill a card with the same image.
+          const seen = new Set<string>()
+          const distinct = media.filter((r) => {
+            const k = (r.name || '').toLowerCase() + '|' + r.size
+            if (seen.has(k)) return false
+            seen.add(k)
+            return true
+          })
+          const pick = [...distinct.filter((r) => isUsableThumb(r.thumb)), ...distinct.filter((r) => !r.thumb)].slice(0, 4)
           if (pick.length) next[year] = pick
           for (const r of pick) if (!r.thumb) owed.push(r.path)
         } catch {
@@ -3147,7 +3183,6 @@ export default function App(): React.JSX.Element {
               />
             )}
 
-            {isGalleryPage && (activeView === 'Grid' || activeView === 'Timeline' || activeView === 'Years') && activeNav !== 'trash' && <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', textTransform: 'uppercase', letterSpacing: '0.5px', whiteSpace: 'nowrap' }}>{activeView === 'Grid' ? 'Pinch to zoom' : 'Pinch to switch views'}</div>}
 
             {/* View order */}
             {selectedDrive && isGalleryPage && (activeView === 'Grid' || activeView === 'Timeline') && activeNav !== 'trash' && (
