@@ -148,6 +148,17 @@ const api = {
   },
   getStartFullscreen: (): Promise<boolean> => ipcRenderer.invoke('get-start-fullscreen'),
   setStartFullscreen: (on: boolean) => ipcRenderer.invoke('set-start-fullscreen', on),
+  getAutoUpdate: (): Promise<boolean> => ipcRenderer.invoke('get-auto-update'),
+  setAutoUpdate: (on: boolean) => ipcRenderer.invoke('set-auto-update', on),
+  /** A new version finished downloading; it installs on quit, or now via installUpdate. */
+  onUpdateReady: (cb: (d: { version: string }) => void) => {
+    const listener = (_e: unknown, d: { version: string }) => cb(d)
+    ipcRenderer.on('update-ready', listener)
+    return () => {
+      ipcRenderer.removeListener('update-ready', listener)
+    }
+  },
+  installUpdate: () => ipcRenderer.invoke('install-update'),
   getAiSearchButton: () => ipcRenderer.invoke('get-ai-search-button'),
   setAiSearchButton: (enabled: boolean) => ipcRenderer.invoke('set-ai-search-button', enabled),
   // Two tiers: tiles on screen, then the band being scrolled towards. The band

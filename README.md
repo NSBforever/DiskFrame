@@ -12,7 +12,7 @@
 
 <p align="center">
   <img alt="Windows 10 and 11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-f2f2f0?style=flat-square&logo=windows11&logoColor=white&labelColor=0a0a0c">
-  <a href="https://github.com/NSBforever/DiskFrame/releases/latest"><img alt="v1.0.1 released" src="https://img.shields.io/badge/v1.0.1-released-e11d2e?style=flat-square&labelColor=0a0a0c"></a>
+  <a href="https://github.com/NSBforever/DiskFrame/releases/latest"><img alt="v1.1.0 released" src="https://img.shields.io/badge/v1.1.0-released-e11d2e?style=flat-square&labelColor=0a0a0c"></a>
   <img alt="Electron 39" src="https://img.shields.io/badge/Electron-39-f2f2f0?style=flat-square&logo=electron&logoColor=9feaf9&labelColor=0a0a0c">
   <img alt="React 19" src="https://img.shields.io/badge/React-19-f2f2f0?style=flat-square&logo=react&logoColor=61dafb&labelColor=0a0a0c">
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.9-f2f2f0?style=flat-square&logo=typescript&logoColor=3178c6&labelColor=0a0a0c">
@@ -35,9 +35,11 @@
 
 ## Download
 
-**[Download DiskFrame 1.0.1 for Windows](https://github.com/NSBforever/DiskFrame/releases/latest/download/diskframe-1.0.1-setup.exe)** (installer, 270 MB). A portable build that runs without installing is on the [release page](https://github.com/NSBforever/DiskFrame/releases/latest).
+**[Download DiskFrame 1.1.0 for Windows](https://github.com/NSBforever/DiskFrame/releases/latest/download/diskframe-1.1.0-setup.exe)** (installer, 270 MB). A portable build that runs without installing is on the [release page](https://github.com/NSBforever/DiskFrame/releases/latest).
 
 The installer is not code-signed yet, so Windows SmartScreen may say "Windows protected your PC". Choose **More info**, then **Run anyway**. Your catalogue and thumbnails live in `%APPDATA%\diskframe`; upgrading or uninstalling leaves them in place.
+
+**Updates install themselves** from 1.1.0 on. When DiskFrame starts it asks GitHub whether there's a newer release, downloads it in the background, and installs it when you close the app (or straight away, from the banner). That's the only network request DiskFrame makes, and nothing about your files is sent. Turn it off in **Settings → Updates**. The portable build doesn't update itself. Coming from 1.0.x? Install 1.1.0 once by hand.
 
 ### macOS and Linux
 
@@ -87,7 +89,7 @@ How it got there:
 
 ## Status
 
-**v1.0.1 is out.** What changed and what is still known to be limited: [1.0.1 notes](docs/RELEASE_NOTES_1.0.1.md), [1.0.0 notes](docs/RELEASE_NOTES_1.0.0.md) and the [engineering audit](docs/V1_AUDIT.md). Ideas and bug reports are welcome: [open an issue](https://github.com/NSBforever/DiskFrame/issues).
+**v1.1.0 is out.** What changed and what is still known to be limited: [1.1.0 notes](docs/RELEASE_NOTES_1.1.0.md), [1.0.1 notes](docs/RELEASE_NOTES_1.0.1.md), [1.0.0 notes](docs/RELEASE_NOTES_1.0.0.md) and the [engineering audit](docs/V1_AUDIT.md). Ideas and bug reports are welcome: [open an issue](https://github.com/NSBforever/DiskFrame/issues).
 
 Third-party licences, including mpv (GPLv2+), are listed in [NOTICE](NOTICE).
 

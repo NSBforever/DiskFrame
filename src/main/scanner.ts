@@ -623,6 +623,13 @@ if (!deletePrefsCols.includes('start_fullscreen')) {
     console.error('Error migrating delete_prefs (start_fullscreen):', e)
   }
 }
+if (!deletePrefsCols.includes('auto_update')) {
+  try {
+    db.prepare('ALTER TABLE delete_prefs ADD COLUMN auto_update INTEGER DEFAULT 1').run()
+  } catch (e) {
+    console.error('Error migrating delete_prefs (auto_update):', e)
+  }
+}
 
 export interface ScannedFile {
   path: string
@@ -771,6 +778,32 @@ export function setAiSearchButtonPref(enabled: boolean): void {
     }
   } catch (e) {
     console.error('Error saving AI search button pref:', e)
+  }
+}
+
+/** Whether DiskFrame checks GitHub Releases for a new version on startup and
+ *  installs it on quit. Default on; the only network request the app makes. */
+export function getAutoUpdatePref(): boolean {
+  try {
+    const row = db.prepare('SELECT auto_update FROM delete_prefs WHERE id = 1').get() as
+      | { auto_update: number }
+      | undefined
+    return (row?.auto_update ?? 1) === 1
+  } catch {
+    return true
+  }
+}
+
+export function setAutoUpdatePref(enabled: boolean): void {
+  try {
+    const exists = db.prepare('SELECT id FROM delete_prefs WHERE id = 1').get()
+    if (exists) {
+      db.prepare('UPDATE delete_prefs SET auto_update = ? WHERE id = 1').run(enabled ? 1 : 0)
+    } else {
+      db.prepare('INSERT OR REPLACE INTO delete_prefs (id, auto_update) VALUES (1, ?)').run(enabled ? 1 : 0)
+    }
+  } catch (e) {
+    console.error('Error saving auto-update pref:', e)
   }
 }
 

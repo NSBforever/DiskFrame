@@ -4,6 +4,7 @@ import { spawn } from 'child_process'
 import * as fs from 'fs'
 import { fileResponse } from './mediaRange'
 import { mediaUrl, mediaUrlPath } from './mediaUrl'
+import { startAutoUpdates } from './updater'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { listMountedVolumes, probeDrives, invalidateMountedVolumes } from './driveEnum'
@@ -37,6 +38,8 @@ import {
   setAiSearchButtonPref,
   getStartFullscreenPref,
   setStartFullscreenPref,
+  getAutoUpdatePref,
+  setAutoUpdatePref,
   getTrashedFiles,
   getTrashCount,
   softDeleteFiles,
@@ -888,6 +891,8 @@ app.whenReady().then(() => {
       } else {
         autoPurgeTrash().catch((err) => console.error('Error running auto-purge on startup:', err))
         sweepThumbOrphansOnce()
+        // Not in safe mode: a diagnostic session must not change the app under test.
+        if (getAutoUpdatePref()) startAutoUpdates(() => mainWindow, (m) => diag('updates', m))
       }
     }, 1500)
   })
@@ -1577,6 +1582,12 @@ app.whenReady().then(() => {
   ipcMain.handle('get-start-fullscreen', () => getStartFullscreenPref())
   ipcMain.handle('set-start-fullscreen', (_event, on: unknown) => {
     setStartFullscreenPref(on === true)
+    return true
+  })
+  ipcMain.handle('get-auto-update', () => getAutoUpdatePref())
+  // Takes effect at the next launch; a check already running is left to finish.
+  ipcMain.handle('set-auto-update', (_event, on: unknown) => {
+    setAutoUpdatePref(on === true)
     return true
   })
 

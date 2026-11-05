@@ -650,6 +650,8 @@ const MainContentArea: React.FC<{
   onAiSearchButtonChange: (enabled: boolean) => void
   startFullscreen: boolean
   onStartFullscreenChange: (on: boolean) => void
+  autoUpdate: boolean
+  onAutoUpdateChange: (on: boolean) => void
   unresolvedKey: number
   libraryState: 'idle' | 'loading' | 'ready'
   /** Discovery is still running, so every count on screen is a lower bound. */
@@ -720,6 +722,8 @@ const MainContentArea: React.FC<{
   onAiSearchButtonChange,
   startFullscreen,
   onStartFullscreenChange,
+  autoUpdate,
+  onAutoUpdateChange,
   unresolvedKey,
   libraryState,
   discovering,
@@ -1425,6 +1429,30 @@ const MainContentArea: React.FC<{
             </div>
           </section>
 
+          <section className="glass-panel settings-card" aria-labelledby="updates-heading">
+            <h3 id="updates-heading" className="settings-heading">
+              Updates
+            </h3>
+            <div className="settings-field">
+              <div className="settings-field-head">
+                <label htmlFor="settings-auto-update" className="settings-label">
+                  Update automatically
+                </label>
+                <input
+                  id="settings-auto-update"
+                  className="settings-switch"
+                  type="checkbox"
+                  checked={autoUpdate}
+                  onChange={(e) => onAutoUpdateChange(e.target.checked)}
+                />
+              </div>
+              <div className="settings-hint">
+                Checks GitHub for a new version when DiskFrame starts, downloads it in the background and
+                installs it when you close the app. Nothing about your files is sent. Applies from the next launch.
+              </div>
+            </div>
+          </section>
+
           <section className="glass-panel settings-card" aria-labelledby="playback-heading">
             <h3 id="playback-heading" className="settings-heading">
               Playback
@@ -1737,6 +1765,18 @@ export default function App(): React.JSX.Element {
   const handleStartFullscreenChange = useCallback((on: boolean): void => {
     setStartFullscreen(on)
     void window.api.setStartFullscreen(on)
+  }, [])
+  // Automatic updates: the preference, and a version that has finished
+  // downloading (it installs on quit; the banner offers to do it now).
+  const [autoUpdate, setAutoUpdate] = useState(true)
+  const [updateReady, setUpdateReady] = useState<string | null>(null)
+  useEffect(() => {
+    window.api.getAutoUpdate?.().then(setAutoUpdate).catch(() => {})
+    return window.api.onUpdateReady?.((d) => setUpdateReady(d.version))
+  }, [])
+  const handleAutoUpdateChange = useCallback((on: boolean): void => {
+    setAutoUpdate(on)
+    void window.api.setAutoUpdate(on)
   }, [])
 
   useEffect(() => {
@@ -3270,6 +3310,8 @@ export default function App(): React.JSX.Element {
           onAiSearchButtonChange={handleAiSearchButtonChange}
           startFullscreen={startFullscreen}
           onStartFullscreenChange={handleStartFullscreenChange}
+          autoUpdate={autoUpdate}
+          onAutoUpdateChange={handleAutoUpdateChange}
           unresolvedKey={unresolvedKey}
           libraryState={libraryState}
           discovering={scanning}
@@ -3653,6 +3695,18 @@ export default function App(): React.JSX.Element {
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {updateReady && (
+        <div className="glass-panel update-banner" role="status">
+          <span>DiskFrame {updateReady} is ready. It installs when you close the app.</span>
+          <button type="button" className="update-banner-restart" onClick={() => void window.api.installUpdate()}>
+            Restart now
+          </button>
+          <button type="button" className="update-banner-dismiss" aria-label="Dismiss" onClick={() => setUpdateReady(null)}>
+            ×
+          </button>
         </div>
       )}
 

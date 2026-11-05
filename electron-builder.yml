@@ -54,5 +54,10 @@ appImage:
   artifactName: ${name}-${version}.${ext}
 npmRebuild: false
 afterPack: scripts/verify-pack.cjs
-# No publish target: DiskFrame has no auto-updater, and builds are installed by hand.
-publish: null
+# Updates come from GitHub Releases: every release must carry latest.yml and
+# the installer's .blockmap next to the installer, or installed copies cannot
+# see it. electron-updater reads the app-update.yml this generates.
+publish:
+  provider: github
+  owner: NSBforever
+  repo: DiskFrame

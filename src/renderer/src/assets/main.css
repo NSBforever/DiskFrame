@@ -616,6 +616,37 @@ body.viewer-open .gallery-chrome {
   /* Clears the floating dock. */
   padding-bottom: 96px;
 }
+/* A downloaded update. Bottom-left, clear of the dock and the toast. */
+.update-banner {
+  position: fixed;
+  left: 24px;
+  bottom: 80px;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px 10px 16px;
+  font-size: 12px;
+  color: var(--app-fg, #f2f2f0);
+}
+.update-banner-restart {
+  padding: 6px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--df-accent, #e11d2e);
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.update-banner-dismiss {
+  border: 0;
+  background: none;
+  color: var(--app-fg-dim, #8a8a8f);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
 .years-decade {
   grid-column: 1 / -1;
   margin: 12px 0 -4px;

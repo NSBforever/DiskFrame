@@ -193,6 +193,10 @@ declare global {
       onWindowFullscreenChanged: (cb: (on: boolean) => void) => () => void
       getStartFullscreen: () => Promise<boolean>
       setStartFullscreen: (on: boolean) => Promise<unknown>
+      getAutoUpdate: () => Promise<boolean>
+      setAutoUpdate: (on: boolean) => Promise<unknown>
+      onUpdateReady: (cb: (d: { version: string }) => void) => () => void
+      installUpdate: () => Promise<unknown>
       getAiSearchButton: () => Promise<boolean>
       setAiSearchButton: (enabled: boolean) => Promise<void>
       setOverlayMeta: (meta: { name?: string; isFav?: boolean; toast?: string; show?: boolean }) => void
