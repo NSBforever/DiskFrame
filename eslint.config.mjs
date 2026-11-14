@@ -10,6 +10,10 @@ export default [
       '**/node_modules',
       '**/dist',
       '**/out',
+      // Not the app: agent worktrees and settings, one-off scripts, generated graphs.
+      '.claude/**',
+      'scratch/**',
+      'graphify-out/**',
       'check_db.js',
       'read_db.js',
       'reset_thumbs.js',

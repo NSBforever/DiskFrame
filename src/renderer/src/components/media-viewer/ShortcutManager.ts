@@ -8,6 +8,8 @@ export interface ShortcutProps {
   onZoomIn: () => void
   onZoomOut: () => void
   onZoomReset: () => void
+  /** 100%: one image pixel per screen pixel. Photos only. */
+  onActualSize?: () => void
   onToggleFullscreen: () => void
   isOpen: boolean
 }
@@ -20,6 +22,7 @@ export function useShortcuts({
   onZoomIn,
   onZoomOut,
   onZoomReset,
+  onActualSize,
   onToggleFullscreen,
   isOpen
 }: ShortcutProps) {
@@ -77,6 +80,12 @@ export function useShortcuts({
           e.preventDefault()
           onZoomReset()
           break
+        case '1':
+          // On a video 1-9 seek (the player handles them); this is the photo's 100%.
+          if (!onActualSize) break
+          e.preventDefault()
+          onActualSize()
+          break
         case 'f':
         case 'F':
           e.preventDefault()
@@ -91,6 +100,6 @@ export function useShortcuts({
     return () => {
       window.removeEventListener('keydown', handleKeyDown)
     }
-  }, [isOpen, onNext, onPrev, onFirst, onLast, onZoomIn, onZoomOut, onZoomReset, onToggleFullscreen])
+  }, [isOpen, onNext, onPrev, onFirst, onLast, onZoomIn, onZoomOut, onZoomReset, onActualSize, onToggleFullscreen])
 }
 export default useShortcuts

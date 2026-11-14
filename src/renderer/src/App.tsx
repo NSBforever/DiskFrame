@@ -123,6 +123,7 @@ import UnresolvedFolders from './components/UnresolvedFolders'
 import AppearanceSetting from './components/AppearanceSetting'
 import AboutConnect from './components/AboutConnect'
 import GlassSelect from './components/GlassSelect'
+import { UpdateNotice, UpdateSettings } from './components/Updates'
 import DateScrubber from './components/DateScrubber'
 import TransferMenu, { type TransferDrive } from './components/TransferMenu'
 import { progressiveUpdateAction, groupSelectionRange } from '../../main/progressiveLibrary'
@@ -650,8 +651,6 @@ const MainContentArea: React.FC<{
   onAiSearchButtonChange: (enabled: boolean) => void
   startFullscreen: boolean
   onStartFullscreenChange: (on: boolean) => void
-  autoUpdate: boolean
-  onAutoUpdateChange: (on: boolean) => void
   unresolvedKey: number
   libraryState: 'idle' | 'loading' | 'ready'
   /** Discovery is still running, so every count on screen is a lower bound. */
@@ -722,8 +721,6 @@ const MainContentArea: React.FC<{
   onAiSearchButtonChange,
   startFullscreen,
   onStartFullscreenChange,
-  autoUpdate,
-  onAutoUpdateChange,
   unresolvedKey,
   libraryState,
   discovering,
@@ -915,7 +912,7 @@ const MainContentArea: React.FC<{
   // re-renders this whole view. See DateScrubber's indicatorRef prop doc.
   const scrubberDotRef = useRef<HTMLDivElement>(null)
   const onScrollFracChange = useCallback((frac: number) => {
-    if (scrubberDotRef.current) scrubberDotRef.current.style.top = `${frac * 100}%`
+    if (scrubberDotRef.current) scrubberDotRef.current.style.transform = `translateY(${frac * 100}%)`
   }, [])
   const jumpToGroup = useCallback((key: string | undefined) => {
     setActiveView('Grid')
@@ -1429,29 +1426,7 @@ const MainContentArea: React.FC<{
             </div>
           </section>
 
-          <section className="glass-panel settings-card" aria-labelledby="updates-heading">
-            <h3 id="updates-heading" className="settings-heading">
-              Updates
-            </h3>
-            <div className="settings-field">
-              <div className="settings-field-head">
-                <label htmlFor="settings-auto-update" className="settings-label">
-                  Update automatically
-                </label>
-                <input
-                  id="settings-auto-update"
-                  className="settings-switch"
-                  type="checkbox"
-                  checked={autoUpdate}
-                  onChange={(e) => onAutoUpdateChange(e.target.checked)}
-                />
-              </div>
-              <div className="settings-hint">
-                Checks GitHub for a new version when DiskFrame starts, downloads it in the background and
-                installs it when you close the app. Nothing about your files is sent. Applies from the next launch.
-              </div>
-            </div>
-          </section>
+          <UpdateSettings />
 
           <section className="glass-panel settings-card" aria-labelledby="playback-heading">
             <h3 id="playback-heading" className="settings-heading">
@@ -1766,18 +1741,6 @@ export default function App(): React.JSX.Element {
     setStartFullscreen(on)
     void window.api.setStartFullscreen(on)
   }, [])
-  // Automatic updates: the preference, and a version that has finished
-  // downloading (it installs on quit; the banner offers to do it now).
-  const [autoUpdate, setAutoUpdate] = useState(true)
-  const [updateReady, setUpdateReady] = useState<string | null>(null)
-  useEffect(() => {
-    window.api.getAutoUpdate?.().then(setAutoUpdate).catch(() => {})
-    return window.api.onUpdateReady?.((d) => setUpdateReady(d.version))
-  }, [])
-  const handleAutoUpdateChange = useCallback((on: boolean): void => {
-    setAutoUpdate(on)
-    void window.api.setAutoUpdate(on)
-  }, [])
 
   useEffect(() => {
     localStorage.setItem('diskframe-tile-size', String(tileSize))
@@ -1820,6 +1783,11 @@ export default function App(): React.JSX.Element {
 
   // File Copy/Cut/Paste States
   const [ioProgress, setIoProgress] = useState<{ completed: number; total: number; currentFile: string } | null>(null)
+  // Cancel was pressed; cleared when the overlay goes away.
+  const [transferStopping, setTransferStopping] = useState(false)
+  useEffect(() => {
+    if (!ioProgress) setTransferStopping(false)
+  }, [ioProgress])
   const [toastMsg, setToastMsg] = useState<string | null>(null)
   const [indexingFolder, setIndexingFolder] = useState(false)
 
@@ -2778,7 +2746,8 @@ export default function App(): React.JSX.Element {
         const verb = mode === 'copy' ? 'Copied' : 'Moved'
         setToastMsg(
           `${verb} ${ok} of ${paths.length} to ${destDir}` +
-            (failed.length ? ` · ${failed.length} not ${mode === 'copy' ? 'copied' : 'moved'}: ${failed[0].error}` : '')
+            (failed.length ? ` · ${failed.length} not ${mode === 'copy' ? 'copied' : 'moved'}: ${failed[0].error}` : '') +
+            (res?.cancelled ? ` · stopped, ${res.cancelled} left where they were` : '')
         )
         setSelected(new Set())
         // Moved files have left this drive's gallery.
@@ -2916,7 +2885,7 @@ export default function App(): React.JSX.Element {
       const successCount = result?.success?.length ?? 0
       const failedCount = result?.failed?.length ?? 0
 
-      setToastMsg(`${action === 'copy' ? 'Copied' : 'Moved'} ${successCount} files to ${driveName}${failedCount > 0 ? `, ${failedCount} failed` : ''}`)
+      setToastMsg(`${action === 'copy' ? 'Copied' : 'Moved'} ${successCount} files to ${driveName}${failedCount > 0 ? `, ${failedCount} failed` : ''}${result?.cancelled ? `, stopped with ${result.cancelled} left where they were` : ''}`)
       setSelected(new Set())
     } catch (err) {
       console.error('Drop error', err)
@@ -2970,10 +2939,10 @@ export default function App(): React.JSX.Element {
               const successCount = result?.success?.length ?? 0
               const failedCount = result?.failed?.length ?? 0
               
-              setToastMsg(`${action === 'copy' ? 'Copied' : 'Moved'} ${successCount} files successfully${failedCount > 0 ? `, ${failedCount} failed` : ''}`)
+              setToastMsg(`${action === 'copy' ? 'Copied' : 'Moved'} ${successCount} files successfully${failedCount > 0 ? `, ${failedCount} failed` : ''}${result?.cancelled ? `, stopped with ${result.cancelled} left where they were` : ''}`)
               
               setSelected(new Set())
-              if (action === 'cut') {
+              if (action === 'cut' && !result?.cancelled) {
                 clipboardPathsRef.current = []
                 clipboardActionRef.current = null
               }
@@ -3024,10 +2993,40 @@ export default function App(): React.JSX.Element {
     <div style={{ display: 'flex', width: '100vw', height: '100vh', background: 'var(--app-bg, #0a0a0c)', color: 'var(--app-fg, #f2f2f0)', fontFamily: 'system-ui, sans-serif', fontSize: '13px', overflow: 'hidden', position: 'fixed', inset: 0 }}>
       <style>{`
         /* Inline animations for AI Search FAB Breathing Pulse */
+        /* Only transform and opacity move, so the pulse runs on the compositor.
+           Animating box-shadow itself forced a main-thread frame and a repaint
+           60 times a second for as long as the gallery was open; the brighter
+           glow is a second shadow on ::after, faded in and out instead.
+
+           Three breaths when the gallery appears, then it rests. Running for
+           ever, even on the compositor, it cost the gallery most of its frames:
+           a steady 2,000 px/s scroll over 10,000 photos drew 65-174 frames with
+           the pulse running and about 300 with it stopped (4 runs each). */
         @keyframes breathingPulse {
-          0% { transform: scale(1); opacity: 0.95; }
-          50% { transform: scale(1.03); opacity: 1; box-shadow: 0 0 20px rgba(225, 29, 46, 0.55); }
-          100% { transform: scale(1); opacity: 0.95; }
+          0%, 100% { transform: scale(1); opacity: 0.95; }
+          50% { transform: scale(1.03); opacity: 1; }
+        }
+        @keyframes breathingGlow {
+          0%, 100% { opacity: 0; }
+          50% { opacity: 1; }
+        }
+        .ai-fab::after {
+          content: '';
+          position: absolute;
+          inset: -1px;
+          border-radius: 50%;
+          box-shadow: 0 0 20px rgba(225, 29, 46, 0.55);
+          opacity: 0;
+          pointer-events: none;
+          animation: breathingGlow 4s ease-in-out 3;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .ai-fab, .ai-fab::after { animation: none !important; }
+        }
+        /* It had outline: none, so a keyboard user could not see it was focused. */
+        .ai-fab:focus-visible {
+          outline: 2px solid var(--app-fg, #f2f2f0);
+          outline-offset: 3px;
         }
         
         /* Checkbox visibility selectors on group-header hover */
@@ -3310,8 +3309,6 @@ export default function App(): React.JSX.Element {
           onAiSearchButtonChange={handleAiSearchButtonChange}
           startFullscreen={startFullscreen}
           onStartFullscreenChange={handleStartFullscreenChange}
-          autoUpdate={autoUpdate}
-          onAutoUpdateChange={handleAutoUpdateChange}
           unresolvedKey={unresolvedKey}
           libraryState={libraryState}
           discovering={scanning}
@@ -3465,7 +3462,7 @@ export default function App(): React.JSX.Element {
       {selectedDrive && isGalleryPage && !lightbox && aiSearchButtonEnabled && (
         <button
           onClick={() => setShowAiOverlay(true)}
-          className="gallery-chrome"
+          className="gallery-chrome ai-fab"
           style={{
             position: 'fixed',
             bottom: '55px',
@@ -3481,8 +3478,7 @@ export default function App(): React.JSX.Element {
             justifyContent: 'center',
             cursor: 'pointer',
             zIndex: 2000,
-            outline: 'none',
-            animation: 'breathingPulse 4s ease-in-out infinite',
+            animation: 'breathingPulse 4s ease-in-out 3',
             transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.15s'
           }}
           onMouseEnter={e => {
@@ -3500,6 +3496,7 @@ export default function App(): React.JSX.Element {
             e.currentTarget.style.transform = 'scale(1.08)'
           }}
           title="Ask AI Search Agent"
+          aria-label="Ask AI Search Agent"
         >
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <circle cx="12" cy="12" r="10" stroke="#e11d2e" strokeWidth="1.5" strokeDasharray="3 3" />
@@ -3698,17 +3695,7 @@ export default function App(): React.JSX.Element {
         </div>
       )}
 
-      {updateReady && (
-        <div className="glass-panel update-banner" role="status">
-          <span>DiskFrame {updateReady} is ready. It installs when you close the app.</span>
-          <button type="button" className="update-banner-restart" onClick={() => void window.api.installUpdate()}>
-            Restart now
-          </button>
-          <button type="button" className="update-banner-dismiss" aria-label="Dismiss" onClick={() => setUpdateReady(null)}>
-            ×
-          </button>
-        </div>
-      )}
+      <UpdateNotice busy={!!ioProgress || !!lightbox} />
 
       {/* Floating toast notification */}
       {toastMsg && (
@@ -3733,6 +3720,23 @@ export default function App(): React.JSX.Element {
             </div>
             <div style={{ width: '100%', height: '4px', background: 'var(--app-surface, var(--app-surface, #111114))', overflow: 'hidden' }}>
               <div style={{ width: `${(ioProgress.completed / ioProgress.total) * 100}%`, height: '100%', background: '#e11d2e', transition: 'width 0.15s ease' }} />
+            </div>
+            {/* Stops after the file in hand: nothing is ever left half-written. */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+              <span style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)' }}>
+                {transferStopping ? 'Stopping after this file…' : 'Files not reached stay where they are.'}
+              </span>
+              <button
+                type="button"
+                className="df-button"
+                disabled={transferStopping || ioProgress.completed >= ioProgress.total}
+                onClick={() => {
+                  setTransferStopping(true)
+                  void window.api.fsCancelTransfer()
+                }}
+              >
+                Cancel
+              </button>
             </div>
           </div>
         </div>

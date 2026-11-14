@@ -1,0 +1,119 @@
+/* The update notice and the Updates card. Same glass, tokens and red accent as
+   the rest of the app; .df-button is the one text-button style both use. */
+.df-button {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--app-hairline, rgba(255, 255, 255, 0.14));
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-fg, #f2f2f0);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.df-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--app-fg, #f2f2f0) 9%, transparent);
+}
+.df-button:active:not(:disabled) {
+  background: color-mix(in srgb, var(--app-fg, #f2f2f0) 15%, transparent);
+}
+.df-button:focus-visible {
+  outline: 2px solid var(--app-accent, #e11d2e);
+  outline-offset: 2px;
+}
+.df-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.df-button-primary {
+  border-color: transparent;
+  background: var(--app-accent, #e11d2e);
+  color: #fff;
+}
+.df-button-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--app-accent, #e11d2e) 86%, #fff);
+}
+.df-button-primary:active:not(:disabled) {
+  background: color-mix(in srgb, var(--app-accent, #e11d2e) 88%, #000);
+}
+.df-button-quiet {
+  border-color: transparent;
+  color: var(--app-fg-dim, #8a8a8f);
+}
+
+.update-notice {
+  position: fixed;
+  left: 24px;
+  bottom: 80px;
+  z-index: 10000;
+  width: min(420px, calc(100vw - 48px));
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--app-fg, #f2f2f0);
+  animation: update-notice-in 0.22s cubic-bezier(0.2, 0.85, 0.25, 1);
+}
+@keyframes update-notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+.update-notice-title {
+  font-size: 13px;
+  font-weight: 700;
+}
+.update-notice-text {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--app-fg-dim, #8a8a8f);
+}
+.update-notice-error {
+  color: var(--app-accent, #e11d2e);
+}
+.update-notice-bar {
+  height: 3px;
+  margin-top: 6px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--app-hairline, rgba(255, 255, 255, 0.14));
+}
+.update-notice-bar > div {
+  height: 100%;
+  background: var(--app-accent, #e11d2e);
+  transform-origin: left;
+  transition: transform 0.2s linear;
+}
+.update-notice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.settings-status {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--app-fg, #f2f2f0);
+}
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .update-notice {
+    animation: none;
+  }
+  .update-notice-bar > div,
+  .df-button {
+    transition: none;
+  }
+}

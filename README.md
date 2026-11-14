@@ -108,6 +108,6 @@ npm run dev        # run in development
 npm run build:win  # Windows installer (needs resources\bin\win\mpv.exe, see below)
 ```
 
-mpv.exe is about 117 MB and not in git; 1.0 ships mpv v0.41.0 from [mpv.io](https://mpv.io/installation/). `scripts/verify-pack.cjs` fails the build if mpv, ffmpeg, ffprobe, better-sqlite3 or sharp is missing from the package. Checks: `npm test`, `npm run typecheck`.
+mpv.exe is about 117 MB and not in git; 1.0 ships mpv v0.41.0 from [mpv.io](https://mpv.io/installation/). `scripts/verify-pack.cjs` fails the build if mpv, ffmpeg, ffprobe, better-sqlite3 or sharp is missing from the package. Checks: `npm test`, `npm run typecheck`. Every push runs them in GitHub Actions (`.github/workflows/ci.yml`); pushing a version tag builds a draft release (`release.yml`). How a release is cut, and what it must contain for installed copies to update, is in [docs/RELEASING.md](docs/RELEASING.md).
 
 </details>

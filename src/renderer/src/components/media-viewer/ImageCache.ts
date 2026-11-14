@@ -57,9 +57,17 @@ class ImageCache {
 
     return new Promise((resolve, reject) => {
       const img = new Image()
+      img.decoding = 'async'
       img.onload = () => {
-        this.set(path, img)
-        resolve(img)
+        // Resolved once the bitmap is decoded, not merely downloaded: the
+        // viewer shows the picture on this promise, and a picture that still
+        // has to decode does so on its first paint - a visible hitch on a
+        // large photo, and on every next/previous into one.
+        const ready = (): void => {
+          this.set(path, img)
+          resolve(img)
+        }
+        img.decode().then(ready, ready)
       }
       img.onerror = (e) => {
         img.src = ''

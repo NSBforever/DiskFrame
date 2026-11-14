@@ -2,3 +2,5 @@ singleQuote: true
 semi: false
 printWidth: 100
 trailingComma: none
+# Files are CRLF in a Windows checkout and LF in git; neither is a formatting error.
+endOfLine: auto
