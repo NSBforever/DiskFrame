@@ -12,7 +12,6 @@ import {
   FlipHorizontal,
   ZoomIn,
   ZoomOut,
-  Maximize,
   Maximize2,
   Minimize2
 } from 'lucide-react'
@@ -32,7 +31,6 @@ interface MediaViewerToolbarProps {
   /** Zoom, rotate and flip are photo-only; hidden when viewing video. */
   isVideo?: boolean
   onFit: () => void
-  onFill: () => void
   onActualSize: () => void
   /** True magnification (scale x fitScale), already a percentage. */
   displayPercent: number
@@ -50,10 +48,15 @@ const IconBtn: React.FC<{
   children: React.ReactNode
   active?: boolean
   danger?: boolean
-}> = ({ onClick, title, children, active, danger }) => (
+  disabled?: boolean
+}> = ({ onClick, title, children, active, danger, disabled }) => (
   <button
+    type="button"
     onClick={onClick}
     title={title}
+    aria-label={title}
+    aria-pressed={active}
+    disabled={disabled}
     style={{
       display: 'flex',
       alignItems: 'center',
@@ -62,13 +65,15 @@ const IconBtn: React.FC<{
       height: '36px',
       borderRadius: '4px', // CRED Style sharp edges
       border: `1px solid ${active ? '#e11d2e' : 'rgba(255,255,255,0.05)'}`,
-      cursor: 'pointer',
+      cursor: disabled ? 'default' : 'pointer',
+      opacity: disabled ? 0.35 : 1,
       background: active ? 'rgba(225, 29, 46, 0.15)' : 'transparent',
       color: active ? '#e11d2e' : danger ? '#e11d2e' : '#d0d0e0',
       transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.2s, background-color 0.2s',
       flexShrink: 0
     }}
     onMouseEnter={(e) => {
+      if (disabled) return
       e.currentTarget.style.borderColor = active ? '#e11d2e' : danger ? '#ff2b3d' : 'rgba(255,255,255,0.15)'
       e.currentTarget.style.background = active ? 'rgba(225, 29, 46, 0.2)' : danger ? 'rgba(225, 29, 46, 0.1)' : 'rgba(255,255,255,0.02)'
       e.currentTarget.style.color = active || danger ? '#e11d2e' : '#ffffff'
@@ -80,7 +85,7 @@ const IconBtn: React.FC<{
       e.currentTarget.style.transform = 'scale(1)'
     }}
     onMouseDown={(e) => {
-      if (e.button === 0) e.currentTarget.style.transform = 'scale(0.9)'
+      if (e.button === 0 && !disabled) e.currentTarget.style.transform = 'scale(0.9)'
     }}
     onMouseUp={(e) => {
       if (e.button === 0) e.currentTarget.style.transform = 'scale(1)'
@@ -103,7 +108,6 @@ export const MediaViewerToolbar: React.FC<MediaViewerToolbarProps> = ({
   onZoomChange,
   isVideo,
   onFit,
-  onFill,
   onActualSize,
   displayPercent,
   fitScale,
@@ -114,7 +118,6 @@ export const MediaViewerToolbar: React.FC<MediaViewerToolbarProps> = ({
   isInfoOpen
 }) => {
   const isFit = Math.abs(scale - 1) < 0.01
-  const isActual = fitScale > 0 && Math.abs(scale * fitScale - 1) < 0.01
   return (
     <div
       onClick={(e) => e.stopPropagation()}
@@ -194,16 +197,24 @@ export const MediaViewerToolbar: React.FC<MediaViewerToolbarProps> = ({
           <ZoomIn size={16} />
         </IconBtn>
 
-        {/* Zoom Presets */}
-        <IconBtn onClick={onFit} title="Fit — whole image, never cropped (0)" active={isFit}>
-          <Minimize2 size={16} />
-        </IconBtn>
-        <IconBtn onClick={onActualSize} title="Actual size — 100%, one image pixel per screen pixel (1)" active={isActual}>
-          <Maximize size={16} />
-        </IconBtn>
-        <IconBtn onClick={onFill} title="Fill — cover the window, may crop">
-          <Maximize2 size={16} />
-        </IconBtn>
+        {/* One toggle between the two viewing states. The icon shows what a
+            click will do: expand to 100% from Fit, contract back to Fit from
+            anything zoomed. An image already shown at 100% when fitted has
+            nothing to expand to, so the button says so instead of no-oping. */}
+        {isFit ? (
+          <IconBtn
+            key="to-actual"
+            onClick={onActualSize}
+            title={fitScale >= 1 ? 'Already at actual size (100%)' : 'Actual size — 100% (1)'}
+            disabled={fitScale >= 1}
+          >
+            <Maximize2 size={16} />
+          </IconBtn>
+        ) : (
+          <IconBtn key="to-fit" onClick={onFit} title="Fit to screen — whole image, never cropped (0)" active>
+            <Minimize2 size={16} />
+          </IconBtn>
+        )}
       </div>
       )}
 

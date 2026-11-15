@@ -45,8 +45,6 @@ export interface MapPageProps {
 
 /** How many files a place panel loads at a time. */
 const PLACE_PAGE = 60
-/** Below this the map stops splitting and opens the place instead. */
-const MAX_SPLIT_ZOOM = 17
 
 
 function escapeAttr(s: string): string {
@@ -263,20 +261,9 @@ export default function MapPage({ query, onOpenFile }: MapPageProps): React.JSX.
         title: `${c.count.toLocaleString()} file${c.count === 1 ? '' : 's'} near ${placeLabel(c)}`
       })
 
-      marker.on('click', () => {
-        const spans = c.maxLat - c.minLat > 1e-6 || c.maxLng - c.minLng > 1e-6
-        // Zoom into a cluster that can still be broken up; otherwise there is
-        // nothing left to split, so show what is actually there.
-        if (c.count > 1 && spans && map.getZoom() < MAX_SPLIT_ZOOM) {
-          const b = clusterBounds(c)
-          map.flyToBounds(
-            L.latLngBounds([b.minLat, b.minLng], [b.maxLat, b.maxLng]),
-            { padding: [70, 70], maxZoom: MAX_SPLIT_ZOOM, animate: !reducedMotion, duration: 0.6 }
-          )
-        } else {
-          openCluster(c)
-        }
-      })
+      // A pin is a place: clicking it shows every file there. Zooming in to
+      // split a place stays on the wheel and the +/- control.
+      marker.on('click', () => openCluster(c))
       marker.addTo(layer)
     }
   }, [clusters, reducedMotion, openCluster])

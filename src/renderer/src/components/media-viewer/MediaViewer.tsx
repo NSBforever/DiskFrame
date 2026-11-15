@@ -163,6 +163,12 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
   const isPhoto = photoExts.includes(file.ext.toLowerCase())
   const isVideo = videoExts.includes(file.ext.toLowerCase())
   const [imgDimensions, setImgDimensions] = useState<{ width: number; height: number } | null>(null)
+  // mpv restates the frame size on every position tick. A fresh object each
+  // time re-rendered the whole viewer several times a second during playback
+  // and restarted the Info panel's metadata load; an unchanged size is kept.
+  const handleImageLoaded = useCallback((d: { width: number; height: number }) => {
+    setImgDimensions((p) => (p && p.width === d.width && p.height === d.height ? p : d))
+  }, [])
   const [rotation, setRotation] = useState(0)
   const [flipHorizontal, setFlipHorizontal] = useState(false)
   const rotationRef = useRef(rotation)
@@ -736,16 +742,6 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
   /** One image pixel per screen pixel. */
   const handleActualSize = () => zoomTo(1 / (fitScale || 1))
 
-  /** Cover the stage: may crop, which is the one mode allowed to. */
-  const handleFill = () => {
-    if (!stageRef.current || !imgDimensions) return
-    const { clientWidth: cw, clientHeight: ch } = stageRef.current
-    const { width: iw, height: ih } = imgDimensions
-    if (!iw || !ih) return
-    const cover = Math.max(cw / iw, ch / ih)
-    zoomTo(cover / (fitScale || 1))
-  }
-
   const handleDownload = () => {
     const a = document.createElement('a')
     a.href = mediaUrl(file.path)
@@ -871,7 +867,6 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
           scale={scale}
           onZoomChange={handleZoomChange}
           onFit={handleFit}
-          onFill={handleFill}
           onActualSize={handleActualSize}
           displayPercent={displayPercent}
           fitScale={fitScale}
@@ -978,6 +973,13 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
         ref={stageRef}
         style={{
           width: isInfoOpen && phase === 'open' ? 'calc(100% - 320px)' : '100%',
+          // The root centres its children, so a narrowed stage used to sit
+          // in the middle: 160px of empty space on the left and its right
+          // edge 160px under the Info panel. mpv's window follows the stage
+          // and always paints above the page, so for a video that covered
+          // half of the Info panel. Pinned left, the stage ends where the
+          // panel begins.
+          marginRight: 'auto',
           opacity: stageHidden ? 0 : 1,
           height: '100%',
           display: 'flex',
@@ -998,7 +1000,7 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
           scale={scale}
           translateX={translateX}
           translateY={translateY}
-          onImageLoaded={setImgDimensions}
+          onImageLoaded={handleImageLoaded}
           onNext={handleNext}
           onPrev={handlePrev}
           isClosing={phase === 'closing'}

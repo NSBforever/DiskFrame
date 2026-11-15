@@ -1371,6 +1371,12 @@ const MainContentArea: React.FC<{
             </div>
           </div>
 
+          {/* Two stacks rather than a row grid: the cards differ in height,
+              so pairing them row by row left holes. Each column is balanced
+              by content (~560 / ~600px at 1536x960), and on a narrow content
+              area the stacks simply follow one another. */}
+          <div className="settings-grid">
+          <div className="settings-col">
           <AppearanceSetting />
 
           {/* Same glass card as Appearance and the dock, so Settings reads as
@@ -1426,8 +1432,6 @@ const MainContentArea: React.FC<{
             </div>
           </section>
 
-          <UpdateSettings />
-
           <section className="glass-panel settings-card" aria-labelledby="playback-heading">
             <h3 id="playback-heading" className="settings-heading">
               Playback
@@ -1448,6 +1452,10 @@ const MainContentArea: React.FC<{
               <div className="settings-hint">Play a short muted preview when hovering a video tile.</div>
             </div>
           </section>
+          </div>
+
+          <div className="settings-col">
+          <UpdateSettings />
 
           <section className="glass-panel settings-card" aria-labelledby="search-heading">
             <h3 id="search-heading" className="settings-heading">
@@ -1478,6 +1486,8 @@ const MainContentArea: React.FC<{
             version={runtimeMode?.appVersion ?? null}
             buildCommit={runtimeMode?.buildCommit ?? null}
           />
+          </div>
+          </div>
         </div>
       )}
 

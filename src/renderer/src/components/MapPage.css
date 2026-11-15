@@ -228,6 +228,9 @@
   padding: 12px;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+  /* Without this Chromium sizes the rows before the square tiles know their
+     width, so rows came out ~40px under ~90px tiles and overlapped. */
+  grid-auto-rows: min-content;
   gap: 6px;
   align-content: start;
 }
