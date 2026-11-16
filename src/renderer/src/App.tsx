@@ -3460,7 +3460,7 @@ export default function App(): React.JSX.Element {
 
       {/* Magnetic glass navigation dock, floating above the status bar */}
       {selectedDrive && (
-        <div className="gallery-chrome" style={{ position: 'fixed', bottom: '55px', left: '50%', transform: 'translateX(-50%)', zIndex: 1999 }}>
+        <div className="gallery-chrome app-dock-anchor">
           <MagneticDock items={dockItems} />
         </div>
       )}
