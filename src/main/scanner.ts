@@ -1,7 +1,7 @@
 import { join, basename, extname, dirname } from 'path'
 import * as fs from 'fs'
 import * as cp from 'child_process'
-import exifr from 'exifr'
+import { readPhotoMeta } from './photoGps'
 import Database from 'better-sqlite3'
 import { app, utilityProcess } from 'electron'
 import sharp from 'sharp'
@@ -1741,7 +1741,15 @@ const updateGpsOnlyStmt = db.prepare(
   `UPDATE files SET lat=?, lng=? WHERE path=? AND volume_id IS ? AND lat IS NULL`
 )
 
-const markExifCheckedStmt = db.prepare('UPDATE files SET exif_checked = 1 WHERE path = ? AND volume_id IS ?')
+// Overwrites a stored position: only for rows being repaired (see below).
+const repairGpsStmt = db.prepare(`UPDATE files SET lat=?, lng=? WHERE path=? AND volume_id IS ?`)
+
+// exif_checked: 0 = never read, 1 = read before the hemisphere fix (a photo's
+// stored position may be mirrored), 2 = read with the GPS reference tags.
+const markExifCheckedStmt = db.prepare('UPDATE files SET exif_checked = 2 WHERE path = ? AND volume_id IS ?')
+
+/** Extensions read with exifr; their positions needed the hemisphere fix. */
+const VIDEO_EXIF_EXTS = new Set(['.mp4', '.mov'])
 
 let exifBackfillRunning = false
 
@@ -1771,14 +1779,26 @@ export async function enrichExifBackfill(
   try {
     const extList = [...EXIF_EXTS]
     const placeholders = extList.map(() => '?').join(',')
+    const videoList = [...VIDEO_EXIF_EXTS]
+    // Never-read files, plus photos whose position was stored before the
+    // hemisphere fix (exif_checked = 1 with coordinates). Those are re-read
+    // once for their position only; videos were always read with a signed
+    // ISO 6709 string and are not affected.
     const pending = db
       .prepare(
-        `SELECT path, ext, volume_id FROM files
-         WHERE exif_checked = 0 AND trashed_at IS NULL AND ext IN (${placeholders})
+        `SELECT path, ext, volume_id, exif_checked FROM files
+         WHERE trashed_at IS NULL AND ext IN (${placeholders})
+           AND (exif_checked = 0
+                OR (exif_checked = 1 AND lat IS NOT NULL AND ext NOT IN (${videoList.map(() => '?').join(',')})))
            ${volumeId ? 'AND volume_id = ?' : ''}
          ORDER BY date DESC`
       )
-      .all(...extList, ...(volumeId ? [volumeId] : [])) as { path: string; ext: string; volume_id: string | null }[]
+      .all(...extList, ...videoList, ...(volumeId ? [volumeId] : [])) as {
+      path: string
+      ext: string
+      volume_id: string | null
+      exif_checked: number
+    }[]
 
     const total = pending.length
     if (total === 0) return 0
@@ -1796,7 +1816,7 @@ export async function enrichExifBackfill(
         if (shouldStop?.()) return
         await whenIdle?.()
         if (shouldStop?.()) return
-        const { path: fullPath, ext, volume_id: rowVolumeId } = pending[cursor++]
+        const { path: fullPath, ext, volume_id: rowVolumeId, exif_checked: wasChecked } = pending[cursor++]
         const lowerExt = ext.toLowerCase()
         // A file that cannot be reached right now (drive unplugged, path on a
         // letter the volume no longer has) is left unchecked for a later pass.
@@ -1811,7 +1831,7 @@ export async function enrichExifBackfill(
           let lat: number | null = null
           let lng: number | null = null
 
-          if (lowerExt === '.mov' || lowerExt === '.mp4') {
+          if (VIDEO_EXIF_EXTS.has(lowerExt)) {
             const meta = await getMovMetadata(fullPath)
             if (meta) {
               date = meta.date
@@ -1819,18 +1839,14 @@ export async function enrichExifBackfill(
               lng = meta.lng
             }
           } else {
-            const exif = await exifr.parse(fullPath, {
-              pick: ['DateTimeOriginal', 'GPSLatitude', 'GPSLongitude'],
-              gps: true
-            })
-            if (exif) {
-              if (exif.DateTimeOriginal) date = new Date(exif.DateTimeOriginal)
-              lat = typeof exif.latitude === 'number' ? exif.latitude : null
-              lng = typeof exif.longitude === 'number' ? exif.longitude : null
-            }
+            ;({ date, lat, lng } = await readPhotoMeta(fullPath))
           }
 
-          if (isUsableCaptureDate(date)) {
+          if (wasChecked === 1) {
+            // Repair: the date was already corrected on the first read; only
+            // the position can be wrong, so only the position is rewritten.
+            if (lat !== null && lng !== null) repairGpsStmt.run(lat, lng, fullPath, rowVolumeId)
+          } else if (isUsableCaptureDate(date)) {
             const d = date as Date
             updateExifStmt.run(
               d.toISOString(),
