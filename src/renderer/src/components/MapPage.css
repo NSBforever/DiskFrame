@@ -134,6 +134,31 @@
   pointer-events: none;
 }
 
+/* Names the section or search the map inherited from the gallery. Below the
+   status pill, above the empty state so it can lift a filter that left
+   nothing to show. */
+.map-filter {
+  top: 50px;
+  left: 66px;
+  z-index: 700;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 6px 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  max-width: calc(100% - 90px);
+}
+.map-filter > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.map-filter .map-btn {
+  flex: none;
+}
+
 .map-empty {
   position: absolute;
   inset: 0;

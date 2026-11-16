@@ -69,6 +69,24 @@ function clusterBounds(c: MapCluster): MapBounds {
   }
 }
 
+const NAV_LABELS: Record<string, string> = {
+  photos: 'Photos',
+  videos: 'Videos',
+  favourites: 'Favourites',
+  docs: 'Documents',
+  screenshots: 'Screenshots'
+}
+
+/** "Photos only, matching “beach”" for a filtered query; null for everything. */
+function describeFilter(q: MapQuery | null): string | null {
+  if (!q) return null
+  const parts: string[] = []
+  if (NAV_LABELS[q.nav]) parts.push(`${NAV_LABELS[q.nav]} only`)
+  const term = q.search.trim()
+  if (term) parts.push(`matching “${term}”`)
+  return parts.length ? parts.join(', ') : null
+}
+
 function placeLabel(c: MapCluster): string {
   const ns = c.lat >= 0 ? 'N' : 'S'
   const ew = c.lng >= 0 ? 'E' : 'W'
@@ -84,7 +102,19 @@ function placeLabel(c: MapCluster): string {
  * request carries a generation number and late replies from a superseded pan
  * or zoom are dropped rather than painted.
  */
-export default function MapPage({ query, onOpenFile }: MapPageProps): React.JSX.Element {
+export default function MapPage({ query: galleryQuery, onOpenFile }: MapPageProps): React.JSX.Element {
+  // The map carries the gallery's section and search, but nothing on this page
+  // showed it: arriving from Favourites quietly mapped 3 files, from Photos
+  // only photos. The filter is named on the map now and can be lifted here.
+  const filterLabel = describeFilter(galleryQuery)
+  const filterKey = galleryQuery ? `${galleryQuery.nav}|${galleryQuery.search}` : ''
+  // Remembered per filter, so a different section or search applies again.
+  const [liftedFor, setLiftedFor] = useState<string | null>(null)
+  const lifted = !!filterLabel && liftedFor === filterKey
+  const query = useMemo<MapQuery | null>(
+    () => (galleryQuery && lifted ? { ...galleryQuery, nav: 'all', search: '' } : galleryQuery),
+    [galleryQuery, lifted]
+  )
   const hostRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<L.Map | null>(null)
   const layerRef = useRef<L.LayerGroup | null>(null)
@@ -308,6 +338,22 @@ export default function MapPage({ query, onOpenFile }: MapPageProps): React.JSX.
           {loading
             ? 'Loading places…'
             : `${clusters.length} place${clusters.length === 1 ? '' : 's'} · ${total.toLocaleString()} file${total === 1 ? '' : 's'}`}
+        </div>
+      )}
+
+      {filterLabel && (
+        <div className="map-overlay map-filter" role="status">
+          <span>{lifted ? 'Showing all files' : `Showing ${filterLabel}`}</span>
+          <button
+            type="button"
+            className="map-btn"
+            onClick={() => {
+              setPlace(null)
+              setLiftedFor(lifted ? null : filterKey)
+            }}
+          >
+            {lifted ? `Only ${filterLabel.replace(/ only/, '')}` : 'Show all'}
+          </button>
         </div>
       )}
 
