@@ -189,6 +189,9 @@
 /* ── place panel ─────────────────────────────────────────────────────── */
 
 .map-place {
+  /* Above Leaflet's controls (z-index 1000): below 900px the panel spans the
+     map and the +/- buttons sat on top of its title and file count. */
+  z-index: 1001;
   top: 12px;
   right: 12px;
   bottom: 12px;
