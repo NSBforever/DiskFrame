@@ -5,6 +5,7 @@ import './MapPage.css'
 import type { ScannedFile } from '../App'
 import { useReducedMotionPref } from '../hooks/useReducedMotionPref'
 import { mediaUrl } from '../../../main/mediaUrl'
+import { mergeOverlapping } from '../../../main/mapMerge'
 
 export interface MapBounds {
   minLat: number
@@ -45,6 +46,8 @@ export interface MapPageProps {
 
 /** How many files a place panel loads at a time. */
 const PLACE_PAGE = 60
+/** A pin's box (see .map-pin); places closer than this on screen are merged. */
+const PIN_BOX = { w: 56, h: 64 }
 
 
 function escapeAttr(s: string): string {
@@ -121,7 +124,13 @@ export default function MapPage({ query, onOpenFile }: MapPageProps): React.JSX.
       })
       .then((res: { clusters?: MapCluster[] }) => {
         if (generation !== genRef.current) return
-        setClusters(res?.clusters ?? [])
+        // Neighbouring grid cells can put their pins on top of each other;
+        // merge those at this zoom so every pin can be seen and clicked.
+        const m = mapRef.current
+        const raw = res?.clusters ?? []
+        setClusters(
+          m ? mergeOverlapping(raw, (lat, lng) => m.latLngToContainerPoint([lat, lng]), PIN_BOX) : raw
+        )
         setLoading(false)
       })
       .catch(() => {
