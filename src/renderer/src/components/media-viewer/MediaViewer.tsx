@@ -777,7 +777,14 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
   // The stage shows the media itself; while a flight is in the air the flight
   // is the media, and the stage stays invisible so there is never two of it.
   const stageHidden = phase === 'opening' || (phase === 'closing' && !!flight)
-  const chromeOn = controlsVisible && phase === 'open'
+  // A video playing in mpv has exactly one set of controls: the overlay inside
+  // mpv's own window. This window's chrome used to render under it too, and
+  // showed on its own - an older player, for a moment - while mpv was still
+  // starting hidden. It is drawn for videos only when this window IS the
+  // player (the fallback <video>) or there is nothing playing (an error).
+  const [player, setPlayer] = useState<{ mode: 'native' | 'stream' | 'mpv' | null; error: boolean }>({ mode: null, error: false })
+  const mpvOwnsChrome = isVideo && !player.error && player.mode !== 'native' && player.mode !== 'stream'
+  const chromeOn = controlsVisible && phase === 'open' && !mpvOwnsChrome
 
   return (
     <div
@@ -984,6 +991,7 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
           onToggleTheatre={() => setIsTheatre((t) => !t)}
           onToggleFullscreen={handleToggleFullscreen}
           isFullscreen={isFullscreen}
+          onPlayerChange={setPlayer}
           file={file}
           list={list}
           rotation={rotation}

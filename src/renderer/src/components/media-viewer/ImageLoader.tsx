@@ -43,6 +43,8 @@ interface ImageLoaderProps {
   onFav?: (file: ScannedFile) => void
   onShowHelp?: () => void
   onToggleTheatre?: () => void
+  /** Which player is showing this video (null while it starts), and whether it failed. */
+  onPlayerChange?: (p: { mode: 'native' | 'stream' | 'mpv' | null; error: boolean }) => void
   /** The viewer's full screen (the window's, owned by MediaViewer). */
   onToggleFullscreen?: () => void
   isFullscreen?: boolean
@@ -131,6 +133,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   onToggleTheatre,
   onToggleFullscreen,
   isFullscreen = false,
+  onPlayerChange,
   isClosing,
   holdVideo = false,
   onVideoRevealed
@@ -454,6 +457,10 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
       clearTimeout(spinnerTimer)
     }
   }, [file.path, isPhoto, isVideo, onImageLoaded, retryNonce])
+
+  useEffect(() => {
+    onPlayerChange?.({ mode: isVideo ? videoMode : null, error: isVideo && videoError })
+  }, [isVideo, videoMode, videoError, onPlayerChange])
 
   // Put the video on screen once the viewer has landed and there is a frame to
   // show - never before, so the opening animation and its poster are not
@@ -1301,7 +1308,9 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
                 </div>
               )}
 
-              {/* Custom YouTube-style Video Control Overlay */}
+              {/* Controls for the fallback <video> only: in mpv mode the overlay
+                  inside mpv's window is the player's one set of controls. */}
+              {videoMode !== 'mpv' && (
               <div
                 className="media-viewer-controls"
                 onMouseEnter={() => setPointerOverControls(true)}
@@ -1663,6 +1672,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
                   </div>
                 </div>
               </div>
+              )}
             </>
           ) : (
             /* Starting: the file's own thumbnail as a poster so the frame is
