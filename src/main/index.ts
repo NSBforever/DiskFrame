@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, protocol, crashReporter, Menu, dialog, powerMonitor } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, protocol, crashReporter, Menu, dialog, powerMonitor, nativeImage } from 'electron'
 import { join, basename, extname } from 'path'
 import { spawn, execFile } from 'child_process'
 import * as fs from 'fs'
@@ -63,6 +63,8 @@ import {
   purgeGeneratedAssetRows,
   clearThumbSentinels,
   indexFolderBounded,
+  updateFileInPlace,
+  isIndexedPath,
   cancelFolderIndex,
   getDriveAvailability,
   checkPathAvailability,
@@ -104,6 +106,8 @@ import {
 } from './validation'
 import { parseSafeMode, subsystemEnabled } from './runtimeMode'
 import { needsFullWalk, parseIndexFormats, withFormat, type IndexFormats } from './indexFormat'
+import { importDropped, type DropImportResult } from './dropImport'
+import { isIndexableMediaFile } from './mediaSniff'
 import { resolveDriveLetters } from './driveIdentity'
 import { ThumbStageStats } from './thumbStages'
 import { heicToJpeg, stopHeicWorkers } from './heicPool'
@@ -2054,6 +2058,43 @@ app.whenReady().then(() => {
     }
   })
 
+  // Files and folders dropped on the window from Explorer (see dropImport.ts).
+  let dropImporting = false
+  ipcMain.handle('import-dropped', async (_event, paths: unknown): Promise<DropImportResult> => {
+    const empty: DropImportResult = { added: 0, already: 0, unsupported: 0, missing: 0, folders: 0, capped: false, drives: [] }
+    if (dropImporting) return { ...empty, busy: true }
+    const list = safePathList(paths)
+    if (list.length === 0) return empty
+    dropImporting = true
+    try {
+      // Rows are keyed by (volume, path): know each drive's volume before asking "already indexed?".
+      for (const d of new Set(list.map((p) => p.slice(0, 2).toUpperCase()))) {
+        const vid = await getVolumeId(d)
+        if (vid) primeVolumeCache(d, vid)
+      }
+      const r = await importDropped(list, {
+        stat: (p) => fs.promises.stat(p).then((st) => ({ isDirectory: st.isDirectory() }), () => null),
+        isMedia: (p) => isIndexableMediaFile(p),
+        isIndexed: async (p) => isIndexedPath(p, getCachedVolumeId(p.slice(0, 2).toUpperCase())),
+        indexFile: async (p) => !!(await updateFileInPlace(p)),
+        indexFolder: async (p) => {
+          const f = await indexFolderBounded(p, 5000)
+          return { added: f.added, seen: f.seen ?? f.added, capped: f.stoppedBy === 'files' || f.stoppedBy === 'entries' }
+        },
+        yieldNow: () => new Promise((res) => setImmediate(res))
+      })
+      for (const d of r.drives) sendFilesUpdated(d, 'index-folder')
+      if (r.added) void refreshVolumeCache()
+      diag('drop', `${list.length} dropped: +${r.added}, ${r.already} already, ${r.unsupported} unsupported, ${r.missing} missing, ${r.folders} folders`)
+      return r
+    } catch (err) {
+      console.error('[import-dropped]', err)
+      return { ...empty, missing: list.length }
+    } finally {
+      dropImporting = false
+    }
+  })
+
   // Keep the letter -> volume map current; everything that resolves a path
   // reads it synchronously, so it must be refreshed when drives come and go.
   void refreshVolumeCache()
@@ -2346,7 +2387,7 @@ app.whenReady().then(() => {
     closeMpv()
   })
 
-  ipcMain.on('start-native-drag', (event, filePaths: string[]) => {
+  ipcMain.on('start-native-drag', (event, filePaths: string[], image?: { dataUrl?: unknown; scale?: unknown }) => {
     const validFiles = safePathList(filePaths).filter((p) => fs.existsSync(p))
 
     if (validFiles.length === 0) {
@@ -2370,11 +2411,34 @@ app.whenReady().then(() => {
         : join(appPath, 'resources', 'icon.png')
     }
 
+    // The preview the renderer drew (the file's own thumbnail, a count for
+    // several). Windows shows it as the drag image; a missing or malformed one
+    // falls back to the plain icon - startDrag refuses an empty image.
+    let icon: Electron.NativeImage | string = iconPath
+    const url = image && typeof image.dataUrl === 'string' ? image.dataUrl : ''
+    if (url.startsWith('data:image/png;base64,') && url.length < 2_000_000) {
+      const scale = Math.min(4, Math.max(1, Number(image?.scale) || 1))
+      const img = nativeImage.createFromBuffer(Buffer.from(url.slice(22), 'base64'), { scaleFactor: scale })
+      if (!img.isEmpty()) icon = img
+    }
+    // Test seam (like DF_UPDATE_FEED): record the drag instead of starting a
+    // real one, which synthetic test input could drop wherever the cursor is.
+    const dryRun = process.env.DF_DRAG_DRYRUN
+    if (dryRun) {
+      fs.mkdirSync(dryRun, { recursive: true })
+      const stem = join(dryRun, `drag-${Date.now()}`)
+      fs.writeFileSync(`${stem}.json`, JSON.stringify({ files: validFiles, custom: typeof icon !== 'string', scale: Number(image?.scale) || 1 }))
+      if (typeof icon !== 'string') fs.writeFileSync(`${stem}.png`, icon.toPNG())
+      return
+    }
     event.sender.startDrag({
       file: validFiles[0],
       files: validFiles,
-      icon: iconPath
+      icon
     })
+    // On Windows startDrag returns when the drag is over (dropped or cancelled).
+    // The renderer stops treating incoming file drags as its own.
+    if (!event.sender.isDestroyed()) event.sender.send('native-drag-end')
   })
 
   // ── TRANSCODE (improved: parse duration, reliable spawn) ──

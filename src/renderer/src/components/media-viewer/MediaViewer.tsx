@@ -777,7 +777,40 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
   // The stage shows the media itself; while a flight is in the air the flight
   // is the media, and the stage stays invisible so there is never two of it.
   const stageHidden = phase === 'opening' || (phase === 'closing' && !!flight)
-  const chromeOn = controlsVisible && phase === 'open'
+  // A video playing in mpv has exactly one set of controls: the overlay inside
+  // mpv's own window. This window's chrome used to render under it too, and
+  // showed on its own - an older player, for a moment - while mpv was still
+  // starting hidden. It is drawn for videos only when this window IS the
+  // player (the fallback <video>) or there is nothing playing (an error).
+  const [player, setPlayer] = useState<{ mode: 'native' | 'stream' | 'mpv' | null; error: boolean }>({ mode: null, error: false })
+  const mpvOwnsChrome = isVideo && !player.error && player.mode !== 'native' && player.mode !== 'stream'
+  const chromeOn = controlsVisible && phase === 'open' && !mpvOwnsChrome
+
+  // mpv's overlay lets clicks fall through to this window while its bar is
+  // hidden, and was meant to hear the mouse through Electron's "forward" mode
+  // - which delivered nothing, so after the first idle fade the bar never came
+  // back and Info (or any control) could not be clicked again: the click went
+  // through to this window. The moves do arrive here, so they are relayed: the
+  // bar wakes, takes clicks, and fades again when the mouse rests.
+  useEffect(() => {
+    if (!isVideo || player.mode !== 'mpv') return
+    let last = 0
+    let at = ''
+    const wake = (e: MouseEvent): void => {
+      // Only real movement. Windows sends a mouse-move without one whenever the
+      // window under a resting pointer changes - which is what the overlay does
+      // each time it hides - and answering it kept the bar up forever.
+      const pos = e.screenX + ',' + e.screenY
+      if (pos === at) return
+      at = pos
+      const now = performance.now()
+      if (now - last < 120) return
+      last = now
+      window.api.setOverlayMeta?.({ show: true })
+    }
+    window.addEventListener('mousemove', wake, { passive: true })
+    return () => window.removeEventListener('mousemove', wake)
+  }, [isVideo, player.mode])
 
   return (
     <div
@@ -984,6 +1017,7 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
           onToggleTheatre={() => setIsTheatre((t) => !t)}
           onToggleFullscreen={handleToggleFullscreen}
           isFullscreen={isFullscreen}
+          onPlayerChange={setPlayer}
           file={file}
           list={list}
           rotation={rotation}

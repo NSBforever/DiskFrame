@@ -26,6 +26,7 @@ import { cellCountOf, cellSpan, mediaCountOf } from '../../../main/compactCells'
 import type { LibraryGroup } from '../hooks/useLibrary'
 import { useReducedMotionPref } from '../hooks/useReducedMotionPref'
 import { mediaUrl } from '../../../main/mediaUrl'
+import { startFileDrag } from '../dragPreview'
 import './PhotoGrid.css'
 
 // ─── Geometry ────────────────────────────────────────────────────────────────
@@ -337,7 +338,10 @@ const CompactCell = memo(function CompactCell({
               else actions.open(f, firstIndex + k, e)
             }}
             onContextMenu={(e) => actions.context(f, e)}
-            onDragStart={() => window.api.startNativeDrag(actions.dragPaths(f))}
+            onDragStart={(e) => {
+              e.preventDefault() // the OS drag below replaces Chromium's own
+              startFileDrag(actions.dragPaths(f), e.currentTarget)
+            }}
             draggable
           >
             <span className="pg-doc-ext">{(f.ext || '').replace('.', '') || 'file'}</span>
@@ -529,7 +533,7 @@ const GridTile = memo(function GridTile({
     if (!p || p.dragged) return
     if (Math.hypot(e.clientX - p.x, e.clientY - p.y) > 5) {
       p.dragged = true
-      window.api.startNativeDrag(actions.dragPaths(file))
+      startFileDrag(actions.dragPaths(file), e.currentTarget)
     }
   }
   const onMouseUp = (e: React.MouseEvent): void => {
@@ -580,7 +584,6 @@ const GridTile = memo(function GridTile({
             ref={imgRef}
             key={src + ':' + attempt}
             src={src === usableThumb ? thumbUrl(src) : mediaUrl(src)}
-            loading="lazy"
             decoding="async"
             draggable={false}
             onLoad={e => e.currentTarget.classList.add('pg-loaded')}
