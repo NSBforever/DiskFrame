@@ -155,7 +155,10 @@ export function initUpdates(opts: UpdaterOptions): void {
   }
 
   ipcMain.handle('update-check', () => check())
-  ipcMain.handle('update-download', () => {
+  ipcMain.handle('update-download', async () => {
+    // A retry asks the feed again first: a release whose upload was broken may
+    // since have been fixed, and the old metadata would only fail the same way.
+    if (state.phase === 'error') await check()
     download()
     return state
   })
