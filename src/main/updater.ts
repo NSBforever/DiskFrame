@@ -1,6 +1,6 @@
 import { app, ipcMain, shell, type BrowserWindow } from 'electron'
 import { autoUpdater } from 'electron-updater'
-import { releaseUrl, type UpdateMode, type UpdateState } from './updateState'
+import { releaseNotesText, releaseUrl, type UpdateMode, type UpdateState } from './updateState'
 
 /**
  * Updates from GitHub Releases (electron-builder's `publish: github`).
@@ -117,13 +117,13 @@ export function initUpdates(opts: UpdaterOptions): void {
 
   autoUpdater.on('update-available', (i) => {
     log(`updates: ${i.version} available`)
-    set({ phase: 'available', version: i.version, checkedAt: Date.now(), error: undefined })
+    set({ phase: 'available', version: i.version, notes: releaseNotesText(i.releaseNotes), checkedAt: Date.now(), error: undefined })
     if (opts.getMode() === 'auto' && state.canInstall && i.version !== failedVersion) download()
   })
   autoUpdater.on('update-not-available', () => {
     log(`updates: ${app.getVersion()} is current`)
     // A download already in hand is still in hand.
-    if (state.phase !== 'ready' && state.phase !== 'downloading') set({ phase: 'current', version: undefined, checkedAt: Date.now(), error: undefined })
+    if (state.phase !== 'ready' && state.phase !== 'downloading') set({ phase: 'current', version: undefined, notes: undefined, checkedAt: Date.now(), error: undefined })
   })
   autoUpdater.on('download-progress', (p) => {
     if (state.phase === 'downloading') set({ percent: Math.max(0, Math.min(100, p.percent)) })

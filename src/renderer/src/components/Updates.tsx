@@ -18,6 +18,17 @@ import './Updates.css'
 
 const SNOOZE_KEY = 'df-update-snooze'
 
+/** The newer version's notes, collapsed, as plain text (never injected as HTML). */
+function ReleaseNotes({ version, notes, open }: { version?: string; notes?: string; open?: boolean }): React.JSX.Element | null {
+  if (!notes) return null
+  return (
+    <details className="update-notes" open={open}>
+      <summary>What&apos;s new{version ? ` in ${version}` : ''}</summary>
+      <div className="update-notes-text">{notes}</div>
+    </details>
+  )
+}
+
 function readSnooze(): ReturnType<typeof parseSnooze> {
   try {
     return parseSnooze(localStorage.getItem(SNOOZE_KEY))
@@ -92,7 +103,8 @@ export function UpdateNotice({ busy }: { busy: boolean }): React.JSX.Element | n
         {phase === 'ready' ? `DiskFrame ${version} is ready to install` : `DiskFrame ${version} is available`}
       </div>
       <div className="update-notice-text">Your current version: {currentVersion}</div>
-      {phase === 'available' && <div className="update-notice-text">Discover the latest improvements and fixes.</div>}
+      {phase === 'available' && !state.notes && <div className="update-notice-text">Discover the latest improvements and fixes.</div>}
+      {phase !== 'error' && <ReleaseNotes version={version} notes={state.notes} open={phase === 'available'} />}
       {phase === 'downloading' && (
         <>
           <div className="update-notice-text">Downloading in the background… {percent}%</div>
@@ -109,7 +121,7 @@ export function UpdateNotice({ busy }: { busy: boolean }): React.JSX.Element | n
       <div className="update-notice-actions">
         {phase === 'available' && (
           <button type="button" className="df-button df-button-primary" onClick={download}>
-            Download Update
+            Update Now
           </button>
         )}
         {phase === 'error' && (
@@ -187,7 +199,12 @@ export function UpdateSettings(): React.JSX.Element {
                 className="df-button df-button-primary"
                 onClick={() => void (state?.canInstall ? window.api.downloadUpdate() : window.api.openReleaseNotes())}
               >
-                Download Update
+                Update Now
+              </button>
+            )}
+            {phase === 'error' && state?.version && (
+              <button type="button" className="df-button df-button-primary" onClick={() => void window.api.downloadUpdate()}>
+                Try Again
               </button>
             )}
             {phase === 'ready' && (
@@ -214,6 +231,7 @@ export function UpdateSettings(): React.JSX.Element {
           </div>
         </div>
         {refused && <div className="settings-hint update-notice-error">{refused}</div>}
+        {state?.version && phase !== 'current' && <ReleaseNotes version={state.version} notes={state.notes} />}
         {state && !state.canInstall && phase !== 'unsupported' && (
           <div className="settings-hint">
             This is the portable version, which cannot replace itself. Download Update opens the release page.

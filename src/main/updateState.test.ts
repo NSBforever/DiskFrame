@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { modeFromPref, prefFromMode, releaseUrl, parseSnooze, shouldAnnounce, statusLine, SNOOZE_MS, type UpdateState } from './updateState.ts'
+import { modeFromPref, prefFromMode, releaseUrl, parseSnooze, shouldAnnounce, statusLine, releaseNotesText, NOTES_MAX, SNOOZE_MS, type UpdateState } from './updateState.ts'
 
 const base: UpdateState = { phase: 'idle', currentVersion: '1.1.0', canInstall: true }
 const quiet = { busy: false, snooze: null, now: 1_000_000, dismissed: false }
@@ -70,4 +70,16 @@ test('the settings line says what happened, with both versions when they differ'
   assert.match(statusLine({ ...base, phase: 'error', error: 'offline' }, now), /Could not check for updates: offline/)
   assert.match(statusLine({ ...base, phase: 'error', version: '1.2.0', error: 'checksum' }, now), /Could not download the update: checksum/)
   assert.match(statusLine({ ...base, phase: 'ready', version: '1.2.0' }, now), /installs when you close/)
+})
+
+test('release notes become plain text: no markup or script, bullets kept, length capped', () => {
+  const html =
+    "<h2>What&#39;s new</h2><ul><li>MPG &amp; VOB videos</li><li>Updates</li></ul><script>alert(1)</script><p>Thanks</p>"
+  assert.equal(releaseNotesText(html), "What's new\n\n• MPG & VOB videos\n• Updates\n\nThanks")
+  assert.equal(releaseNotesText([{ version: '1.2.0', note: '<p>Faster</p>' }]), '1.2.0\n\nFaster')
+  assert.equal(releaseNotesText(null), '')
+  assert.equal(releaseNotesText(undefined), '')
+  const long = releaseNotesText('<p>' + 'x'.repeat(5000) + '</p>')
+  assert.equal(long.length, NOTES_MAX)
+  assert.ok(long.endsWith('…'))
 })

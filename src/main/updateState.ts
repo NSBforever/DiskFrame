@@ -36,6 +36,8 @@ export interface UpdateState {
   canInstall: boolean
   /** Why `unsupported`. */
   reason?: 'development' | 'safe-mode'
+  /** The newer version's release notes as plain text (see releaseNotesText). */
+  notes?: string
 }
 
 /**
@@ -56,6 +58,45 @@ export function isUpdateMode(v: unknown): v is UpdateMode {
 }
 
 const REPO_URL = 'https://github.com/NSBforever/DiskFrame'
+
+/** Longest release-notes text kept for the notice; the full notes are a click away. */
+export const NOTES_MAX = 2000
+
+const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', '#39': "'" }
+
+/**
+ * Release notes as plain text the renderer can show safely.
+ *
+ * electron-updater hands over the GitHub release body as HTML (or, for some
+ * feeds, a list of per-version notes). It is never injected as HTML: tags are
+ * dropped, list items become bullets, entities are decoded, blank runs are
+ * collapsed, and the result is capped at NOTES_MAX. Empty when there is none.
+ */
+export function releaseNotesText(raw: unknown): string {
+  let html = ''
+  if (typeof raw === 'string') html = raw
+  else if (Array.isArray(raw)) {
+    html = raw
+      .map((n: { version?: unknown; note?: unknown }) =>
+        typeof n?.note === 'string' ? `<h3>${String(n.version ?? '')}</h3>${n.note}` : ''
+      )
+      .join('\n')
+  }
+  const text = html
+    .replace(/<\s*(script|style)[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, '')
+    .replace(/<\s*li[^>]*>/gi, '\n• ')
+    .replace(/<\s*br\s*\/?>/gi, '\n')
+    .replace(/<\s*\/?\s*(p|div|h[1-6]|ul|ol|tr|table|pre|blockquote)[^>]*>/gi, '\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&(#?\w+);/g, (m, e: string) =>
+      ENTITIES[e.toLowerCase()] ?? (/^#\d+$/.test(e) ? String.fromCharCode(Number(e.slice(1))) : m)
+    )
+    .replace(/[ \t]+/g, ' ')
+    .replace(/ *\n */g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  return text.length > NOTES_MAX ? text.slice(0, NOTES_MAX - 1).trimEnd() + '…' : text
+}
 
 /** The release page for a version, or the list of releases when it is not a plain version. */
 export function releaseUrl(version: string | undefined): string {

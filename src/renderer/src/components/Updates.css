@@ -117,3 +117,29 @@
     transition: none;
   }
 }
+
+/* Release notes: plain text from the GitHub release, collapsed by default in
+   Settings and open in the notice. Scrolls rather than growing the notice. */
+.update-notes {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--app-fg-dim, #8a8a8f);
+}
+.update-notes summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--app-fg, #f2f2f0);
+}
+.update-notes summary:focus-visible {
+  outline: 2px solid var(--app-accent, #e11d2e);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.update-notes-text {
+  margin-top: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+  white-space: pre-line;
+  line-height: 1.5;
+  overscroll-behavior: contain;
+}
