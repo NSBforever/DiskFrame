@@ -246,6 +246,11 @@ const api = {
   /** An OS drag of these files. `image` is the drag preview (PNG data URL at `scale`x); without one a plain icon is used. */
   startNativeDrag: (filePaths: string[], image?: { dataUrl: string; scale: number }) =>
     ipcRenderer.send('start-native-drag', filePaths, image),
+  onNativeDragEnd: (cb: () => void) => {
+    const listener = (): void => cb()
+    ipcRenderer.on('native-drag-end', listener)
+    return () => ipcRenderer.removeListener('native-drag-end', listener)
+  },
   /** The file-system path of a File dropped from Explorer (Electron no longer puts it on File). */
   pathForFile: (file: File): string => {
     try {

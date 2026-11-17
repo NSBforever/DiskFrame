@@ -89,9 +89,7 @@ export async function importDropped(paths: string[], deps: DropImportDeps): Prom
 /** One line for the toast, e.g. "Added 12 files · 3 already in DiskFrame · 2 not supported". */
 export function dropSummary(r: DropImportResult): string {
   if (r.busy) return 'Still adding the previous drop - try again in a moment'
-  const n = (k: number, one: string, many = one + 's'): string => `${k.toLocaleString()} ${k === 1 ? one : many}`
-  const parts: string[] = []
-  parts.push(r.added ? `Added ${n(r.added, 'file')}` : 'Nothing new to add')
+  const parts = [r.added ? `Added ${r.added.toLocaleString()} file${r.added === 1 ? '' : 's'}` : 'Nothing new to add']
   if (r.already) parts.push(`${r.already.toLocaleString()} already in DiskFrame`)
   if (r.unsupported) parts.push(`${r.unsupported.toLocaleString()} not supported`)
   if (r.missing) parts.push(`${r.missing.toLocaleString()} could not be read`)

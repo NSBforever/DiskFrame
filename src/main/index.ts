@@ -2436,6 +2436,9 @@ app.whenReady().then(() => {
       files: validFiles,
       icon
     })
+    // On Windows startDrag returns when the drag is over (dropped or cancelled).
+    // The renderer stops treating incoming file drags as its own.
+    if (!event.sender.isDestroyed()) event.sender.send('native-drag-end')
   })
 
   // ── TRANSCODE (improved: parse duration, reliable spawn) ──

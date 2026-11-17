@@ -1,4 +1,4 @@
-import { videoExts } from '../../main/validation'
+import { photoExts, videoExts } from '../../main/validation'
 
 /**
  * Starting an OS drag of files from the gallery, with DiskFrame's own preview.
@@ -14,6 +14,12 @@ import { videoExts } from '../../main/validation'
 
 /** Set while one of our own drags is in the air, so the drop overlay ignores it. */
 export const internalDrag = { active: false }
+// Cleared when the main process says the drag is over - also when it ended
+// outside the window, where no mouse event would ever reach us to clear it
+// (dragging back in from Explorer would otherwise be mistaken for our own).
+window.api?.onNativeDragEnd?.(() => {
+  internalDrag.active = false
+})
 
 const CARD = 96 // px, the front card's edge
 const PAD = 14 // room for the stack and the shadow
@@ -84,7 +90,7 @@ export function drawDragPreview(source: Element | null, paths: string[]): { data
       ctx.lineWidth = 1.6
       ctx.lineCap = 'round'
       ctx.lineJoin = 'round'
-      ctx.stroke(new Path2D(isVideo ? ICON_FILM : /\.(jpe?g|png|webp|heic|heif|gif|bmp|raw|cr2|nef)$/.test(ext) ? ICON_IMAGE : ICON_FILE))
+      ctx.stroke(new Path2D(isVideo ? ICON_FILM : photoExts.includes(ext) ? ICON_IMAGE : ICON_FILE))
     }
     ctx.restore()
     roundRect(ctx, x + 0.5, y + 0.5, CARD - 1, CARD - 1, 10)

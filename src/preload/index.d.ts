@@ -267,6 +267,7 @@ declare global {
       onMpvSessionLost: (callback: () => void) => () => void
       onMpvError: (callback: (data: { error: string }) => void) => () => void
       startNativeDrag: (filePaths: string[], image?: { dataUrl: string; scale: number }) => void
+      onNativeDragEnd: (cb: () => void) => () => void
       pathForFile: (file: File) => string
       importDropped: (paths: string[]) => Promise<import('../main/dropImport').DropImportResult>
       onNativeDragError: (callback: (data: { error: string }) => void) => () => void

@@ -1826,10 +1826,15 @@ export default function App(): React.JSX.Element {
   // Files and folders dropped from Explorer: indexed by the same code as a
   // scan or Index Folder (main/dropImport.ts); the gallery refreshes itself
   // from the files-updated event, and the toast says what happened.
+  const droppedOnDriveRef = useRef(selectedDrive)
+  droppedOnDriveRef.current = selectedDrive
   const handleDroppedPaths = useCallback(async (paths: string[]): Promise<void> => {
     setToastMsg(`Adding ${paths.length.toLocaleString()} item${paths.length === 1 ? '' : 's'}…`)
     try {
-      setToastMsg(dropSummary(await window.api.importDropped(paths)))
+      const r = await window.api.importDropped(paths)
+      // Files go into their own drive's library: say so when that is not the one on screen.
+      const elsewhere = r.drives.filter((d) => d !== droppedOnDriveRef.current)
+      setToastMsg(dropSummary(r) + (elsewhere.length ? ` · in ${elsewhere.join(', ')}` : ''))
     } catch (err) {
       console.error('[drop]', err)
       setToastMsg('Could not add the dropped files')
