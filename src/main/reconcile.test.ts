@@ -150,6 +150,7 @@ test('an unchanged folder is skipped with one stat once it has been recorded', (
   assert.ok(second.done?.type === 'done' && second.done.stats.foldersSkippedUnchanged >= 2)
   // A deletion moves that folder's mtime, so only it is listed next time.
   fs.unlinkSync(path.join(root, 'b', 'k.jpg'))
+  changedLater(root, ['b'])
   const third = run(input(root, k, { folders: first.folders }))
   assert.deepEqual(third.removed, ['b\\k.jpg'])
   assert.equal(third.done?.type === 'done' && third.done.stats.foldersListed, 1) // only b: a file deletion moves its own folder's mtime
@@ -225,6 +226,7 @@ test('the first run does not walk folders the catalogue never tracked', () => {
   assert.deepEqual(first.added, [])
   fs.mkdirSync(path.join(root, 'later'))
   fs.writeFileSync(path.join(root, 'later', 'new.jpg'), Buffer.alloc(60 * 1024))
+  changedLater(root, ['.'])
   const second = run(input(root, k, { folders: first.folders }))
   assert.deepEqual(second.added, ['later\\new.jpg'])
   // An explicit full check does walk everything.
