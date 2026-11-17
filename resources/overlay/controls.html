@@ -216,7 +216,16 @@
   }
 
   show()
-  document.addEventListener('mousemove', function () { show() }, { passive: true })
+  // Only real movement: a mouse-move with the pointer where it was is Windows
+  // re-announcing it after this window starts or stops taking the mouse, and
+  // answering it would keep the bar from ever fading.
+  var lastPos = ''
+  document.addEventListener('mousemove', function (e) {
+    var p = e.screenX + ',' + e.screenY
+    if (p === lastPos) return
+    lastPos = p
+    show()
+  }, { passive: true })
   ;[bot].forEach(function (el) {
     el.addEventListener('mouseenter', function () { show(false) })
     el.addEventListener('mouseleave', function () { show() })

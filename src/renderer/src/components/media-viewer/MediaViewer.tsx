@@ -786,6 +786,32 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
   const mpvOwnsChrome = isVideo && !player.error && player.mode !== 'native' && player.mode !== 'stream'
   const chromeOn = controlsVisible && phase === 'open' && !mpvOwnsChrome
 
+  // mpv's overlay lets clicks fall through to this window while its bar is
+  // hidden, and was meant to hear the mouse through Electron's "forward" mode
+  // - which delivered nothing, so after the first idle fade the bar never came
+  // back and Info (or any control) could not be clicked again: the click went
+  // through to this window. The moves do arrive here, so they are relayed: the
+  // bar wakes, takes clicks, and fades again when the mouse rests.
+  useEffect(() => {
+    if (!isVideo || player.mode !== 'mpv') return
+    let last = 0
+    let at = ''
+    const wake = (e: MouseEvent): void => {
+      // Only real movement. Windows sends a mouse-move without one whenever the
+      // window under a resting pointer changes - which is what the overlay does
+      // each time it hides - and answering it kept the bar up forever.
+      const pos = e.screenX + ',' + e.screenY
+      if (pos === at) return
+      at = pos
+      const now = performance.now()
+      if (now - last < 120) return
+      last = now
+      window.api.setOverlayMeta?.({ show: true })
+    }
+    window.addEventListener('mousemove', wake, { passive: true })
+    return () => window.removeEventListener('mousemove', wake)
+  }, [isVideo, player.mode])
+
   return (
     <div
       ref={containerRef}
