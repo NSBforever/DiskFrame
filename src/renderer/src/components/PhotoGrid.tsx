@@ -584,7 +584,6 @@ const GridTile = memo(function GridTile({
             ref={imgRef}
             key={src + ':' + attempt}
             src={src === usableThumb ? thumbUrl(src) : mediaUrl(src)}
-            loading="lazy"
             decoding="async"
             draggable={false}
             onLoad={e => e.currentTarget.classList.add('pg-loaded')}
