@@ -522,8 +522,21 @@ function sendFullscreenState(): void {
  *  button and Settings all come here, so the intent above is always current. */
 function setAppFullscreen(on: boolean): void {
   appFullscreen = on
-  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen() !== on) mainWindow.setFullScreen(on)
+  viewerFullscreen = null // F11 or Settings is the user's word on the window, viewer or not
+  applyWindowFullscreen()
   sendFullscreenState()
+}
+
+/**
+ * The viewer's F key: full screen (or not) for as long as the viewer is open,
+ * without changing the app's own setting. null = follow the app. Native window
+ * full screen, not the HTML API: only a real full-screen window hides the
+ * taskbar, and only the window can sit under mpv's video window.
+ */
+let viewerFullscreen: boolean | null = null
+function applyWindowFullscreen(): void {
+  const want = viewerFullscreen ?? appFullscreen
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen() !== want) mainWindow.setFullScreen(want)
 }
 
 function createWindow(): void {
@@ -556,7 +569,7 @@ function createWindow(): void {
   mainWindow.on('leave-html-full-screen', () => {
     setTimeout(() => {
       if (mainWindow.isDestroyed()) return
-      if (mainWindow.isFullScreen() !== appFullscreen) mainWindow.setFullScreen(appFullscreen)
+      applyWindowFullscreen()
     }, 0)
   })
   mainWindow.on('move', () => refreshMpvBounds())
@@ -1637,6 +1650,11 @@ app.whenReady().then(() => {
 
   // The app's own full screen: current state, and the preference for launch.
   ipcMain.handle('get-window-fullscreen', () => appFullscreen)
+  ipcMain.handle('set-viewer-fullscreen', (_event, on: unknown) => {
+    viewerFullscreen = on === true ? true : on === false ? false : null
+    applyWindowFullscreen()
+    return viewerFullscreen ?? appFullscreen
+  })
   ipcMain.handle('set-window-fullscreen', (_event, on: unknown) => {
     setAppFullscreen(on === true)
     return appFullscreen

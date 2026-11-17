@@ -635,6 +635,8 @@ const MainContentArea: React.FC<{
   formatGroupKey: (key: string) => string
   handleWheel: (e: React.WheelEvent) => void
   handleGroupCheckboxClick: (groupKey: string, e: React.MouseEvent) => void
+  handleMarquee: (paths: string[], add: boolean, done: boolean) => void
+  handleEmptyGridClick: () => void
   groupBy: string
   onDragStart: (file: ScannedFile, e: React.DragEvent) => void
   setActiveView: (view: string) => void
@@ -706,6 +708,8 @@ const MainContentArea: React.FC<{
   formatGroupKey,
   handleWheel,
   handleGroupCheckboxClick,
+  handleMarquee,
+  handleEmptyGridClick,
   groupBy,
   onDragStart,
   setActiveView,
@@ -1303,6 +1307,8 @@ const MainContentArea: React.FC<{
           onFav={handleFav}
           onContextMenu={handleTileContextMenu}
           onGroupCheckboxClick={handleGroupCheckboxClick}
+          onMarquee={handleMarquee}
+          onEmptyClick={handleEmptyGridClick}
           scrollRequest={gridScrollRequest}
           scrollToTopNonce={scrollToTopNonce}
           thumbVersion={thumbVersion}
@@ -2591,6 +2597,24 @@ export default function App(): React.JSX.Element {
 
   const lastSelectedPathRef = useRef<string | null>(null)
 
+  // Drag selection: the marquee's files, on top of what was selected when the
+  // drag began (Ctrl) or instead of it. The same `selected` set every bulk
+  // action reads, so Favourite, Transfer and Delete see drag-selected files.
+  const marqueeBaseRef = useRef<Set<string> | null>(null)
+  const handleMarquee = useCallback((paths: string[], add: boolean, done: boolean): void => {
+    if (!marqueeBaseRef.current) marqueeBaseRef.current = add ? new Set(selectedRef.current) : new Set()
+    const next = new Set(marqueeBaseRef.current)
+    for (const p of paths) next.add(p)
+    setSelected(next)
+    if (done) {
+      marqueeBaseRef.current = null
+      if (paths.length) lastSelectedPathRef.current = paths[paths.length - 1] // Shift+click ranges from here
+    }
+  }, [])
+  const handleEmptyGridClick = useCallback((): void => {
+    if (selectedRef.current.size) setSelected(new Set())
+  }, [])
+
   const handleTileOpen = useCallback((file: ScannedFile, indexOrList: number | ScannedFile[], _e?: React.MouseEvent): void => {
     // The viewer's opening flight starts from this file's own tile. Not the
     // event target: "Open in Viewer" in the context menu would hand over the
@@ -3100,7 +3124,10 @@ export default function App(): React.JSX.Element {
         
         {/* Top bar header - only rendered after a drive is selected */}
         {selectedDrive && (
-          <div className="df-glass df-glass-strong" style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '12px 18px', flexShrink: 0, borderRadius: 0, borderLeft: 'none', borderRight: 'none', borderTop: 'none', flexWrap: 'wrap', rowGap: '8px' }}>
+          <div className="df-glass df-glass-strong" style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '12px 18px',
+            // Tall enough for the selection bar (36px + padding + border): selecting the first file or clearing the last
+            // no longer moves the whole gallery 9px - which also shifted tiles under the pointer mid drag-select.
+            minHeight: 'calc(36px + 24px + 1px)', boxSizing: 'border-box', flexShrink: 0, borderRadius: 0, borderLeft: 'none', borderRight: 'none', borderTop: 'none', flexWrap: 'wrap', rowGap: '8px' }}>
             
             <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '12px' }}>
               <button
@@ -3303,6 +3330,8 @@ export default function App(): React.JSX.Element {
           formatGroupKey={formatGroupKey}
           handleWheel={handleWheel}
           handleGroupCheckboxClick={handleGroupCheckboxClick}
+          handleMarquee={handleMarquee}
+          handleEmptyGridClick={handleEmptyGridClick}
           groupBy={groupBy}
           onDragStart={handleDragStart}
           setActiveView={setActiveView}

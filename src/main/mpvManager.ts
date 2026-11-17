@@ -86,7 +86,17 @@ function getHwndString(win: BrowserWindow): string {
 }
 
 /** Push a message to the control overlay, if it is alive. */
+/** The overlay's standing state (filename, favourite, first/last, full screen).
+ *  Kept so a new video's overlay, which loads after the viewer sent it, still
+ *  gets it - otherwise switching videos could leave the previous name up. */
+let overlayMeta: Record<string, unknown> = {}
+
 export function sendToOverlay(channel: string, payload: unknown): void {
+  if (channel === 'overlay-meta' && payload && typeof payload === 'object') {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { toast, show, ...standing } = payload as Record<string, unknown>
+    overlayMeta = { ...overlayMeta, ...standing }
+  }
   if (!mpvWindow || mpvWindow.isDestroyed()) return
   mpvWindow.webContents.send(channel, payload)
 }
@@ -153,7 +163,7 @@ function getOverlayPath(): string {
  */
 export function revealMpv(): void {
   if (!mpvWindow || mpvWindow.isDestroyed()) return
-  if (!mpvWindow.isVisible()) mpvWindow.show()
+  if (!mpvWindow.isVisible()) mpvWindow.showInactive()
   if (ipcSocket && !ipcSocket.destroyed) sendCommand(ipcSocket, ['set_property', 'pause', false])
 }
 
@@ -197,6 +207,13 @@ export async function initMpv(
     show: false,
     transparent: true,
     hasShadow: false,
+    // Never the active window. Windows hides the taskbar only while the ACTIVE
+    // window covers the monitor; when this one was activated (shown, or its
+    // controls clicked) and the video was smaller than the screen - Info open,
+    // a letterboxed stage - the taskbar came up over the video. The main window
+    // stays active and owns every key; clicks still reach the overlay.
+    focusable: false,
+    skipTaskbar: true,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -259,10 +276,11 @@ export async function initMpv(
   // z-index. Chromium renders into a child HWND of this window, and a child
   // paints above its parent's own drawing, so an overlay loaded here does
   // composite above mpv's video. Verified on screen, not in the DOM.
+  mpvWindow.webContents.once('did-finish-load', () => sendToOverlay('overlay-meta', overlayMeta))
   mpvWindow.loadFile(getOverlayPath()).catch((e) => {
     console.error('[mpvManager] overlay failed to load:', e)
   })
-  if (!opts.deferShow) mpvWindow.show()
+  if (!opts.deferShow) mpvWindow.showInactive()
 
   mpvProcess.on('error', (err) => {
     console.error('[mpvManager] Spawn error:', err)

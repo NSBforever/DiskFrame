@@ -144,6 +144,8 @@ const api = {
   /** The app window's own full screen - not the viewer's. */
   getWindowFullscreen: (): Promise<boolean> => ipcRenderer.invoke('get-window-fullscreen'),
   setWindowFullscreen: (on: boolean): Promise<boolean> => ipcRenderer.invoke('set-window-fullscreen', on),
+  /** The viewer's own full screen while it is open; null hands the window back to the app's setting. */
+  setViewerFullscreen: (on: boolean | null): Promise<boolean> => ipcRenderer.invoke('set-viewer-fullscreen', on),
   onWindowFullscreenChanged: (cb: (on: boolean) => void) => {
     const listener = (_e: unknown, on: boolean): void => cb(on)
     ipcRenderer.on('window-fullscreen-changed', listener)
@@ -196,10 +198,10 @@ const api = {
   /** Shows a session started with deferShow, and unpauses it. */
   revealMpv: () => ipcRenderer.send('mpv-reveal'),
   // Used by the control overlay that runs inside the mpv window.
-  setOverlayMeta: (meta: { name?: string; isFav?: boolean; toast?: string; show?: boolean }) =>
+  setOverlayMeta: (meta: { name?: string; isFav?: boolean; toast?: string; show?: boolean; hasPrev?: boolean; hasNext?: boolean; fullscreen?: boolean; info?: boolean }) =>
     ipcRenderer.send('overlay-meta', meta),
-  onOverlayMeta: (cb: (m: { name?: string; isFav?: boolean; toast?: string; show?: boolean }) => void) => {
-    const listener = (_e: unknown, m: { name?: string; isFav?: boolean; toast?: string; show?: boolean }): void => cb(m)
+  onOverlayMeta: (cb: (m: { name?: string; isFav?: boolean; toast?: string; show?: boolean; hasPrev?: boolean; hasNext?: boolean; fullscreen?: boolean; info?: boolean }) => void) => {
+    const listener = (_e: unknown, m: { name?: string; isFav?: boolean; toast?: string; show?: boolean; hasPrev?: boolean; hasNext?: boolean; fullscreen?: boolean; info?: boolean }): void => cb(m)
     ipcRenderer.on('overlay-meta', listener)
     return () => ipcRenderer.removeListener('overlay-meta', listener)
   },

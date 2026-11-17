@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect, useCallback, useLayoutEffect } from
 import { useZoomPan } from './ZoomPanEngine'
 import { useGestures } from './GestureEngine'
 import { useShortcuts } from './ShortcutManager'
-import { ImageLoader, VIEWER_ACTIVITY_EVENT, fullscreenExitIntent } from './ImageLoader'
+import { ImageLoader, VIEWER_ACTIVITY_EVENT } from './ImageLoader'
 import { MediaViewerToolbar } from './MediaViewerToolbar'
 import { MetadataPanel } from './MetadataPanel'
 import { MapPin, ArrowLeft } from 'lucide-react'
@@ -115,6 +115,8 @@ export const SHORTCUT_HELP: [string, string][] = [
   ['Space / K', 'Play or pause'],
   ['J / L', 'Back / forward 10s'],
   ['Left / Right', 'Back / forward 5s'],
+  ['Shift + Left / Right', 'Back / forward 10s'],
+  ['Ctrl + Left / Right', 'Previous / next video'],
   ['Up / Down', 'Volume'],
   ['M', 'Mute'],
   ['Shift + P / N', 'Previous / next file'],
@@ -516,9 +518,12 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
 
   // The overlay draws the only chrome that is visible over the video, so
   // it needs the filename and favourite state pushed to it.
+  const listIndex = list.indexOf(file)
+  const hasPrev = listIndex > 0
+  const hasNext = listIndex >= 0 && listIndex < list.length - 1
   useEffect(() => {
-    window.api.setOverlayMeta?.({ name: file.name, isFav })
-  }, [file.name, isFav])
+    window.api.setOverlayMeta?.({ name: file.name, isFav, hasPrev, hasNext, fullscreen: isFullscreen, info: isInfoOpen })
+  }, [file.name, isFav, hasPrev, hasNext, isFullscreen, isInfoOpen])
 
   // Reset transforms when image file changes
   useEffect(() => {
@@ -563,17 +568,25 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
   })
 
 
-  // Fullscreen toggle handler
+  // F, the overlay's button, the fallback player's button: the WINDOW goes full
+  // screen (not an element, via the HTML API), so the taskbar really goes and
+  // mpv's video window can cover the display. It lasts while the viewer is
+  // open; closing hands the window back to the app's own setting.
+  const isFullscreenRef = useRef(false)
+  isFullscreenRef.current = isFullscreen
   const handleToggleFullscreen = useCallback(() => {
-    if (!document.fullscreenElement) {
-      containerRef.current?.requestFullscreen().catch((err) => {
-        console.error('Error attempting to enable fullscreen:', err)
-      })
-      setIsFullscreen(true)
-    } else {
-      fullscreenExitIntent.current = true
-      document.exitFullscreen().catch(() => {})
-      setIsFullscreen(false)
+    const next = !isFullscreenRef.current
+    setIsFullscreen(next)
+    void window.api.setViewerFullscreen(next).then(setIsFullscreen)
+  }, [])
+  useEffect(() => {
+    let live = true
+    void window.api.getWindowFullscreen().then((on) => live && setIsFullscreen(on))
+    const off = window.api.onWindowFullscreenChanged((on) => setIsFullscreen(on)) // F11 while viewing
+    return () => {
+      live = false
+      off()
+      void window.api.setViewerFullscreen(null)
     }
   }, [])
 
@@ -608,26 +621,6 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
       }
     })
   }, [handleNext, handlePrev, handleToggleFullscreen, handleClose, onFav, onReveal, file])
-
-  // Sync fullscreen state on external escape.
-  //
-  // A real Escape in full screen never reaches the keydown handler below:
-  // Chromium consumes it to leave full screen. So an exit the viewer did not
-  // ask for is that Escape, and it closes the viewer too - one press, as the
-  // handler below promises. The app window's own full screen is untouched;
-  // the main process keeps that separately.
-  useEffect(() => {
-    const handleFullscreenChange = () => {
-      const on = !!document.fullscreenElement
-      setIsFullscreen(on)
-      if (!on && !fullscreenExitIntent.current) handleCloseRef.current()
-      fullscreenExitIntent.current = false
-    }
-    document.addEventListener('fullscreenchange', handleFullscreenChange)
-    return () => {
-      document.removeEventListener('fullscreenchange', handleFullscreenChange)
-    }
-  }, [])
 
   // Auto-hide the viewer chrome over a fullscreen video only.
   //
@@ -689,11 +682,7 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
         ) {
           return // Let the active input element handle the Escape press internally
         }
-        if (document.fullscreenElement) {
-          fullscreenExitIntent.current = true
-          document.exitFullscreen().catch(() => {})
-        }
-        handleClose()
+        handleClose() // and the window returns to the app's own full-screen setting
       }
     }
     window.addEventListener('keydown', handleEscape)
@@ -993,6 +982,8 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
           onFav={onFav}
           onShowHelp={() => setShowHelp(true)}
           onToggleTheatre={() => setIsTheatre((t) => !t)}
+          onToggleFullscreen={handleToggleFullscreen}
+          isFullscreen={isFullscreen}
           file={file}
           list={list}
           rotation={rotation}

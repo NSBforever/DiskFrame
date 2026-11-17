@@ -191,6 +191,7 @@ declare global {
       ) => () => void
       getWindowFullscreen: () => Promise<boolean>
       setWindowFullscreen: (on: boolean) => Promise<boolean>
+      setViewerFullscreen: (on: boolean | null) => Promise<boolean>
       onWindowFullscreenChanged: (cb: (on: boolean) => void) => () => void
       getStartFullscreen: () => Promise<boolean>
       setStartFullscreen: (on: boolean) => Promise<unknown>
@@ -205,9 +206,9 @@ declare global {
       fsCancelTransfer: () => Promise<boolean>
       getAiSearchButton: () => Promise<boolean>
       setAiSearchButton: (enabled: boolean) => Promise<void>
-      setOverlayMeta: (meta: { name?: string; isFav?: boolean; toast?: string; show?: boolean }) => void
+      setOverlayMeta: (meta: { name?: string; isFav?: boolean; toast?: string; show?: boolean; hasPrev?: boolean; hasNext?: boolean; fullscreen?: boolean; info?: boolean }) => void
       onOverlayMeta: (
-        cb: (m: { name?: string; isFav?: boolean; toast?: string; show?: boolean }) => void
+        cb: (m: { name?: string; isFav?: boolean; toast?: string; show?: boolean; hasPrev?: boolean; hasNext?: boolean; fullscreen?: boolean; info?: boolean }) => void
       ) => () => void
       overlayAction: (action: string) => void
       setOverlayInteractive: (on: boolean) => void
