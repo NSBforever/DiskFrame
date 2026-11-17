@@ -48,6 +48,10 @@ function describe(err: unknown): string {
     return 'no connection to GitHub. Check your internet connection and try again.'
   }
   if (/sha512|checksum|signature/i.test(m)) return 'the download did not match its checksum, so it was discarded.'
+  // The connection dropped part-way: what arrived was discarded, nothing was installed.
+  if (/CONTENT_LENGTH_MISMATCH|INCOMPLETE_CHUNKED|ERR_ABORTED|aborted|premature close/i.test(m)) {
+    return 'the download was interrupted and has been discarded. Try again.'
+  }
   if (/404|latest\.yml/i.test(m)) return 'the release information could not be found.'
   if (/403|rate limit/i.test(m)) return 'GitHub is limiting requests right now. Try again later.'
   return m.split('\n')[0].slice(0, 160)
