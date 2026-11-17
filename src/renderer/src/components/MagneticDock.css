@@ -1,55 +1,119 @@
-/* ── Dock: one translucent glass capsule ──────────────────────────────────
-   Follows the supplied reference (rounded capsule, equal icon-over-label
-   items, a single rounded highlight behind the active item, a fine bright
-   top border) but tinted to this app's charcoal and red rather than the
-   reference's landscape. */
+/* ── Dock: Smoked Obsidian liquid glass ──────────────────────────────────
+   Approved direction B (design exploration 2026-11-16): a dark smoked glass
+   slab that floats heavily over the gallery, and a red well pressed into it
+   behind the selected section.
+
+   The material is built from layers rather than one blur:
+     1. the backdrop, blurred and lightly saturated (backdrop-filter);
+     2. a vertical tint that is thinner at the top and denser at the base,
+        so the glass reads as having thickness;
+     3. a curved specular arc across the top half (::before);
+     4. a bright rim line on the top edge and a faint one on the bottom
+        edge, and an inner shadow along the base (inset shadows);
+     5. a two-layer drop shadow: a wide soft one for float, a tight one
+        for contact;
+     6. a soft highlight that follows the pointer (.app-dock-sheen).
+   Colours are theme tokens in main.css; this file only composes them. */
+
+.app-dock-anchor {
+  position: fixed;
+  bottom: 55px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1999;
+}
+
 .app-dock {
   --dock-mx: 50%;
   --dock-my: 50%;
   --dock-glow: 0;
+  /* Fluid item width: full size when there is room, narrower before the
+     dock can reach the round search button at the bottom right (that button
+     plus its margin needs ~92px on each side of a centred dock). */
+  --dock-item-w: clamp(44px, calc((100vw - 214px) / 7), 74px);
+  --dock-item-h: 52px;
+  --dock-gap: 2px;
+  --dock-pad: 7px;
   position: relative;
   display: flex;
   align-items: stretch;
-  gap: 2px;
-  padding: 7px;
+  gap: var(--dock-gap);
+  padding: var(--dock-pad);
   border-radius: 999px;
   isolation: isolate;
   overflow: hidden;
-  background: var(--dock-bg, rgba(18, 18, 24, 0.55));
-  backdrop-filter: blur(26px) saturate(1.7);
-  -webkit-backdrop-filter: blur(26px) saturate(1.7);
-  border: 1px solid var(--dock-border, rgba(255, 255, 255, 0.14));
+  background: linear-gradient(
+    to bottom,
+    var(--dock-glass-top) 0%,
+    var(--dock-glass-mid) 55%,
+    var(--dock-glass-base) 100%
+  );
+  backdrop-filter: blur(26px) saturate(1.6);
+  -webkit-backdrop-filter: blur(26px) saturate(1.6);
+  border: 1px solid var(--dock-border);
   box-shadow:
-    0 14px 38px rgba(0, 0, 0, 0.5),
-    inset 0 1px 0 rgba(255, 255, 255, 0.1);
+    var(--dock-shadow),
+    inset 0 1px 0 var(--dock-rim),
+    inset 0 -1px 0 var(--dock-rim-low),
+    inset 0 -4px 10px var(--dock-inner-shadow);
 }
 
-/* Bright reflective edge along the top, and a soft highlight that follows the
-   pointer. Both are confined to the capsule by overflow:hidden, so nothing
-   bleeds over the gallery. */
+/* The curved specular arc: light lying on the upper curve of a thick piece
+   of glass. An ellipse that fades out sideways as well as downward; a
+   rounded box with a linear fade left hard vertical edges that read as a
+   second capsule inside the first. */
+.app-dock::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 40% 0;
+  background: radial-gradient(ellipse 58% 115% at 50% 0%, var(--dock-gloss), transparent 72%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* A soft highlight that follows the pointer, written as custom properties by
+   MagneticDock so tracking the cursor costs no React render. */
 .app-dock-sheen {
   position: absolute;
   inset: 0;
   border-radius: inherit;
   pointer-events: none;
   z-index: 0;
-  background:
-    radial-gradient(
-      160px circle at var(--dock-mx) var(--dock-my),
-      rgba(255, 255, 255, calc(0.1 * var(--dock-glow))),
-      transparent 70%
-    ),
-    linear-gradient(to bottom, rgba(255, 255, 255, 0.12), transparent 42%);
+  background: radial-gradient(
+    150px circle at var(--dock-mx) var(--dock-my),
+    rgba(255, 255, 255, calc(0.07 * var(--dock-glow))),
+    transparent 70%
+  );
   transition: background 120ms linear;
+}
+
+/* The selected well: one element that slides to the selected item instead
+   of each item fading its own background, so changing section reads as one
+   continuous motion. Positioned from the item index alone, because every
+   item has the same width. */
+.app-dock-well {
+  position: absolute;
+  z-index: 0;
+  top: var(--dock-pad);
+  left: var(--dock-pad);
+  width: var(--dock-item-w);
+  height: var(--dock-item-h);
+  border-radius: 16px;
+  background: var(--dock-well);
+  box-shadow: var(--dock-well-shadow);
+  transform: translateX(calc(var(--dock-active, 0) * (var(--dock-item-w) + var(--dock-gap))));
+  transition: transform 340ms cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
 }
 
 .app-dock-item {
   position: relative;
   z-index: 1;
-  /* Equal, fixed boxes: the click target never moves or resizes. */
-  width: 74px;
-  height: 52px;
-  flex: 0 0 74px;
+  /* Equal boxes: the well's position depends on it, and click targets never
+     shift when the selection changes. */
+  width: var(--dock-item-w);
+  height: var(--dock-item-h);
+  flex: 0 0 var(--dock-item-w);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -58,13 +122,15 @@
   padding: 0;
   border: 0;
   border-radius: 16px;
-  background: transparent;
-  color: var(--dock-fg, #c9c9d2);
+  background-color: transparent;
+  color: var(--dock-fg);
   cursor: pointer;
   font: inherit;
   transition:
-    background-color 140ms ease,
-    color 140ms ease;
+    background-color 160ms ease,
+    box-shadow 160ms ease,
+    color 200ms ease,
+    transform 110ms ease;
 }
 
 .app-dock-icon {
@@ -80,29 +146,27 @@
   letter-spacing: 0.4px;
   text-transform: uppercase;
   white-space: nowrap;
-  /* Labels are sized to the widest item so none of them wrap or collide. */
-  max-width: 68px;
+  max-width: calc(var(--dock-item-w) - 6px);
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.app-dock-item:hover {
-  background: var(--dock-item-hover, rgba(255, 255, 255, 0.08));
-  color: var(--dock-fg-strong, #f2f2f0);
+.app-dock-item:not(.is-active):hover {
+  background-color: var(--dock-item-hover);
+  color: var(--dock-fg-strong);
 }
-.app-dock-item:active {
-  background: var(--dock-item-press, rgba(255, 255, 255, 0.14));
+/* Pressed: the item sinks a little into the glass, previewing the well. */
+.app-dock-item:not(.is-active):active {
+  background-color: var(--dock-item-press);
+  box-shadow: inset 0 2px 5px var(--dock-press-shadow);
+  transform: scale(0.97);
+}
+.app-dock-item.is-active {
+  color: var(--dock-fg-active);
 }
 .app-dock-item:focus-visible {
-  outline: 2px solid #e11d2e;
+  outline: 2px solid var(--dock-focus);
   outline-offset: -2px;
-}
-
-/* The rounded highlight behind the selected item, as in the reference. */
-.app-dock-item.is-active {
-  background: var(--dock-item-active, rgba(225, 29, 46, 0.18));
-  color: #fff;
-  box-shadow: inset 0 0 0 1px rgba(225, 29, 46, 0.45);
 }
 
 .app-dock-badge {
@@ -120,20 +184,79 @@
   line-height: 15px;
   text-align: center;
   pointer-events: none;
+  /* A ring in the glass colour keeps a red badge distinct over the red well. */
+  box-shadow: 0 0 0 1.5px var(--dock-badge-ring);
 }
 
-/* Reduced effects / reduced motion: no blur, no pointer highlight, no fades. */
-.df-reduced-effects .app-dock {
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  background: rgba(18, 18, 24, 0.95);
+/* ── Smaller windows ──────────────────────────────────────────────────────
+   Below ~650px the narrowed items can no longer hold "FAVOURITES", so labels
+   give way to icons (each button keeps its aria-label and tooltip). Below
+   560px a centred dock would run into the search button whatever its size,
+   so it moves to the left edge and uses the space up to that button. */
+@media (max-width: 650px) {
+  .app-dock {
+    --dock-item-h: 48px;
+  }
+  .app-dock-label {
+    display: none;
+  }
+  .app-dock-badge {
+    right: 4px;
+  }
 }
-.df-reduced-effects .app-dock-sheen {
-  display: none;
+@media (max-width: 560px) {
+  .app-dock-anchor {
+    left: 12px;
+    transform: none;
+  }
+  /* Map and Settings have no search button, so the dock stays centred. */
+  body:not(:has(.ai-fab)) .app-dock-anchor {
+    left: 50%;
+    transform: translateX(-50%);
+  }
+  .app-dock {
+    --dock-item-w: clamp(40px, calc((100vw - 130px) / 7), 49px);
+    --dock-pad: 5px;
+  }
+}
+
+/* ── Fallbacks and preferences ────────────────────────────────────────────── */
+
+/* Without backdrop sampling the translucent tint would show the gallery
+   sharply through it, so it becomes a solid slab with the same edges. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .app-dock {
+    background: var(--dock-solid);
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .app-dock {
+    background: var(--dock-solid);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .app-dock-sheen {
+    display: none;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .app-dock-item,
+  .app-dock-well,
   .app-dock-sheen {
     transition: none;
+  }
+  .app-dock-item:not(.is-active):active {
+    transform: none;
+  }
+}
+/* Windows high contrast drops backgrounds and shadows, which would erase the
+   well; mark the selected section with a system-coloured outline instead. */
+@media (forced-colors: active) {
+  .app-dock-well {
+    display: none;
+  }
+  .app-dock-item.is-active {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
   }
 }

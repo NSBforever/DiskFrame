@@ -8,6 +8,8 @@
   cursor: pointer;
   touch-action: none;
   user-select: none;
+  /* Nothing inside can change the layout of anything outside. */
+  contain: layout style;
 }
 
 .date-scrubber:focus-visible {
@@ -49,8 +51,16 @@
   pointer-events: none;
 }
 
+.date-scrubber-carrier {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  will-change: transform;
+}
+
 .date-scrubber-current {
   position: absolute;
+  top: 0;
   right: 3px;
   width: 8px;
   height: 8px;
@@ -58,8 +68,6 @@
   background: #e11d2e;
   box-shadow: 0 0 6px rgba(225, 29, 46, 0.6);
   transform: translate(2px, -50%);
-  transition: top 0.15s ease-out;
-  pointer-events: none;
 }
 
 .date-scrubber-label {
@@ -78,8 +86,4 @@
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .date-scrubber-current {
-    transition: none;
-  }
-}
+

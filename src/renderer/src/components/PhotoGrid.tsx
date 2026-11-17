@@ -18,7 +18,8 @@ import {
   THUMB_VOLUME_OFFLINE,
   THUMB_FOLDER_MISSING,
   THUMB_NO_ACCESS,
-  THUMB_NO_PREVIEW
+  THUMB_NO_PREVIEW,
+  videoExts
 } from '../../../main/validation'
 import type { ScannedFile } from '../App'
 import { cellCountOf, cellSpan, mediaCountOf } from '../../../main/compactCells'
@@ -39,7 +40,7 @@ const MAX_COLS = 40
 const LEVEL_TARGETS = [380, 290, 220, 170, 132, 104, 82, 64, 50, 40]
 
 const PHOTO_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.heic', '.gif', '.bmp'])
-const VIDEO_EXTS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.wmv', '.m4v', '.webm'])
+const VIDEO_EXTS = new Set(videoExts)
 const DOC_EXTS = new Set(['.pdf', '.docx', '.doc', '.txt', '.xlsx', '.pptx', '.csv'])
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v))
@@ -139,6 +140,43 @@ function tilePos(layout: Layout, s: Section, i: number): { x: number; y: number 
     x: PAD_X + (i % layout.cols) * layout.pitch,
     y: s.rowsTop + Math.floor(i / layout.cols) * layout.pitch
   }
+}
+
+/**
+ * Rows (absolute indices) whose cells intersect a rectangle in content
+ * coordinates - the drag-selection marquee. Works from the layout alone, so it
+ * covers cells that are not rendered (virtualised) and needs no DOM reads.
+ * A compact cell (up to four files without a preview) counts as one cell.
+ */
+function rowsInRect(
+  layout: Layout,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number
+): Array<{ start: number; count: number }> {
+  const out: Array<{ start: number; count: number }> = []
+  const left = Math.min(x0, x1)
+  const right = Math.max(x0, x1)
+  const top = Math.min(y0, y1)
+  const bottom = Math.max(y0, y1)
+  const gridRight = PAD_X + layout.cols * layout.pitch - GAP
+  if (right < PAD_X || left > gridRight || layout.cols <= 0) return out
+  const c0 = clamp(Math.floor((left - PAD_X) / layout.pitch), 0, layout.cols - 1)
+  const c1 = clamp(Math.floor((right - PAD_X) / layout.pitch), 0, layout.cols - 1)
+  for (const sec of layout.sections) {
+    const rowsBottom = sec.rowsTop + sec.rows * layout.pitch - GAP
+    if (bottom < sec.rowsTop || top > rowsBottom) continue
+    const r0 = clamp(Math.floor((top - sec.rowsTop) / layout.pitch), 0, sec.rows - 1)
+    const r1 = clamp(Math.floor((bottom - sec.rowsTop) / layout.pitch), 0, sec.rows - 1)
+    for (let r = r0; r <= r1; r++) {
+      for (let c = c0; c <= c1; c++) {
+        const cell = r * layout.cols + c
+        if (cell < sec.cells) out.push(cellRows(sec, cell))
+      }
+    }
+  }
+  return out
 }
 
 interface Anchor {
@@ -557,8 +595,14 @@ const GridTile = memo(function GridTile({
                 retryTimerRef.current = window.setTimeout(() => setAttempt(a => a + 1), delay)
                 return
               }
-              if (src === usableThumb) setThumbFailed(true)
-              else setOriginalFailed(true)
+              if (src === usableThumb) {
+                setThumbFailed(true)
+                // The catalogue names a thumbnail that is not on disk (lost, or
+                // deleted along with a copy that shared it). Make it again, so
+                // the next time this tile is drawn it is a thumbnail - not the
+                // full-size original this tile falls back to meanwhile.
+                window.api.prioritizeThumbnails({ visible: [file.path], prefetch: [] }).catch(() => {})
+              } else setOriginalFailed(true)
             }}
           />
         ) : (
@@ -682,6 +726,14 @@ export interface PhotoGridProps {
   onFav: (file: ScannedFile) => void
   onContextMenu: (file: ScannedFile, list: ScannedFile[], e: React.MouseEvent) => void
   onGroupCheckboxClick: (key: string, e: React.MouseEvent) => void
+  /**
+   * Drag selection on empty gallery space. `paths` is every file the marquee
+   * touches now; `add` (Ctrl held) keeps what was selected before the drag.
+   * Called as the marquee changes, and once more with `done` on release.
+   */
+  onMarquee?: (paths: string[], add: boolean, done: boolean) => void
+  /** A plain click on empty gallery space. */
+  onEmptyClick?: () => void
   scrollRequest: { key: string; nonce: number } | null
   /** Bumped by the caller to send the grid back to the top. */
   scrollToTopNonce?: number
@@ -1121,9 +1173,14 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
   useEffect(() => {
     const outer = outerRef.current
     if (!outer) return
+    // Passive, so plain scrolling never waits for this thread. A listener that
+    // may call preventDefault makes the browser hold every wheel event until
+    // the page has answered it - measured as a 74 ms median wait per event
+    // during a fast scroll, 54 ms with this passive. Nothing is lost: with
+    // Ctrl held (or a trackpad pinch, which arrives the same way) the wheel
+    // does not scroll, and Electron does not zoom the page on it either.
     const onWheel = (e: WheelEvent): void => {
       if (!e.ctrlKey) return
-      e.preventDefault()
       const h = handlersRef.current
       // Mouse wheels send large integer line/notch deltas; trackpad pinch sends small fractional ones.
       const isNotch = e.deltaMode !== 0 || (Math.abs(e.deltaY) >= 50 && Number.isInteger(e.deltaY))
@@ -1170,7 +1227,7 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
       }
     }
 
-    outer.addEventListener('wheel', onWheel, { passive: false })
+    outer.addEventListener('wheel', onWheel, { passive: true })
     outer.addEventListener('pointerdown', onPointerDown)
     window.addEventListener('pointermove', onPointerMove)
     window.addEventListener('pointerup', onPointerUp)
@@ -1406,6 +1463,141 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visiblePathsKey])
 
+  // ── Drag selection (marquee) ──
+  // Pointer down on empty space (not a tile, header control or button), drag,
+  // and every tile the rectangle touches is selected; Ctrl keeps the earlier
+  // selection. Mouse only: touch and pen keep scrolling the grid. The pointer
+  // is captured, so the drag survives leaving the grid, and near the top or
+  // bottom edge the grid scrolls and the rectangle grows with it.
+  const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null)
+  const dragRef = useRef<{
+    id: number
+    x0: number
+    y0: number
+    cx: number
+    cy: number
+    add: boolean
+    active: boolean
+    key: string
+    raf: number
+  } | null>(null)
+
+  const marqueeHits = useCallback((x0: number, y0: number, x1: number, y1: number): { paths: string[]; key: string } => {
+    const spans = rowsInRect(layoutRef.current, x0, y0, x1, y1)
+    const paths: string[] = []
+    let lo = Infinity
+    let hi = -1
+    let missing = false
+    for (const sp of spans) {
+      for (let k = 0; k < sp.count; k++) {
+        const row = propsRef.current.getRow(sp.start + k)
+        if (row) paths.push(row.path)
+        else {
+          missing = true
+          lo = Math.min(lo, sp.start + k)
+          hi = Math.max(hi, sp.start + k)
+        }
+      }
+    }
+    // Rows not paged in yet (a long auto-scroll): ask for them; the drag is
+    // re-evaluated when they arrive (pageVersion below).
+    if (missing) propsRef.current.ensureRange(lo, hi)
+    return { paths, key: paths.length + ':' + (paths[0] ?? '') + ':' + (paths[paths.length - 1] ?? '') }
+  }, [])
+
+  const updateMarquee = useCallback(
+    (done: boolean) => {
+      const d = dragRef.current
+      const content = contentRef.current
+      if (!d || !content) return
+      const r = content.getBoundingClientRect()
+      const x1 = d.cx - r.left
+      const y1 = clamp(d.cy - r.top, 0, layoutRef.current.height)
+      setMarquee({ x0: d.x0, y0: d.y0, x1, y1 })
+      const { paths, key } = marqueeHits(d.x0, d.y0, x1, y1)
+      if (done || key !== d.key) {
+        d.key = key
+        propsRef.current.onMarquee?.(paths, d.add, done)
+      }
+    },
+    [marqueeHits]
+  )
+
+  const autoScroll = useCallback(() => {
+    const d = dragRef.current
+    const scroller = scrollerRef.current
+    if (!d || !d.active || !scroller) return
+    const r = scroller.getBoundingClientRect()
+    const EDGE = 48
+    let dy = 0
+    if (d.cy < r.top + EDGE) dy = -Math.ceil((r.top + EDGE - d.cy) / 3)
+    else if (d.cy > r.bottom - EDGE) dy = Math.ceil((d.cy - (r.bottom - EDGE)) / 3)
+    if (dy !== 0) {
+      const before = scroller.scrollTop
+      scroller.scrollTop = before + clamp(dy, -28, 28)
+      if (scroller.scrollTop !== before) updateMarquee(false)
+    }
+    d.raf = requestAnimationFrame(autoScroll)
+  }, [updateMarquee])
+
+  const onGridPointerDown = (e: React.PointerEvent<HTMLDivElement>): void => {
+    if (e.button !== 0 || e.pointerType !== 'mouse') return
+    const target = e.target as HTMLElement
+    // Tiles, compact cells and every control keep their own click behaviour.
+    if (target.closest('.pg-tile, .pg-doc-cell, button, a, input, select, textarea, [role="checkbox"], [role="button"]')) return
+    const content = contentRef.current
+    if (!content) return
+    const r = content.getBoundingClientRect()
+    // The scrollbar is part of the scroller but not of the content.
+    if (e.clientX > r.right) return
+    e.preventDefault() // no text selection, no native drag
+    e.currentTarget.setPointerCapture(e.pointerId)
+    dragRef.current = {
+      id: e.pointerId,
+      x0: e.clientX - r.left,
+      y0: e.clientY - r.top,
+      cx: e.clientX,
+      cy: e.clientY,
+      add: e.ctrlKey || e.metaKey,
+      active: false,
+      key: '',
+      raf: 0
+    }
+  }
+  const onGridPointerMove = (e: React.PointerEvent<HTMLDivElement>): void => {
+    const d = dragRef.current
+    if (!d || d.id !== e.pointerId) return
+    d.cx = e.clientX
+    d.cy = e.clientY
+    if (!d.active) {
+      const content = contentRef.current
+      if (!content) return
+      const r = content.getBoundingClientRect()
+      if (Math.hypot(e.clientX - r.left - d.x0, e.clientY - r.top - d.y0) < 5) return
+      d.active = true
+      d.raf = requestAnimationFrame(autoScroll)
+    }
+    updateMarquee(false)
+  }
+  const endDrag = (e: React.PointerEvent<HTMLDivElement>, cancelled: boolean): void => {
+    const d = dragRef.current
+    if (!d || d.id !== e.pointerId) return
+    cancelAnimationFrame(d.raf)
+    // Settle first, release after: releasing fires lostpointercapture, which
+    // lands here again and must find the drag already over. A cancelled drag
+    // keeps what the rectangle covered, and still tells the caller it ended.
+    if (d.active) updateMarquee(true)
+    else if (!cancelled && !e.ctrlKey && !e.metaKey && !e.shiftKey) propsRef.current.onEmptyClick?.()
+    dragRef.current = null
+    setMarquee(null)
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+  }
+  // Rows that arrive mid-drag join the selection without another mouse move.
+  useEffect(() => {
+    if (dragRef.current?.active) updateMarquee(false)
+  }, [props.pageVersion, updateMarquee])
+  useEffect(() => () => cancelAnimationFrame(dragRef.current?.raf ?? 0), [])
+
   // Floating date pill: names the section under the top edge once its own header has scrolled away.
   const probe = layout.sections[firstSectionAfter(layout.sections, scrollTop + PAD_TOP)]
   const topSection = probe && probe.top < scrollTop - 4 ? probe : undefined
@@ -1433,10 +1625,29 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
 
   return (
     <div ref={outerRef} className="pg-outer">
-      <div ref={scrollerRef} className="pg-scroller">
+      <div
+        ref={scrollerRef}
+        className={'pg-scroller' + (marquee ? ' is-marquee' : '')}
+        onPointerDown={onGridPointerDown}
+        onPointerMove={onGridPointerMove}
+        onPointerUp={(e) => endDrag(e, false)}
+        onPointerCancel={(e) => endDrag(e, true)}
+        onLostPointerCapture={(e) => endDrag(e, true)}
+      >
         <div ref={contentRef} className="pg-content" style={{ height: layout.height }}>
           {headers}
           {tiles}
+          {marquee && (
+            <div
+              className="pg-marquee"
+              style={{
+                left: Math.min(marquee.x0, marquee.x1),
+                top: Math.min(marquee.y0, marquee.y1),
+                width: Math.abs(marquee.x1 - marquee.x0),
+                height: Math.abs(marquee.y1 - marquee.y0)
+              }}
+            />
+          )}
         </div>
       </div>
       {topSection && <div className="pg-date-pill">{formatGroupKey(topSection.key)}</div>}

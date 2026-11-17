@@ -1,3 +1,4 @@
+import { videoExts } from './validation.ts'
 /**
  * SQL for browsing the library without loading it.
  *
@@ -52,7 +53,8 @@ export interface LibraryQuery {
 }
 
 export const PHOTO_EXTS = ['.jpg', '.jpeg', '.png', '.webp', '.heic']
-export const VIDEO_EXTS = ['.mp4', '.mov', '.avi', '.mkv', '.wmv', '.m4v', '.webm']
+/** The one list (validation.ts), so the Videos section shows every container that is indexed. */
+export const VIDEO_EXTS = videoExts
 export const DOC_EXTS = ['.pdf', '.docx', '.doc', '.txt', '.xlsx', '.pptx', '.csv']
 
 function inList(column: string, values: string[]): { sql: string; params: string[] } {

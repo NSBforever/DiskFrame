@@ -1,6 +1,7 @@
 import { parentPort } from 'worker_threads'
 import * as fs from 'fs'
 import sharp from 'sharp'
+import { thumbShape } from './thumbShape'
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const libheif = require('libheif-js/wasm-bundle')
 
@@ -19,7 +20,7 @@ interface Job {
   id: number
   input: string
   output: string
-  /** Square cover crop to this many pixels, or the full image when absent. */
+  /** A thumbnail this many pixels on its short side (see thumbShape), or the full image when absent. */
   size?: number
   quality: number
 }
@@ -40,7 +41,10 @@ parentPort?.on('message', async (job: Job) => {
         )
       )
       let out = sharp(Buffer.from(pixels.data.buffer), { raw: { width, height, channels: 4 } })
-      if (job.size) out = out.resize(job.size, job.size, { fit: 'cover', position: 'centre' })
+      if (job.size) {
+        const shape = thumbShape(width, height, job.size)
+        out = out.resize(shape.width, shape.height, { fit: 'cover', position: 'centre' })
+      }
       // Written beside the target and renamed, so a reader never sees half a JPEG.
       const tmp = `${job.output}.${process.pid}.tmp`
       await out.jpeg({ quality: job.quality }).toFile(tmp)

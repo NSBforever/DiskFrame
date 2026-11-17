@@ -25,6 +25,19 @@
 .pg-scroller.is-scrolling .pg-content {
   pointer-events: none;
 }
+/* No fades while the grid is moving. Each thumbnail's fade-in is its own
+   compositor animation, so a screen of tiles arriving mid-scroll was a screen
+   of layers made and thrown away every frame. A tile that arrives while
+   scrolling simply appears; on a still screen it fades in as before. */
+.pg-scroller.is-scrolling .pg-tile,
+.pg-scroller.is-scrolling .pg-tile::after,
+.pg-scroller.is-scrolling .pg-tile-inner {
+  transition: none;
+}
+.pg-scroller.is-scrolling .pg-tile-inner img {
+  transition: none;
+  opacity: 1;
+}
 
 /* Section header */
 .pg-header {
@@ -433,4 +446,22 @@
 .pg-doc-cell[data-n="1"] .pg-doc-name,
 .pg-doc-cell[data-n="2"] .pg-doc-name {
   font-size: 9px;
+}
+
+/* Drag-selection rectangle: DiskFrame red edge, faint red fill. Lives in the
+   content layer, so it scrolls with the tiles while the grid auto-scrolls. */
+.pg-marquee {
+  position: absolute;
+  z-index: 4;
+  border: 1px solid rgba(225, 29, 46, 0.9);
+  background: rgba(225, 29, 46, 0.12);
+  border-radius: 2px;
+  pointer-events: none;
+}
+.pg-scroller.is-marquee,
+.pg-scroller.is-marquee * {
+  cursor: crosshair;
+}
+.pg-scroller.is-marquee .pg-tile {
+  pointer-events: none; /* no hover previews or drag starts while sweeping */
 }

@@ -1,0 +1,112 @@
+name: Release
+
+# Pushing a tag vX.Y.Z builds that version and puts the four files installed
+# copies update from on a DRAFT GitHub release. Nothing reaches users until a
+# person has tried the draft's installer and pressed Publish; publishing then
+# re-checks the public assets. See docs/RELEASING.md.
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.event_name == 'push'
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write # create the draft release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Tag matches package.json
+        shell: bash
+        run: |
+          want="v$(node -p "require('./package.json').version")"
+          if [ "$want" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag is $GITHUB_REF_NAME but package.json says $want. Bump the version, commit, and tag that commit."
+            exit 1
+          fi
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+      # mpv.exe (117 MB) is not in git. The build takes the exact binary that
+      # was tested, from the build-deps pre-release of this repository, and
+      # refuses anything whose checksum is not the one committed here.
+      - name: Fetch mpv
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download build-deps --repo "$GITHUB_REPOSITORY" --pattern mpv.exe --dir resources/bin/win
+          echo "$(tr -d '[:space:]' < scripts/mpv.sha256)  resources/bin/win/mpv.exe" | sha256sum --check
+
+      # Signed only if a certificate has been added to the repository secrets;
+      # without one electron-builder builds unsigned, as every release so far.
+      # scripts/verify-pack.cjs fails the build if a runtime binary is missing.
+      - name: Build installer and portable exe
+        run: npm run build:win
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+
+      - name: Verify the release files
+        run: node scripts/verify-release.cjs dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: diskframe-${{ github.ref_name }}
+          path: |
+            dist/*.exe
+            dist/*.blockmap
+            dist/latest.yml
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Create the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          args=(--draft --verify-tag --title "DiskFrame $v")
+          if [ -f "docs/RELEASE_NOTES_$v.md" ]; then
+            args+=(--notes-file "docs/RELEASE_NOTES_$v.md")
+          else
+            args+=(--generate-notes)
+          fi
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" "${args[@]}" \
+            "dist/diskframe-$v-setup.exe" \
+            "dist/diskframe-$v-setup.exe.blockmap" \
+            "dist/latest.yml" \
+            "dist/diskframe $v.exe"
+
+  # After a person publishes the draft: the assets users will download are the
+  # ones that were built, and latest.yml still describes the installer.
+  published:
+    if: github.event_name == 'release' && !github.event.release.prerelease
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Download the published assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "${{ github.event.release.tag_name }}" --repo "$GITHUB_REPOSITORY" --dir published
+      - name: Verify what users will get
+        run: node scripts/verify-release.cjs published

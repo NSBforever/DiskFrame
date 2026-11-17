@@ -12,6 +12,9 @@
   ],
   "compilerOptions": {
     "composite": true,
+    // Shared modules under src/main import each other with the real .ts
+    // extension so `npm test` can run them unbundled (see tsconfig.node.json).
+    "allowImportingTsExtensions": true,
     "jsx": "react-jsx",
     "baseUrl": ".",
     "paths": {

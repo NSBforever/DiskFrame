@@ -1,4 +1,5 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
+import type { UpdateMode, UpdateState } from '../main/updateState'
 
 interface DriveInfo {
   name: string
@@ -169,8 +170,8 @@ declare global {
         callback: (data: { inputPath: string; secs: number; totalSecs?: number }) => void
       ) => () => void
       onTranscodeError: (callback: (data: { inputPath: string }) => void) => () => void
-      fsCopyPaste: (filePaths: string[], destDrive: string, destDir?: string) => Promise<{ success: string[]; failed: { path: string; error: string }[] }>
-      fsCutPaste: (filePaths: string[], destDrive: string, destDir?: string) => Promise<{ success: string[]; failed: { path: string; error: string }[] }>
+      fsCopyPaste: (filePaths: string[], destDrive: string, destDir?: string) => Promise<{ success: string[]; failed: { path: string; error: string }[]; cancelled: number }>
+      fsCutPaste: (filePaths: string[], destDrive: string, destDir?: string) => Promise<{ success: string[]; failed: { path: string; error: string }[]; cancelled: number }>
       onFsIoProgress: (
         callback: (data: { completed: number; total: number; currentFile: string }) => void
       ) => () => void
@@ -190,18 +191,24 @@ declare global {
       ) => () => void
       getWindowFullscreen: () => Promise<boolean>
       setWindowFullscreen: (on: boolean) => Promise<boolean>
+      setViewerFullscreen: (on: boolean | null) => Promise<boolean>
       onWindowFullscreenChanged: (cb: (on: boolean) => void) => () => void
       getStartFullscreen: () => Promise<boolean>
       setStartFullscreen: (on: boolean) => Promise<unknown>
-      getAutoUpdate: () => Promise<boolean>
-      setAutoUpdate: (on: boolean) => Promise<unknown>
-      onUpdateReady: (cb: (d: { version: string }) => void) => () => void
-      installUpdate: () => Promise<unknown>
+      getUpdateMode: () => Promise<UpdateMode>
+      setUpdateMode: (mode: UpdateMode) => Promise<UpdateMode>
+      getUpdateState: () => Promise<UpdateState>
+      onUpdateState: (cb: (s: UpdateState) => void) => () => void
+      checkForUpdates: () => Promise<UpdateState>
+      downloadUpdate: () => Promise<UpdateState>
+      installUpdate: () => Promise<{ ok: boolean; reason?: 'busy' | 'not-ready' | 'unsupported' }>
+      openReleaseNotes: () => Promise<void>
+      fsCancelTransfer: () => Promise<boolean>
       getAiSearchButton: () => Promise<boolean>
       setAiSearchButton: (enabled: boolean) => Promise<void>
-      setOverlayMeta: (meta: { name?: string; isFav?: boolean; toast?: string; show?: boolean }) => void
+      setOverlayMeta: (meta: { name?: string; isFav?: boolean; toast?: string; show?: boolean; hasPrev?: boolean; hasNext?: boolean; fullscreen?: boolean; info?: boolean }) => void
       onOverlayMeta: (
-        cb: (m: { name?: string; isFav?: boolean; toast?: string; show?: boolean }) => void
+        cb: (m: { name?: string; isFav?: boolean; toast?: string; show?: boolean; hasPrev?: boolean; hasNext?: boolean; fullscreen?: boolean; info?: boolean }) => void
       ) => () => void
       overlayAction: (action: string) => void
       setOverlayInteractive: (on: boolean) => void

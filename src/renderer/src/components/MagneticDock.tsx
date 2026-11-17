@@ -17,10 +17,10 @@ const STALE_ORDER_KEY = 'diskframe-dock-order'
 /**
  * One glass capsule of equal-sized, labelled buttons in a fixed order.
  *
- * Nothing scales, moves or reorders: click targets stay exactly where they
- * are, which is the whole point of the capsule layout. The only pointer
- * response is a highlight written straight to the node as a CSS custom
- * property, so following the cursor costs no React render.
+ * Click targets stay exactly where they are; only the red well behind the
+ * selected section slides, positioned in CSS from its index. The pointer
+ * highlight is written straight to the node as a CSS custom property, so
+ * following the cursor costs no React render.
  */
 function MagneticDock({ items }: { items: DockItemData[] }): React.JSX.Element {
   const reducedMotion = useReducedMotionPref()
@@ -66,16 +66,49 @@ function MagneticDock({ items }: { items: DockItemData[] }): React.JSX.Element {
     }
   }, [])
 
+  // Left/Right/Home/End move focus between sections, as a tablist does.
+  // Stopped here so the gallery's own arrow-key navigation does not also act.
+  const handleKeyDown = useCallback((e: React.KeyboardEvent): void => {
+    const keys = ['ArrowLeft', 'ArrowRight', 'Home', 'End']
+    if (!keys.includes(e.key)) return
+    const buttons = [
+      ...(dockRef.current?.querySelectorAll<HTMLButtonElement>('.app-dock-item') ?? [])
+    ]
+    const at = buttons.indexOf(document.activeElement as HTMLButtonElement)
+    if (at < 0) return
+    e.preventDefault()
+    e.stopPropagation()
+    const last = buttons.length - 1
+    const next =
+      e.key === 'Home'
+        ? 0
+        : e.key === 'End'
+          ? last
+          : e.key === 'ArrowLeft'
+            ? at === 0
+              ? last
+              : at - 1
+            : at === last
+              ? 0
+              : at + 1
+    buttons[next].focus()
+  }, [])
+
+  const activeIndex = items.findIndex((item) => item.isActive)
+
   return (
     <div
       ref={dockRef}
       className="app-dock"
       role="tablist"
       aria-label="Library sections"
+      style={{ '--dock-active': activeIndex } as React.CSSProperties}
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
+      onKeyDown={handleKeyDown}
     >
       <span className="app-dock-sheen" aria-hidden="true" />
+      {activeIndex >= 0 && <span className="app-dock-well" aria-hidden="true" />}
       {items.map((item) => (
         <button
           key={item.id}

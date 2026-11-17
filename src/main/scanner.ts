@@ -1,7 +1,7 @@
 import { join, basename, extname, dirname } from 'path'
 import * as fs from 'fs'
 import * as cp from 'child_process'
-import exifr from 'exifr'
+import { readPhotoMeta } from './photoGps'
 import Database from 'better-sqlite3'
 import { app, utilityProcess } from 'electron'
 import sharp from 'sharp'
@@ -20,18 +20,22 @@ import {
   isUsableCaptureDate,
   isMassRemoval,
   isSameFileVersion,
-  isIndexableUserMedia,
+  hasMediaExtension,
+  isGeneratedAsset,
   videoExts,
   allExts,
   thumbnailExts
 } from './validation'
 import { listMountedVolumes } from './driveEnum'
+import { isIndexableMediaFile } from './mediaSniff'
 import { heicToJpeg } from './heicPool'
 import { readLibrary } from './libraryWorkerClient'
 import { LibraryReads, EPOCH_SCHEMA_SQL, type MapCluster } from './libraryReads'
 import { recycle, driveTypes } from './recycleBin'
 import { UPDATE_THUMB_SQL, RECORD_THUMB_FAILURE_SQL } from './thumbRecords'
 import { moveVolumeToLetter, type LetterDb } from './driveLetter'
+import { thumbShape, THUMB_MAX_ASPECT } from './thumbShape'
+import { modeFromPref, prefFromMode, type UpdateMode } from './updateState'
 
 function resolveFfmpeg(): string {
   try {
@@ -536,6 +540,9 @@ db.exec(`
   -- whose thumbnails were all on disk already.
   -- Costs ~6MB here and 342ms to build once.
   CREATE INDEX IF NOT EXISTS idx_files_path ON files (path);
+  -- Whether any other row still shows a thumbnail, asked before deleting it
+  -- (see dropThumb). Partial: rows without a thumbnail cost nothing.
+  CREATE INDEX IF NOT EXISTS idx_files_thumb ON files (thumb) WHERE thumb IS NOT NULL;
 `)
 
 // The catalogue's version for paginated reads (see getCatalogueVersion), kept
@@ -781,29 +788,31 @@ export function setAiSearchButtonPref(enabled: boolean): void {
   }
 }
 
-/** Whether DiskFrame checks GitHub Releases for a new version on startup and
- *  installs it on quit. Default on; the only network request the app makes. */
-export function getAutoUpdatePref(): boolean {
+/** How DiskFrame keeps itself up to date: download and install on its own
+ *  (the default), only say that a version exists, or never check unasked. The
+ *  check is the only network request the app makes. See updateState.ts for
+ *  how the three modes sit in what was a 0/1 column. */
+export function getUpdateModePref(): UpdateMode {
   try {
     const row = db.prepare('SELECT auto_update FROM delete_prefs WHERE id = 1').get() as
-      | { auto_update: number }
+      | { auto_update: number | null }
       | undefined
-    return (row?.auto_update ?? 1) === 1
+    return modeFromPref(row?.auto_update)
   } catch {
-    return true
+    return 'auto'
   }
 }
 
-export function setAutoUpdatePref(enabled: boolean): void {
+export function setUpdateModePref(mode: UpdateMode): void {
   try {
     const exists = db.prepare('SELECT id FROM delete_prefs WHERE id = 1').get()
     if (exists) {
-      db.prepare('UPDATE delete_prefs SET auto_update = ? WHERE id = 1').run(enabled ? 1 : 0)
+      db.prepare('UPDATE delete_prefs SET auto_update = ? WHERE id = 1').run(prefFromMode(mode))
     } else {
-      db.prepare('INSERT OR REPLACE INTO delete_prefs (id, auto_update) VALUES (1, ?)').run(enabled ? 1 : 0)
+      db.prepare('INSERT OR REPLACE INTO delete_prefs (id, auto_update) VALUES (1, ?)').run(prefFromMode(mode))
     }
   } catch (e) {
-    console.error('Error saving auto-update pref:', e)
+    console.error('Error saving update mode pref:', e)
   }
 }
 
@@ -1005,9 +1014,7 @@ export async function deleteFilesPermanently(refs: PathRef[]): Promise<{ success
         if (file.vault_path && fs.existsSync(file.vault_path)) {
           await safeDelete(file.vault_path)
         }
-        if (file.thumb && fs.existsSync(file.thumb)) {
-          fs.unlinkSync(file.thumb)
-        }
+        dropThumb(file.thumb, p)
         // Deletes exactly the row just inspected above, by its own identity -
         // not a fresh path-only DELETE, which would remove every row at a
         // colliding path instead of only this one.
@@ -1051,9 +1058,7 @@ export async function emptyTrash(volumeId: string | null): Promise<{ success: bo
       if (file.vault_path && fs.existsSync(file.vault_path)) {
         await safeDelete(file.vault_path)
       }
-      if (file.thumb && fs.existsSync(file.thumb)) {
-        fs.unlinkSync(file.thumb)
-      }
+      dropThumb(file.thumb, file.path)
       // Scoped to this exact row's identity - a bare path DELETE would remove
       // every row at a colliding path, not only the one just inspected above.
       db.prepare('DELETE FROM files WHERE path = ? AND volume_id IS ?').run(file.path, file.volume_id ?? null)
@@ -1086,9 +1091,7 @@ export async function autoPurgeTrash(): Promise<void> {
         if (file.vault_path && fs.existsSync(file.vault_path)) {
           await safeDelete(file.vault_path)
         }
-        if (file.thumb && fs.existsSync(file.thumb)) {
-          fs.unlinkSync(file.thumb)
-        }
+        dropThumb(file.thumb, file.path)
         db.prepare('DELETE FROM files WHERE path = ? AND volume_id IS ?').run(file.path, file.volume_id ?? null)
         count++
       } catch (err) {
@@ -1394,12 +1397,26 @@ export async function generateThumbForFile(
   if (sharpExts.includes(lowerExt)) {
     try {
       const thumbPath = thumbKeyFor(fullPath, volumeId).scoped
-      await sharp(fullPath)
+      // The picture's own shape, short side THUMB_SIZE - see thumbShape.ts.
+      // One decode: 'outside' scales without cropping, and only a panorama
+      // past the 3:1 cap takes a second, tiny pass to crop it.
+      let { data, info } = await sharp(fullPath)
         .rotate()
-        .resize(THUMB_SIZE, THUMB_SIZE, { fit: 'cover', position: 'centre' })
+        .resize(THUMB_SIZE, THUMB_SIZE, { fit: 'outside' })
         .jpeg({ quality: 80 })
-        .toFile(thumbPath)
-      return fs.existsSync(thumbPath) ? thumbPath : null
+        .toBuffer({ resolveWithObject: true })
+      const shape = thumbShape(info.width, info.height, THUMB_SIZE)
+      if (shape.width !== info.width || shape.height !== info.height) {
+        ;({ data, info } = await sharp(data)
+          .resize(shape.width, shape.height, { fit: 'cover', position: 'centre' })
+          .jpeg({ quality: 80 })
+          .toBuffer({ resolveWithObject: true }))
+      }
+      // Beside the target and renamed, so a tile never loads half a JPEG.
+      const tmp = `${thumbPath}.${process.pid}.tmp`
+      await fs.promises.writeFile(tmp, data)
+      await fs.promises.rename(tmp, thumbPath)
+      return thumbPath
     } catch (e) {
       return null
     }
@@ -1434,8 +1451,9 @@ export async function generateThumbForFile(
  * the filter chain, so the crop is taken from the upright frame. That is what
  * the ffprobe call and sharp's rotate() were compensating for.
  *
- * scale(force_original_aspect_ratio=increase) + centre crop is exactly sharp's
- * { fit: 'cover', position: 'centre' }, so framing is unchanged.
+ * scale(force_original_aspect_ratio=increase) makes the short side THUMB_SIZE and
+ * keeps the frame's own shape; the crop only trims a strip longer than 3:1, the
+ * same rule thumbShape() applies to photos.
  *
  * Written to a temp file and renamed, never straight to the cache key: the
  * renderer serves thumbnails off disk through the media: protocol, and a
@@ -1508,7 +1526,9 @@ function extractScaledFrame(
       '-vframes',
       '1',
       '-vf',
-      `scale=${size}:${size}:force_original_aspect_ratio=increase,crop=${size}:${size}`,
+      // Short side `size`, the frame's own shape kept (see thumbShape.ts),
+      // and anything wider than 3:1 centre-cropped to it.
+      `scale=${size}:${size}:force_original_aspect_ratio=increase:force_divisible_by=2,crop='min(iw,${size * THUMB_MAX_ASPECT})':'min(ih,${size * THUMB_MAX_ASPECT})'`,
       '-f',
       'image2',
       '-vcodec',
@@ -1703,8 +1723,8 @@ const EXIF_EXTS = new Set([
   '.nef',
   '.png',
   '.webp',
-  '.mp4',
-  '.mov'
+  // Every video container: capture date and GPS come from ffprobe for all of them.
+  ...videoExts
 ])
 
 // Scoped to (path, volume_id): the file actually read from disk belongs to
@@ -1723,7 +1743,15 @@ const updateGpsOnlyStmt = db.prepare(
   `UPDATE files SET lat=?, lng=? WHERE path=? AND volume_id IS ? AND lat IS NULL`
 )
 
-const markExifCheckedStmt = db.prepare('UPDATE files SET exif_checked = 1 WHERE path = ? AND volume_id IS ?')
+// Overwrites a stored position: only for rows being repaired (see below).
+const repairGpsStmt = db.prepare(`UPDATE files SET lat=?, lng=? WHERE path=? AND volume_id IS ?`)
+
+// exif_checked: 0 = never read, 1 = read before the hemisphere fix (a photo's
+// stored position may be mirrored), 2 = read with the GPS reference tags.
+const markExifCheckedStmt = db.prepare('UPDATE files SET exif_checked = 2 WHERE path = ? AND volume_id IS ?')
+
+/** Extensions read with exifr; their positions needed the hemisphere fix. */
+const VIDEO_EXIF_EXTS = new Set(videoExts)
 
 let exifBackfillRunning = false
 
@@ -1753,14 +1781,26 @@ export async function enrichExifBackfill(
   try {
     const extList = [...EXIF_EXTS]
     const placeholders = extList.map(() => '?').join(',')
+    const videoList = [...VIDEO_EXIF_EXTS]
+    // Never-read files, plus photos whose position was stored before the
+    // hemisphere fix (exif_checked = 1 with coordinates). Those are re-read
+    // once for their position only; videos were always read with a signed
+    // ISO 6709 string and are not affected.
     const pending = db
       .prepare(
-        `SELECT path, ext, volume_id FROM files
-         WHERE exif_checked = 0 AND trashed_at IS NULL AND ext IN (${placeholders})
+        `SELECT path, ext, volume_id, exif_checked FROM files
+         WHERE trashed_at IS NULL AND ext IN (${placeholders})
+           AND (exif_checked = 0
+                OR (exif_checked = 1 AND lat IS NOT NULL AND ext NOT IN (${videoList.map(() => '?').join(',')})))
            ${volumeId ? 'AND volume_id = ?' : ''}
          ORDER BY date DESC`
       )
-      .all(...extList, ...(volumeId ? [volumeId] : [])) as { path: string; ext: string; volume_id: string | null }[]
+      .all(...extList, ...videoList, ...(volumeId ? [volumeId] : [])) as {
+      path: string
+      ext: string
+      volume_id: string | null
+      exif_checked: number
+    }[]
 
     const total = pending.length
     if (total === 0) return 0
@@ -1778,7 +1818,7 @@ export async function enrichExifBackfill(
         if (shouldStop?.()) return
         await whenIdle?.()
         if (shouldStop?.()) return
-        const { path: fullPath, ext, volume_id: rowVolumeId } = pending[cursor++]
+        const { path: fullPath, ext, volume_id: rowVolumeId, exif_checked: wasChecked } = pending[cursor++]
         const lowerExt = ext.toLowerCase()
         // A file that cannot be reached right now (drive unplugged, path on a
         // letter the volume no longer has) is left unchecked for a later pass.
@@ -1793,7 +1833,7 @@ export async function enrichExifBackfill(
           let lat: number | null = null
           let lng: number | null = null
 
-          if (lowerExt === '.mov' || lowerExt === '.mp4') {
+          if (VIDEO_EXIF_EXTS.has(lowerExt)) {
             const meta = await getMovMetadata(fullPath)
             if (meta) {
               date = meta.date
@@ -1801,18 +1841,14 @@ export async function enrichExifBackfill(
               lng = meta.lng
             }
           } else {
-            const exif = await exifr.parse(fullPath, {
-              pick: ['DateTimeOriginal', 'GPSLatitude', 'GPSLongitude'],
-              gps: true
-            })
-            if (exif) {
-              if (exif.DateTimeOriginal) date = new Date(exif.DateTimeOriginal)
-              lat = typeof exif.latitude === 'number' ? exif.latitude : null
-              lng = typeof exif.longitude === 'number' ? exif.longitude : null
-            }
+            ;({ date, lat, lng } = await readPhotoMeta(fullPath))
           }
 
-          if (isUsableCaptureDate(date)) {
+          if (wasChecked === 1) {
+            // Repair: the date was already corrected on the first read; only
+            // the position can be wrong, so only the position is rewritten.
+            if (lat !== null && lng !== null) repairGpsStmt.run(lat, lng, fullPath, rowVolumeId)
+          } else if (isUsableCaptureDate(date)) {
             const d = date as Date
             updateExifStmt.run(
               d.toISOString(),
@@ -1908,6 +1944,26 @@ export function resolveMediaFile(filePath: string): { path: string; relinked: bo
   return { path: filePath, relinked: false, exists: false }
 }
 
+/**
+ * Deletes a row's thumbnail file - unless another row still shows it.
+ *
+ * A copy made by Transfer starts with the original's thumbnail (see
+ * recordCopiedFile), so two rows name one file. Deleting it with either row
+ * took the other's picture too: remove or re-thumbnail a copy and the
+ * original's tile went to a 404, then streamed its full-size original instead.
+ * Call it with the row that is going away (or getting a new thumbnail); any
+ * other row with the same thumbnail keeps the file.
+ */
+export function dropThumb(thumb: string | null | undefined, ownerPath: string): void {
+  if (!thumb) return
+  if (db.prepare('SELECT 1 FROM files WHERE thumb = ? AND path != ? LIMIT 1').get(thumb, ownerPath)) return
+  try {
+    fs.unlinkSync(thumb)
+  } catch {
+    /* already gone */
+  }
+}
+
 /** `volumeId` disambiguates a colliding path the same way toggleFavourite does. */
 export function removeFileRecord(filePath: string, volumeId?: string | null): void {
   // Matches the live volume's own row OR a still-legacy one at this path -
@@ -1924,11 +1980,7 @@ export function removeFileRecord(filePath: string, volumeId?: string | null): vo
           .get(filePath, volumeId)
       : db.prepare('SELECT thumb FROM files WHERE path = ?').get(filePath)
   ) as { thumb: string | null } | undefined
-  if (row?.thumb && fs.existsSync(row.thumb)) {
-    try {
-      fs.unlinkSync(row.thumb)
-    } catch {}
-  }
+  dropThumb(row?.thumb, filePath)
   if (volumeId !== undefined) {
     db.prepare('DELETE FROM files WHERE path = ? AND (volume_id IS ? OR volume_id IS NULL)').run(filePath, volumeId)
   } else {
@@ -1977,7 +2029,7 @@ export function applyReconcileBatch(
   let added = 0
   let moved = 0
   let changed = 0
-  const staleThumbs: string[] = []
+  const staleThumbs: [thumb: string, path: string][] = []
   db.transaction(() => {
     for (const f of batch.added) {
       const d = new Date(f.mtime)
@@ -2006,20 +2058,14 @@ export function applyReconcileBatch(
     }
     for (const f of batch.changed) {
       const t = thumbOf.get(f.path, volumeId) as { thumb: string | null } | undefined
-      if (t?.thumb) staleThumbs.push(t.thumb)
+      if (t?.thumb) staleThumbs.push([t.thumb, f.path])
       changed += update.run(f.size, f.mtime, f.ino, f.path, volumeId).changes
     }
     for (const [p, m, c] of batch.folders) snap.run(volumeId, p, m, JSON.stringify(c))
   })()
   // A changed file's old thumbnail shows the old content; it is regenerated
   // from the new content when its tile is next on screen.
-  for (const t of staleThumbs) {
-    try {
-      fs.unlinkSync(t)
-    } catch {
-      /* already gone */
-    }
-  }
+  for (const [t, p] of staleThumbs) dropThumb(t, p)
   return { added, moved, changed }
 }
 
@@ -2038,13 +2084,13 @@ export function applyReconcileRemovals(
   const del = db.prepare('DELETE FROM files WHERE path = ? AND volume_id IS ?')
   const snap = db.prepare('INSERT OR REPLACE INTO folder_snapshot (volume_id, path, mtime, children) VALUES (?, ?, ?, ?)')
   const dropSnap = db.prepare("DELETE FROM folder_snapshot WHERE volume_id = ? AND (path = ? OR path LIKE ? ESCAPE '!')")
-  const thumbs: string[] = []
+  const thumbs: [thumb: string, path: string][] = []
   let n = 0
   db.transaction(() => {
     for (const p of removed) {
       const t = thumbOf.get(p, volumeId) as { thumb: string | null } | undefined
       const r = del.run(p, volumeId)
-      if (r.changes > 0 && t?.thumb) thumbs.push(t.thumb)
+      if (r.changes > 0 && t?.thumb) thumbs.push([t.thumb, p])
       n += r.changes
     }
     for (const [p, m, c] of folders) snap.run(volumeId, p, m, JSON.stringify(c))
@@ -2053,13 +2099,7 @@ export function applyReconcileRemovals(
       dropSnap.run(volumeId, g, like)
     }
   })()
-  for (const t of thumbs) {
-    try {
-      fs.unlinkSync(t)
-    } catch {
-      /* already gone */
-    }
-  }
+  for (const [t, p] of thumbs) dropThumb(t, p)
   return n
 }
 
@@ -2072,7 +2112,7 @@ export async function updateFileInPlace(filePath: string, statInput?: fs.Stats):
   // Also excludes the app's own thumbnails, cache and temp frames. Indexing
   // those made every photo and video appear twice: once as itself, and once as
   // a tile of its own generated thumbnail.
-  if (!isIndexableUserMedia(filePath)) return null
+  if (!isIndexableMediaFile(filePath)) return null
 
   let stat = statInput
   if (!stat) {
@@ -2117,11 +2157,7 @@ export async function updateFileInPlace(filePath: string, statInput?: fs.Stats):
   if (existing && existing.volume_id && isSameFileVersion(existing, stat)) return null
 
   // Invalidate old thumb if exists
-  if (existing?.thumb && fs.existsSync(existing.thumb)) {
-    try {
-      fs.unlinkSync(existing.thumb)
-    } catch {}
-  }
+  dropThumb(existing?.thumb, filePath)
 
   let newThumb: string | null = null
   try {
@@ -2242,7 +2278,9 @@ export function purgeGeneratedAssetRows(): { removed: number; scanned: number } 
   // Two classes of wrongly-indexed row: the app's own generated output, and
   // anything that was never media to begin with (.log/.db/.tmp and
   // extensionless files the old unfiltered watcher swept in).
-  const doomed = candidates.filter((r) => !isIndexableUserMedia(r.path))
+  // hasMediaExtension, not isIndexableUserMedia: a .ts/.mts row is a
+  // transport stream that passed the content check when it was indexed.
+  const doomed = candidates.filter((r) => !hasMediaExtension(r.path) || isGeneratedAsset(r.path))
   if (doomed.length === 0) return { removed: 0, scanned: candidates.length }
 
   const del = db.prepare('DELETE FROM files WHERE id = ?')
@@ -2348,7 +2386,7 @@ export function indexSampleFolder(folder: string, maxFiles: number): { count: nu
       }
       if (!entry.isFile()) continue
       const fullPath = join(dir, entry.name)
-      if (!isIndexableUserMedia(fullPath)) {
+      if (!isIndexableMediaFile(fullPath)) {
         skipped++
         continue
       }
@@ -2510,7 +2548,7 @@ export async function indexFolderBounded(
         continue
       }
       if (!entry.isFile()) continue
-      if (!isIndexableUserMedia(fullPath)) {
+      if (!isIndexableMediaFile(fullPath)) {
         skipped++
         continue
       }
@@ -2552,6 +2590,11 @@ export async function indexFolderBounded(
   })()
   cancelIndexRequested = false
   return { added, seen, visited, skipped, drive, volumeId, stoppedBy, complete: stoppedBy === null }
+}
+
+/** Whether this volume's index has a row for the path (uses idx_files_identity). */
+export function isIndexedPath(filePath: string, volumeId: string | null): boolean {
+  return !!db.prepare('SELECT 1 FROM files WHERE volume_id IS ? AND path = ?').get(volumeId, filePath)
 }
 
 export function getFileIno(filePath: string): number | null {

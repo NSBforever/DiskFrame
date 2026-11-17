@@ -134,6 +134,31 @@
   pointer-events: none;
 }
 
+/* Names the section or search the map inherited from the gallery. Below the
+   status pill, above the empty state so it can lift a filter that left
+   nothing to show. */
+.map-filter {
+  top: 50px;
+  left: 66px;
+  z-index: 700;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 6px 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  max-width: calc(100% - 90px);
+}
+.map-filter > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.map-filter .map-btn {
+  flex: none;
+}
+
 .map-empty {
   position: absolute;
   inset: 0;
@@ -164,6 +189,9 @@
 /* ── place panel ─────────────────────────────────────────────────────── */
 
 .map-place {
+  /* Above Leaflet's controls (z-index 1000): below 900px the panel spans the
+     map and the +/- buttons sat on top of its title and file count. */
+  z-index: 1001;
   top: 12px;
   right: 12px;
   bottom: 12px;
@@ -228,6 +256,9 @@
   padding: 12px;
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+  /* Without this Chromium sizes the rows before the square tiles know their
+     width, so rows came out ~40px under ~90px tiles and overlapped. */
+  grid-auto-rows: min-content;
   gap: 6px;
   align-content: start;
 }

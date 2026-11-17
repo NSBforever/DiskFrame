@@ -1,0 +1,38 @@
+name: CI
+
+# Every push to master and every pull request: types, unit tests, lint and a
+# production build of the app code. No installer is made here - that is
+# release.yml, on a version tag.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    # Windows, because the app is: native modules are built for it and the
+    # tests cover drive letters and Windows paths.
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      # Advisory until the existing lint errors in src/ are cleared (see
+      # docs/RELEASING.md): it reports, it does not fail the build.
+      - run: npm run lint
+        continue-on-error: true
+      - name: Build
+        run: npx electron-vite build

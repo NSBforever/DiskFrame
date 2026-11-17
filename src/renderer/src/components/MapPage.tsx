@@ -5,6 +5,7 @@ import './MapPage.css'
 import type { ScannedFile } from '../App'
 import { useReducedMotionPref } from '../hooks/useReducedMotionPref'
 import { mediaUrl } from '../../../main/mediaUrl'
+import { mergeOverlapping } from '../../../main/mapMerge'
 
 export interface MapBounds {
   minLat: number
@@ -45,8 +46,8 @@ export interface MapPageProps {
 
 /** How many files a place panel loads at a time. */
 const PLACE_PAGE = 60
-/** Below this the map stops splitting and opens the place instead. */
-const MAX_SPLIT_ZOOM = 17
+/** A pin's box (see .map-pin); places closer than this on screen are merged. */
+const PIN_BOX = { w: 56, h: 64 }
 
 
 function escapeAttr(s: string): string {
@@ -68,6 +69,24 @@ function clusterBounds(c: MapCluster): MapBounds {
   }
 }
 
+const NAV_LABELS: Record<string, string> = {
+  photos: 'Photos',
+  videos: 'Videos',
+  favourites: 'Favourites',
+  docs: 'Documents',
+  screenshots: 'Screenshots'
+}
+
+/** "Photos only, matching “beach”" for a filtered query; null for everything. */
+function describeFilter(q: MapQuery | null): string | null {
+  if (!q) return null
+  const parts: string[] = []
+  if (NAV_LABELS[q.nav]) parts.push(`${NAV_LABELS[q.nav]} only`)
+  const term = q.search.trim()
+  if (term) parts.push(`matching “${term}”`)
+  return parts.length ? parts.join(', ') : null
+}
+
 function placeLabel(c: MapCluster): string {
   const ns = c.lat >= 0 ? 'N' : 'S'
   const ew = c.lng >= 0 ? 'E' : 'W'
@@ -83,7 +102,19 @@ function placeLabel(c: MapCluster): string {
  * request carries a generation number and late replies from a superseded pan
  * or zoom are dropped rather than painted.
  */
-export default function MapPage({ query, onOpenFile }: MapPageProps): React.JSX.Element {
+export default function MapPage({ query: galleryQuery, onOpenFile }: MapPageProps): React.JSX.Element {
+  // The map carries the gallery's section and search, but nothing on this page
+  // showed it: arriving from Favourites quietly mapped 3 files, from Photos
+  // only photos. The filter is named on the map now and can be lifted here.
+  const filterLabel = describeFilter(galleryQuery)
+  const filterKey = galleryQuery ? `${galleryQuery.nav}|${galleryQuery.search}` : ''
+  // Remembered per filter, so a different section or search applies again.
+  const [liftedFor, setLiftedFor] = useState<string | null>(null)
+  const lifted = !!filterLabel && liftedFor === filterKey
+  const query = useMemo<MapQuery | null>(
+    () => (galleryQuery && lifted ? { ...galleryQuery, nav: 'all', search: '' } : galleryQuery),
+    [galleryQuery, lifted]
+  )
   const hostRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<L.Map | null>(null)
   const layerRef = useRef<L.LayerGroup | null>(null)
@@ -123,7 +154,13 @@ export default function MapPage({ query, onOpenFile }: MapPageProps): React.JSX.
       })
       .then((res: { clusters?: MapCluster[] }) => {
         if (generation !== genRef.current) return
-        setClusters(res?.clusters ?? [])
+        // Neighbouring grid cells can put their pins on top of each other;
+        // merge those at this zoom so every pin can be seen and clicked.
+        const m = mapRef.current
+        const raw = res?.clusters ?? []
+        setClusters(
+          m ? mergeOverlapping(raw, (lat, lng) => m.latLngToContainerPoint([lat, lng]), PIN_BOX) : raw
+        )
         setLoading(false)
       })
       .catch(() => {
@@ -263,20 +300,9 @@ export default function MapPage({ query, onOpenFile }: MapPageProps): React.JSX.
         title: `${c.count.toLocaleString()} file${c.count === 1 ? '' : 's'} near ${placeLabel(c)}`
       })
 
-      marker.on('click', () => {
-        const spans = c.maxLat - c.minLat > 1e-6 || c.maxLng - c.minLng > 1e-6
-        // Zoom into a cluster that can still be broken up; otherwise there is
-        // nothing left to split, so show what is actually there.
-        if (c.count > 1 && spans && map.getZoom() < MAX_SPLIT_ZOOM) {
-          const b = clusterBounds(c)
-          map.flyToBounds(
-            L.latLngBounds([b.minLat, b.minLng], [b.maxLat, b.maxLng]),
-            { padding: [70, 70], maxZoom: MAX_SPLIT_ZOOM, animate: !reducedMotion, duration: 0.6 }
-          )
-        } else {
-          openCluster(c)
-        }
-      })
+      // A pin is a place: clicking it shows every file there. Zooming in to
+      // split a place stays on the wheel and the +/- control.
+      marker.on('click', () => openCluster(c))
       marker.addTo(layer)
     }
   }, [clusters, reducedMotion, openCluster])
@@ -312,6 +338,22 @@ export default function MapPage({ query, onOpenFile }: MapPageProps): React.JSX.
           {loading
             ? 'Loading places…'
             : `${clusters.length} place${clusters.length === 1 ? '' : 's'} · ${total.toLocaleString()} file${total === 1 ? '' : 's'}`}
+        </div>
+      )}
+
+      {filterLabel && (
+        <div className="map-overlay map-filter" role="status">
+          <span>{lifted ? 'Showing all files' : `Showing ${filterLabel}`}</span>
+          <button
+            type="button"
+            className="map-btn"
+            onClick={() => {
+              setPlace(null)
+              setLiftedFor(lifted ? null : filterKey)
+            }}
+          >
+            {lifted ? `Only ${filterLabel.replace(/ only/, '')}` : 'Show all'}
+          </button>
         </div>
       )}
 

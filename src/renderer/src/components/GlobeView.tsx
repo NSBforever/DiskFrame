@@ -9,8 +9,8 @@ import {
   X
 } from 'lucide-react'
 import { mediaUrl } from '../../../main/mediaUrl'
+import { videoExts } from '../../../main/validation'
 
-const videoExts = ['.mp4', '.mov', '.avi', '.mkv', '.wmv']
 
 interface ScannedFile {
   path: string

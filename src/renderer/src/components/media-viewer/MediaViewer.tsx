@@ -2,29 +2,52 @@ import React, { useState, useRef, useEffect, useCallback, useLayoutEffect } from
 import { useZoomPan } from './ZoomPanEngine'
 import { useGestures } from './GestureEngine'
 import { useShortcuts } from './ShortcutManager'
-import { ImageLoader, VIEWER_ACTIVITY_EVENT, fullscreenExitIntent } from './ImageLoader'
+import { ImageLoader, VIEWER_ACTIVITY_EVENT } from './ImageLoader'
 import { MediaViewerToolbar } from './MediaViewerToolbar'
 import { MetadataPanel } from './MetadataPanel'
 import { MapPin, ArrowLeft } from 'lucide-react'
 import { useReducedMotionPref } from '../../hooks/useReducedMotionPref'
-import { containFit, visibleFraction, provisionalBox, boxesDiffer, type Box } from '../../../../main/viewerGeometry'
+import {
+  containFit,
+  visibleFraction,
+  provisionalBox,
+  boxesDiffer,
+  cubicBezier,
+  flightFrame,
+  flightFrames,
+  type Box
+} from '../../../../main/viewerGeometry'
 import { mediaUrl } from '../../../../main/mediaUrl'
+import { videoExts } from '../../../../main/validation'
 
 const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif']
-const videoExts = ['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.wmv', '.webm']
 
 const OPEN_MS = 380
 const CLOSE_MS = 320
 const SETTLE_MS = 200
 /** Fast out, long soft landing - the shape of the Photos zoom. */
-const FLIGHT_EASE = 'cubic-bezier(0.2, 0.85, 0.25, 1)'
+const FLIGHT_EASE = cubicBezier(0.2, 0.85, 0.25, 1)
 
 interface FlightState {
-  box: Box
   thumb: string | null
-  /** The full picture, layered over the thumbnail once it has loaded. */
+  /** Width over height of the thumbnail file, when the tile had it decoded. */
+  thumbAspect: number | null
+  /** The full picture, layered over the thumbnail once it has decoded. */
   full: string | null
   fullReady?: boolean
+}
+
+/**
+ * The thumbnail exactly as the tile is showing it: the same URL, so it comes
+ * from memory already decoded and the flight's first frame has a picture in
+ * it. The viewer's own URL for the same file is a different one (media:
+ * rather than file:), which meant a fetch and a decode before anything flew.
+ */
+function tileThumb(path: string): { src: string; aspect: number } | null {
+  const q = CSS.escape(path)
+  const img = document.querySelector(`[data-tile="${q}"] img, [data-grid-tile="${q}"] img`) as HTMLImageElement | null
+  if (!img || !img.complete || !img.naturalWidth || !img.naturalHeight) return null
+  return { src: img.currentSrc || img.src, aspect: img.naturalWidth / img.naturalHeight }
 }
 
 function toUrl(p: string): string {
@@ -92,6 +115,8 @@ export const SHORTCUT_HELP: [string, string][] = [
   ['Space / K', 'Play or pause'],
   ['J / L', 'Back / forward 10s'],
   ['Left / Right', 'Back / forward 5s'],
+  ['Shift + Left / Right', 'Back / forward 10s'],
+  ['Ctrl + Left / Right', 'Previous / next video'],
   ['Up / Down', 'Volume'],
   ['M', 'Mute'],
   ['Shift + P / N', 'Previous / next file'],
@@ -105,6 +130,10 @@ export const SHORTCUT_HELP: [string, string][] = [
   ['Shift + . / ,', 'Playback speed'],
   ['. / ,', 'Frame step (paused)'],
   ['Ctrl + L', 'Favourite'],
+  ['Photo: + / -', 'Zoom in / out'],
+  ['Photo: 0 / 1', 'Fit to window / actual size (100%)'],
+  ['Photo: double-click', 'Zoom in at the pointer, or back to fit'],
+  ['Photo: wheel, drag', 'Zoom at the pointer, pan'],
   ['?', 'This help'],
   ['Escape', 'Close viewer']
 ]
@@ -136,8 +165,18 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
   const isPhoto = photoExts.includes(file.ext.toLowerCase())
   const isVideo = videoExts.includes(file.ext.toLowerCase())
   const [imgDimensions, setImgDimensions] = useState<{ width: number; height: number } | null>(null)
+  // mpv restates the frame size on every position tick. A fresh object each
+  // time re-rendered the whole viewer several times a second during playback
+  // and restarted the Info panel's metadata load; an unchanged size is kept.
+  const handleImageLoaded = useCallback((d: { width: number; height: number }) => {
+    setImgDimensions((p) => (p && p.width === d.width && p.height === d.height ? p : d))
+  }, [])
   const [rotation, setRotation] = useState(0)
   const [flipHorizontal, setFlipHorizontal] = useState(false)
+  const rotationRef = useRef(rotation)
+  rotationRef.current = rotation
+  const flipRef = useRef(flipHorizontal)
+  flipRef.current = flipHorizontal
   const [isInfoOpen, setIsInfoOpen] = useState(false)
   const [isFullscreen, setIsFullscreen] = useState(false)
   const [controlsVisible, setControlsVisible] = useState(true)
@@ -155,21 +194,30 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
   // such tile on screen (scrolled away, another view) it fades in place
   // instead of flying to a guess. Reduced motion: a short fade, no flight.
   const reducedMotion = useReducedMotionPref()
-  const startThumb = file.thumb ? toUrl(file.thumb) : null
+  // Read once, at the first render: the tile is still exactly as it was clicked.
+  const [startTile] = useState(() => tileThumb(file.path))
+  const startThumb = startTile?.src ?? (file.thumb ? toUrl(file.thumb) : null)
   const canFly = !!rect && !!startThumb && (isPhoto || isVideo) && !reducedMotion
   const [phase, setPhase] = useState<'opening' | 'open' | 'closing'>(canFly ? 'opening' : 'open')
   const phaseRef = useRef(phase)
   phaseRef.current = phase
   const [flight, setFlight] = useState<FlightState | null>(() =>
     canFly && rect
-      ? { box: toBox(rect), thumb: startThumb, full: isPhoto ? toUrl(file.path) : null }
+      ? { thumb: startThumb, thumbAspect: startTile?.aspect ?? null, full: isPhoto ? toUrl(file.path) : null }
       : null
   )
+  // The flight is two nested elements moved with transforms only: the outer
+  // one clips, the inner one holds the picture. See viewerGeometry.flightFrame.
   const flightRef = useRef<HTMLDivElement>(null)
+  const flightInnerRef = useRef<HTMLDivElement>(null)
+  /** The rectangle the flight element is laid out at; its transforms are relative to it. */
+  const restRef = useRef<Box | null>(rect ? toBox(rect) : null)
   const backdropRef = useRef<HTMLDivElement>(null)
-  const flightAnimRef = useRef<Animation | null>(null)
+  const flightAnimRef = useRef<Animation[]>([])
+  /** Resolves when the flight now in the air lands; null while nothing is moving. */
+  const flyingRef = useRef<Promise<void> | null>(null)
   const openTokenRef = useRef({ cancelled: false })
-  const pendingCloseRef = useRef<{ from: Box; to: Box } | null>(null)
+  const pendingCloseRef = useRef<{ from: Box; to: Box; rest: Box } | null>(null)
   const [videoRevealed, setVideoRevealed] = useState(false)
   const onCloseRef = useRef(onClose)
   onCloseRef.current = onClose
@@ -216,22 +264,83 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
     return null
   }, [])
 
-  /** Moves the flight from one rectangle to another; resolves when it lands
-   *  or is interrupted. Only this one element animates layout. */
-  const fly = useCallback((from: Box, to: Box, ms: number): Promise<void> => {
-    const el = flightRef.current
-    if (!el) return Promise.resolve()
-    flightAnimRef.current?.cancel()
-    Object.assign(el.style, boxStyle(to))
-    if (ms <= 0) return Promise.resolve()
-    const a = el.animate([boxStyle(from), boxStyle(to)], { duration: ms, easing: FLIGHT_EASE })
-    flightAnimRef.current = a
-    return a.finished.then(
-      () => undefined,
-      () => undefined
-    )
+  const cancelFlight = useCallback((): void => {
+    for (const a of flightAnimRef.current) a.cancel()
+    flightAnimRef.current = []
   }, [])
+  /** Lays the flight element out at `rest` and shows it at `box`. Layout is
+   *  only ever written here, between flights - never during one. */
+  const placeFlight = useCallback(
+    (rest: Box, box: Box): void => {
+      const outer = flightRef.current
+      const inner = flightInnerRef.current
+      if (!outer || !inner) return
+      cancelFlight()
+      restRef.current = rest
+      Object.assign(outer.style, boxStyle(rest))
+      const f = flightFrame(box, rest)
+      outer.style.transform = f.outer
+      inner.style.transform = f.inner
+    },
+    [cancelFlight]
+  )
+  /** Moves the flight from one rectangle to another; resolves when it lands
+   *  or is interrupted. Transforms only, on two elements started together, so
+   *  the browser runs the whole flight off the main thread - the viewer
+   *  mounting, or a 24 MP photo decoding, no longer shows up as a stutter. */
+  const fly = useCallback(
+    (from: Box, to: Box, ms: number): Promise<void> => {
+      const outer = flightRef.current
+      const inner = flightInnerRef.current
+      const rest = restRef.current
+      if (!outer || !inner || !rest) return Promise.resolve()
+      cancelFlight()
+      const end = flightFrame(to, rest)
+      outer.style.transform = end.outer
+      inner.style.transform = end.inner
+      if (ms <= 0) return Promise.resolve()
+      const frames = flightFrames(from, to, rest, FLIGHT_EASE)
+      const timing = { duration: ms, easing: 'linear' } as const
+      const a = outer.animate(
+        frames.map((f) => ({ transform: f.outer })),
+        timing
+      )
+      const b = inner.animate(
+        frames.map((f) => ({ transform: f.inner })),
+        timing
+      )
+      flightAnimRef.current = [a, b]
+      const landed = a.finished.then(
+        () => undefined,
+        () => undefined
+      )
+      flyingRef.current = landed
+      void landed.then(() => {
+        if (flyingRef.current === landed) flyingRef.current = null
+      })
+      return landed
+    },
+    [cancelFlight]
+  )
   const flightBox = (): Box | null => (flightRef.current ? toBox(flightRef.current.getBoundingClientRect()) : null)
+
+  // The first frame: the flight sits exactly on the tile, showing the tile's crop.
+  useLayoutEffect(() => {
+    if (phaseRef.current === 'opening' && rect) placeFlight(toBox(rect), toBox(rect))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // The tile whose picture is in the viewer is hidden while it is there: the
+  // picture has left the grid, so there must not be a second copy behind the
+  // flight as it lifts off, nor one waiting where it lands. A style rule
+  // rather than a class, so it survives the grid re-rendering that tile.
+  useLayoutEffect(() => {
+    const style = document.createElement('style')
+    const q = CSS.escape(file.path)
+    style.textContent = `[data-tile="${q}"] .pg-tile-inner, [data-grid-tile="${q}"] > * { visibility: hidden !important; }`
+    document.head.appendChild(style)
+    return () => style.remove()
+  }, [file.path])
 
   // Opening: on mount only. Every await checks the token, so a close, a
   // next/previous or a resize during the flight takes over cleanly.
@@ -249,23 +358,36 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
     void (async () => {
       const start = toBox(rect)
       const stage = stageRef.current ? toBox(stageRef.current.getBoundingClientRect()) : start
-      // A photo's size is usually known within a few frames (it is decoded
-      // from disk while the flight starts); waiting that long lets the flight
-      // go straight to it instead of correcting course.
-      let target = await waitFor(mediaBox, 8)
+      // Where the picture will sit, from the thumbnail's own shape: known at
+      // once, so the flight leaves on the click instead of waiting for the
+      // original to decode. A thumbnail from before thumbnails kept their
+      // shape is square whatever the picture is; for those the photo's size
+      // is waited for briefly (it is usually known within a few frames).
+      const aspect = startTile?.aspect ?? null
+      const shaped = aspect !== null && Math.abs(aspect - 1) > 0.02
+      let target = shaped ? null : await waitFor(mediaBox, 8)
       if (token.cancelled) return
-      const firstLeg = target ?? provisionalBox(stage)
+      const firstLeg =
+        target ?? (shaped && aspect ? containFit({ width: aspect * 1000, height: 1000 }, stage, true) : provisionalBox(stage))
+      placeFlight(firstLeg, start)
       await fly(start, firstLeg, OPEN_MS)
       if (token.cancelled) return
+      /** Re-lays the flight out on the real rectangle and moves it there. */
+      const settle = async (to: Box): Promise<void> => {
+        const from = flightBox() ?? firstLeg
+        placeFlight(to, from)
+        await fly(from, to, SETTLE_MS)
+      }
       if (!target) {
-        // Landed on a guess (a video's size arrives from mpv): settle onto
-        // the real rectangle as soon as it is known.
+        // Landed on a guess (a video's size arrives from mpv, a small photo
+        // is not enlarged past its own size): settle onto the real rectangle
+        // as soon as it is known.
         target = await waitFor(mediaBox, 120)
         if (token.cancelled) return
-        if (target) await fly(flightBox() ?? firstLeg, target, SETTLE_MS)
+        if (target && boxesDiffer(target, firstLeg)) await settle(target)
       } else {
         const now = mediaBox()
-        if (now && boxesDiffer(now, target)) await fly(flightBox() ?? target, now, SETTLE_MS)
+        if (now && boxesDiffer(now, target)) await settle(now)
       }
       if (token.cancelled) return
       setPhase('open')
@@ -296,10 +418,10 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
   const finishOpeningNow = useCallback(() => {
     if (phaseRef.current !== 'opening') return
     openTokenRef.current.cancelled = true
-    flightAnimRef.current?.cancel()
+    cancelFlight()
     setPhase('open')
     setFlight(null)
-  }, [])
+  }, [cancelFlight])
   const openedPathRef = useRef(file.path)
   useEffect(() => {
     if (file.path === openedPathRef.current) return
@@ -314,18 +436,28 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
     const f = fileRef.current
     const isVid = videoExts.includes(f.ext.toLowerCase())
     // From wherever the picture is now: mid-flight, or where the viewer shows it.
+    const midFlight = !!flightRef.current
     const from = flightBox() ?? mediaBox()
     const to = findTileBox(f.path)
-    const thumb = f.thumb ? toUrl(f.thumb) : null
+    const tile = tileThumb(f.path)
+    const thumb = tile?.src ?? (f.thumb ? toUrl(f.thumb) : null)
+    // What the flight is laid out at: the picture's fitted rectangle, even
+    // when it is zoomed in right now - a zoomed picture can be many screens
+    // wide, and that is not a size to lay an element out at.
+    const stage = stageRef.current ? toBox(stageRef.current.getBoundingClientRect()) : null
+    const fitted = stage && dimsRef.current ? containFit(dimsRef.current, stage, isVid) : null
+    const rest = midFlight && restRef.current ? restRef.current : (fitted ?? from)
+    // A rotated or mirrored picture has no tile-shaped crop to fly back to.
+    const turned = rotationRef.current % 360 !== 0 || flipRef.current
     phaseRef.current = 'closing'
     setPhase('closing')
     // The native player sits above everything in this window; it has to be
     // gone before the flight can be seen, and its sound with it.
     if (isVid) window.api.closeMpv()
     const done = (): void => onCloseRef.current()
-    if (reducedMotion || !from || !to || !thumb) {
+    if (reducedMotion || !from || !to || !thumb || !rest || turned) {
       setFlight(null)
-      flightAnimRef.current?.cancel()
+      cancelFlight()
       const a = containerRef.current?.animate(
         [{ opacity: 1, transform: 'scale(1)' }, { opacity: 0, transform: reducedMotion ? 'scale(1)' : 'scale(0.985)' }],
         { duration: reducedMotion ? 120 : 200, easing: 'ease-in', fill: 'forwards' }
@@ -334,17 +466,17 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
       else done()
       return
     }
-    pendingCloseRef.current = { from, to }
+    pendingCloseRef.current = { from, to, rest }
     setFlight((prev) => ({
-      box: from,
       thumb,
+      thumbAspect: tile?.aspect ?? null,
       // Photos close with the full picture, already in memory, so nothing
       // drops in quality on the way back; at the tile it is cropped exactly as
       // the thumbnail is.
       full: isVid ? null : toUrl(f.path),
       fullReady: prev?.full === toUrl(f.path) ? prev?.fullReady : undefined
     }))
-  }, [mediaBox, reducedMotion])
+  }, [mediaBox, reducedMotion, cancelFlight])
 
   // Runs the close once its flight element exists (it may have just been created).
   useLayoutEffect(() => {
@@ -353,15 +485,16 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
     pendingCloseRef.current = null
     const done = (): void => onCloseRef.current()
     backdropRef.current?.animate([{ opacity: 1 }, { opacity: 0 }], { duration: CLOSE_MS, easing: 'ease-in', fill: 'forwards' })
+    placeFlight(pending.rest, pending.from)
     void fly(pending.from, pending.to, CLOSE_MS).then(done)
-  }, [phase, flight, fly])
+  }, [phase, flight, fly, placeFlight])
 
   // A resize mid-transition: land immediately (opening) or finish (closing).
   useEffect(() => {
     const onResize = (): void => {
       if (phaseRef.current === 'opening') finishOpeningNow()
       else if (phaseRef.current === 'closing') {
-        flightAnimRef.current?.finish()
+        for (const a of flightAnimRef.current) a.finish()
       }
     }
     window.addEventListener('resize', onResize)
@@ -385,9 +518,12 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
 
   // The overlay draws the only chrome that is visible over the video, so
   // it needs the filename and favourite state pushed to it.
+  const listIndex = list.indexOf(file)
+  const hasPrev = listIndex > 0
+  const hasNext = listIndex >= 0 && listIndex < list.length - 1
   useEffect(() => {
-    window.api.setOverlayMeta?.({ name: file.name, isFav })
-  }, [file.name, isFav])
+    window.api.setOverlayMeta?.({ name: file.name, isFav, hasPrev, hasNext, fullscreen: isFullscreen, info: isInfoOpen })
+  }, [file.name, isFav, hasPrev, hasNext, isFullscreen, isInfoOpen])
 
   // Reset transforms when image file changes
   useEffect(() => {
@@ -432,17 +568,25 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
   })
 
 
-  // Fullscreen toggle handler
+  // F, the overlay's button, the fallback player's button: the WINDOW goes full
+  // screen (not an element, via the HTML API), so the taskbar really goes and
+  // mpv's video window can cover the display. It lasts while the viewer is
+  // open; closing hands the window back to the app's own setting.
+  const isFullscreenRef = useRef(false)
+  isFullscreenRef.current = isFullscreen
   const handleToggleFullscreen = useCallback(() => {
-    if (!document.fullscreenElement) {
-      containerRef.current?.requestFullscreen().catch((err) => {
-        console.error('Error attempting to enable fullscreen:', err)
-      })
-      setIsFullscreen(true)
-    } else {
-      fullscreenExitIntent.current = true
-      document.exitFullscreen().catch(() => {})
-      setIsFullscreen(false)
+    const next = !isFullscreenRef.current
+    setIsFullscreen(next)
+    void window.api.setViewerFullscreen(next).then(setIsFullscreen)
+  }, [])
+  useEffect(() => {
+    let live = true
+    void window.api.getWindowFullscreen().then((on) => live && setIsFullscreen(on))
+    const off = window.api.onWindowFullscreenChanged((on) => setIsFullscreen(on)) // F11 while viewing
+    return () => {
+      live = false
+      off()
+      void window.api.setViewerFullscreen(null)
     }
   }, [])
 
@@ -477,26 +621,6 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
       }
     })
   }, [handleNext, handlePrev, handleToggleFullscreen, handleClose, onFav, onReveal, file])
-
-  // Sync fullscreen state on external escape.
-  //
-  // A real Escape in full screen never reaches the keydown handler below:
-  // Chromium consumes it to leave full screen. So an exit the viewer did not
-  // ask for is that Escape, and it closes the viewer too - one press, as the
-  // handler below promises. The app window's own full screen is untouched;
-  // the main process keeps that separately.
-  useEffect(() => {
-    const handleFullscreenChange = () => {
-      const on = !!document.fullscreenElement
-      setIsFullscreen(on)
-      if (!on && !fullscreenExitIntent.current) handleCloseRef.current()
-      fullscreenExitIntent.current = false
-    }
-    document.addEventListener('fullscreenchange', handleFullscreenChange)
-    return () => {
-      document.removeEventListener('fullscreenchange', handleFullscreenChange)
-    }
-  }, [])
 
   // Auto-hide the viewer chrome over a fullscreen video only.
   //
@@ -558,11 +682,7 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
         ) {
           return // Let the active input element handle the Escape press internally
         }
-        if (document.fullscreenElement) {
-          fullscreenExitIntent.current = true
-          document.exitFullscreen().catch(() => {})
-        }
-        handleClose()
+        handleClose() // and the window returns to the app's own full-screen setting
       }
     }
     window.addEventListener('keydown', handleEscape)
@@ -578,6 +698,7 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
     onZoomIn: () => zoomTo(scale + 0.5),
     onZoomOut: () => zoomTo(scale - 0.5),
     onZoomReset: reset,
+    onActualSize: isPhoto ? () => handleActualSize() : undefined,
     onToggleFullscreen: handleToggleFullscreen,
     isOpen: true
   })
@@ -610,16 +731,6 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
   /** One image pixel per screen pixel. */
   const handleActualSize = () => zoomTo(1 / (fitScale || 1))
 
-  /** Cover the stage: may crop, which is the one mode allowed to. */
-  const handleFill = () => {
-    if (!stageRef.current || !imgDimensions) return
-    const { clientWidth: cw, clientHeight: ch } = stageRef.current
-    const { width: iw, height: ih } = imgDimensions
-    if (!iw || !ih) return
-    const cover = Math.max(cw / iw, ch / ih)
-    zoomTo(cover / (fitScale || 1))
-  }
-
   const handleDownload = () => {
     const a = document.createElement('a')
     a.href = mediaUrl(file.path)
@@ -645,7 +756,13 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
     onDelete(file)
   }
 
+  // On the viewer's root, not the stage: a press on the picture captures the
+  // pointer to the root (see GestureEngine), and the browser then delivers
+  // click and dblclick to the capturing element. A handler on the stage never
+  // ran, so double-click zoom did nothing at all.
   const handleDoubleClick = (e: React.MouseEvent) => {
+    if (!isPhoto || phase !== 'open') return
+    if ((e.target as HTMLElement).closest('button, input, select, .media-viewer-controls, .slide-nav-btn, [data-no-drag]')) return
     if (scale > 1.01) {
       reset()
       return
@@ -665,6 +782,7 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
   return (
     <div
       ref={containerRef}
+      onDoubleClick={handleDoubleClick}
       style={{
         position: 'fixed',
         inset: 0,
@@ -738,7 +856,6 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
           scale={scale}
           onZoomChange={handleZoomChange}
           onFit={handleFit}
-          onFill={handleFill}
           onActualSize={handleActualSize}
           displayPercent={displayPercent}
           fitScale={fitScale}
@@ -843,9 +960,15 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
       {/* Main Image View Container */}
       <div
         ref={stageRef}
-        onDoubleClick={handleDoubleClick}
         style={{
           width: isInfoOpen && phase === 'open' ? 'calc(100% - 320px)' : '100%',
+          // The root centres its children, so a narrowed stage used to sit
+          // in the middle: 160px of empty space on the left and its right
+          // edge 160px under the Info panel. mpv's window follows the stage
+          // and always paints above the page, so for a video that covered
+          // half of the Info panel. Pinned left, the stage ends where the
+          // panel begins.
+          marginRight: 'auto',
           opacity: stageHidden ? 0 : 1,
           height: '100%',
           display: 'flex',
@@ -859,6 +982,8 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
           onFav={onFav}
           onShowHelp={() => setShowHelp(true)}
           onToggleTheatre={() => setIsTheatre((t) => !t)}
+          onToggleFullscreen={handleToggleFullscreen}
+          isFullscreen={isFullscreen}
           file={file}
           list={list}
           rotation={rotation}
@@ -866,7 +991,7 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
           scale={scale}
           translateX={translateX}
           translateY={translateY}
-          onImageLoaded={setImgDimensions}
+          onImageLoaded={handleImageLoaded}
           onNext={handleNext}
           onPrev={handlePrev}
           isClosing={phase === 'closing'}
@@ -1066,44 +1191,89 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
         <div
           ref={flightRef}
           aria-hidden="true"
+          data-viewer-flight=""
           style={{
             position: 'fixed',
-            ...boxStyle(flight.box),
+            left: 0,
+            top: 0,
             zIndex: 1200,
             overflow: 'hidden',
             pointerEvents: 'none',
-            willChange: 'left, top, width, height',
+            transformOrigin: '0 0',
+            willChange: 'transform',
             background: '#000'
           }}
         >
-          {flight.thumb && (
-            <img
-              src={flight.thumb}
-              alt=""
-              // A thumbnail that will not load must not fly as an empty box: land
-              // at once on opening, fade instead of flying on closing.
-              onError={() =>
-                phaseRef.current === 'opening' ? finishOpeningNow() : phaseRef.current === 'closing' ? onCloseRef.current() : setFlight(null)
-              }
-              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
-            />
-          )}
-          {flight.full && (
-            <img
-              src={flight.full}
-              alt=""
-              onLoad={() => setFlight((f) => (f && !f.fullReady ? { ...f, fullReady: true } : f))}
-              style={{
-                position: 'absolute',
-                inset: 0,
-                width: '100%',
-                height: '100%',
-                objectFit: 'cover',
-                opacity: flight.fullReady ? 1 : 0,
-                transition: 'opacity 120ms linear'
-              }}
-            />
-          )}
+          <div ref={flightInnerRef} style={{ position: 'absolute', inset: 0, transformOrigin: '0 0', willChange: 'transform' }}>
+            {/* A thumbnail made before thumbnails kept their shape is the
+                square middle of the picture. It is drawn where that middle
+                really is, and until the full picture has decoded the rest of
+                the frame is the same thumbnail, blurred - never the square
+                stretched into a crop the picture does not have. */}
+            {flight.thumb && (flight.thumbAspect === null || Math.abs(flight.thumbAspect - 1) < 0.02) && (
+              <img
+                src={flight.thumb}
+                alt=""
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'cover',
+                  filter: 'blur(18px) brightness(0.7)',
+                  transform: 'scale(1.08)'
+                }}
+              />
+            )}
+            {flight.thumb && (
+              <img
+                src={flight.thumb}
+                alt=""
+                // A thumbnail that will not load must not fly as an empty box: land
+                // at once on opening, fade instead of flying on closing.
+                onError={() =>
+                  phaseRef.current === 'opening' ? finishOpeningNow() : phaseRef.current === 'closing' ? onCloseRef.current() : setFlight(null)
+                }
+                style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain' }}
+              />
+            )}
+            {flight.full && (
+              <img
+                src={flight.full}
+                alt=""
+                decoding="async"
+                // Shown only once it is decoded: fading in a picture that is
+                // still decoding stalled the flight for as long as that took
+                // (197 ms measured on a 24 MP photo).
+                onLoad={(e) => {
+                  const img = e.currentTarget
+                  const t0 = performance.now()
+                  const show = (): void => setFlight((f) => (f && !f.fullReady ? { ...f, fullReady: true } : f))
+                  // A picture that had to be decoded just now also has to be
+                  // uploaded to the GPU the first time it is drawn; for a 24 MP
+                  // photo that froze the last frames of the flight for 290-390 ms
+                  // on an integrated GPU. So it waits for the landing, where a
+                  // still frame hides the cost. One that was already decoded
+                  // (seen before, or preloaded) is cheap and goes in at once.
+                  const ready = (): void => {
+                    const flying = flyingRef.current
+                    if (flying && performance.now() - t0 > 50) void flying.then(show)
+                    else show()
+                  }
+                  img.decode().then(ready, ready)
+                }}
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  width: '100%',
+                  height: '100%',
+                  objectFit: 'cover',
+                  opacity: flight.fullReady ? 1 : 0,
+                  transition: 'opacity 120ms linear'
+                }}
+              />
+            )}
+          </div>
         </div>
       )}
     </div>

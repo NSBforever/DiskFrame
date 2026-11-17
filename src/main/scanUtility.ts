@@ -2,6 +2,7 @@ import * as fs from 'fs'
 import { join } from 'path'
 import Database from 'better-sqlite3'
 import { isGeneratedAsset, photoExts, allExts, MIN_PHOTO_SIZE, SKIP_DIRS } from './validation'
+import { passesContentCheck } from './mediaSniff'
 
 interface ScanTaskPayload {
   drivePath: string
@@ -138,6 +139,7 @@ async function executeScan(drivePath: string, scanPath: string, dbPath: string, 
           const ext = item.ext ? item.ext.toLowerCase() : ''
           if (!allExts.includes(ext)) continue
           if (isGeneratedAsset(item.path)) continue
+          if (!passesContentCheck(item.path, ext)) continue
 
           // A missing MFT timestamp used to fall back to Date.now(), which
           // filed the record under today. Records without a usable timestamp
@@ -217,6 +219,8 @@ async function executeScan(drivePath: string, scanPath: string, dbPath: string, 
         // row's `thumb`). purgeGeneratedAssetRows() cleaned that up at the next
         // launch; not creating the rows is the actual fix.
         if (isGeneratedAsset(fullPath)) continue
+        // .ts/.mts are TypeScript as often as video: only transport streams count.
+        if (!passesContentCheck(fullPath, ext)) continue
         try {
           const stat = fs.statSync(fullPath)
           if (photoExts.includes(ext) && stat.size < MIN_PHOTO_SIZE) continue

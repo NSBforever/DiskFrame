@@ -36,6 +36,7 @@ export interface DateScrubberProps {
 }
 
 const UNKNOWN = 'Unknown date'
+const MAX_TICKS = 240
 
 export default function DateScrubber({
   groups,
@@ -80,6 +81,24 @@ export default function DateScrubber({
   }, [groups, formatGroupKey])
 
   const yearMarkers = useMemo(() => entries.filter((e) => e.isYearStart), [entries])
+
+  // Ticks, thinned to what the rail can show. There is one group per day, so a
+  // ten-year library had ~3,300 ticks one pixel tall on a rail well under a
+  // thousand pixels: most were drawn on top of each other, and together they
+  // were nine tenths of all the elements on the page - laid out, painted and
+  // hit-tested on every scroll frame. One tick per ~1/240 of the rail looks
+  // the same and costs nothing. Jumping still resolves against every group.
+  const ticks = useMemo(() => {
+    const out: Entry[] = []
+    let last = -1
+    for (const e of entries) {
+      if (e.isYearStart) continue
+      if (e.frac - last < 1 / MAX_TICKS) continue
+      last = e.frac
+      out.push(e)
+    }
+    return out
+  }, [entries])
 
   const closestEntry = useCallback(
     (frac: number): Entry | null => {
@@ -179,19 +198,22 @@ export default function DateScrubber({
           {e.year}
         </div>
       ))}
-      {entries
-        .filter((e) => !e.isYearStart)
-        .map((e) => (
-          <div key={'m:' + e.key} className="date-scrubber-tick" style={{ top: `${e.frac * 100}%` }} />
-        ))}
+      {ticks.map((e) => (
+        <div key={'m:' + e.key} className="date-scrubber-tick" style={{ top: `${e.frac * 100}%` }} />
+      ))}
+      {/* The dot rides a rail-sized carrier moved with a transform (a
+          percentage of its own height, which is the rail's), so following the
+          scroll never re-lays-out the rail. */}
       <div
         ref={indicatorRef}
-        className="date-scrubber-current"
+        className="date-scrubber-carrier"
         // Count-based estimate for the very first paint, before any scroll
         // event has fired; every scroll after that overwrites this directly
         // via the ref instead of through a React re-render (see the prop doc).
-        style={{ top: `${(currentEntry?.frac ?? 0) * 100}%` }}
-      />
+        style={{ transform: `translateY(${(currentEntry?.frac ?? 0) * 100}%)` }}
+      >
+        <div className="date-scrubber-current" />
+      </div>
       {hoverFrac !== null && hoverLabel && (
         <div className="date-scrubber-label" style={{ top: `${hoverFrac * 100}%` }}>
           {hoverLabel}

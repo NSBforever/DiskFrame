@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
+import type { UpdateMode, UpdateState } from '../main/updateState'
 
 const api = {
   getDrives: () => ipcRenderer.send('get-drives'),
@@ -122,7 +123,9 @@ const api = {
     ipcRenderer.invoke('fs-copy-paste', { filePaths, destDrive, destDir }),
   fsCutPaste: (filePaths: string[], destDrive: string, destDir?: string) =>
     ipcRenderer.invoke('fs-cut-paste', { filePaths, destDrive, destDir }),
-  onFsIoProgress: (cb: (d: { completed: number; total: number; currentFile: string }) => void) => {
+  /** Stop a copy or move after the file in hand. Files not reached stay where they are. */
+  fsCancelTransfer: (): Promise<boolean> => ipcRenderer.invoke('fs-cancel-transfer'),
+  onFsIoProgress: (cb:(d: { completed: number; total: number; currentFile: string }) => void) => {
     const listener = (_e: unknown, d: any) => cb(d)
     ipcRenderer.on('fs-io-progress', listener)
     return () => {
@@ -141,6 +144,8 @@ const api = {
   /** The app window's own full screen - not the viewer's. */
   getWindowFullscreen: (): Promise<boolean> => ipcRenderer.invoke('get-window-fullscreen'),
   setWindowFullscreen: (on: boolean): Promise<boolean> => ipcRenderer.invoke('set-window-fullscreen', on),
+  /** The viewer's own full screen while it is open; null hands the window back to the app's setting. */
+  setViewerFullscreen: (on: boolean | null): Promise<boolean> => ipcRenderer.invoke('set-viewer-fullscreen', on),
   onWindowFullscreenChanged: (cb: (on: boolean) => void) => {
     const listener = (_e: unknown, on: boolean): void => cb(on)
     ipcRenderer.on('window-fullscreen-changed', listener)
@@ -148,17 +153,22 @@ const api = {
   },
   getStartFullscreen: (): Promise<boolean> => ipcRenderer.invoke('get-start-fullscreen'),
   setStartFullscreen: (on: boolean) => ipcRenderer.invoke('set-start-fullscreen', on),
-  getAutoUpdate: (): Promise<boolean> => ipcRenderer.invoke('get-auto-update'),
-  setAutoUpdate: (on: boolean) => ipcRenderer.invoke('set-auto-update', on),
-  /** A new version finished downloading; it installs on quit, or now via installUpdate. */
-  onUpdateReady: (cb: (d: { version: string }) => void) => {
-    const listener = (_e: unknown, d: { version: string }) => cb(d)
-    ipcRenderer.on('update-ready', listener)
+  // Updates: one state object, pushed whenever it changes (see main/updateState.ts).
+  getUpdateMode: (): Promise<UpdateMode> => ipcRenderer.invoke('get-update-mode'),
+  setUpdateMode: (mode: UpdateMode): Promise<UpdateMode> => ipcRenderer.invoke('set-update-mode', mode),
+  getUpdateState: (): Promise<UpdateState> => ipcRenderer.invoke('update-get-state'),
+  onUpdateState: (cb: (s: UpdateState) => void) => {
+    const listener = (_e: unknown, s: UpdateState): void => cb(s)
+    ipcRenderer.on('update-state', listener)
     return () => {
-      ipcRenderer.removeListener('update-ready', listener)
+      ipcRenderer.removeListener('update-state', listener)
     }
   },
-  installUpdate: () => ipcRenderer.invoke('install-update'),
+  checkForUpdates: (): Promise<UpdateState> => ipcRenderer.invoke('update-check'),
+  downloadUpdate: (): Promise<UpdateState> => ipcRenderer.invoke('update-download'),
+  /** Restart into the downloaded version. Refused while a file transfer is running. */
+  installUpdate: (): Promise<{ ok: boolean; reason?: 'busy' | 'not-ready' | 'unsupported' }> => ipcRenderer.invoke('update-install'),
+  openReleaseNotes: (): Promise<void> => ipcRenderer.invoke('update-open-release'),
   getAiSearchButton: () => ipcRenderer.invoke('get-ai-search-button'),
   setAiSearchButton: (enabled: boolean) => ipcRenderer.invoke('set-ai-search-button', enabled),
   // Two tiers: tiles on screen, then the band being scrolled towards. The band
@@ -188,10 +198,10 @@ const api = {
   /** Shows a session started with deferShow, and unpauses it. */
   revealMpv: () => ipcRenderer.send('mpv-reveal'),
   // Used by the control overlay that runs inside the mpv window.
-  setOverlayMeta: (meta: { name?: string; isFav?: boolean; toast?: string; show?: boolean }) =>
+  setOverlayMeta: (meta: { name?: string; isFav?: boolean; toast?: string; show?: boolean; hasPrev?: boolean; hasNext?: boolean; fullscreen?: boolean; info?: boolean }) =>
     ipcRenderer.send('overlay-meta', meta),
-  onOverlayMeta: (cb: (m: { name?: string; isFav?: boolean; toast?: string; show?: boolean }) => void) => {
-    const listener = (_e: unknown, m: { name?: string; isFav?: boolean; toast?: string; show?: boolean }): void => cb(m)
+  onOverlayMeta: (cb: (m: { name?: string; isFav?: boolean; toast?: string; show?: boolean; hasPrev?: boolean; hasNext?: boolean; fullscreen?: boolean; info?: boolean }) => void) => {
+    const listener = (_e: unknown, m: { name?: string; isFav?: boolean; toast?: string; show?: boolean; hasPrev?: boolean; hasNext?: boolean; fullscreen?: boolean; info?: boolean }): void => cb(m)
     ipcRenderer.on('overlay-meta', listener)
     return () => ipcRenderer.removeListener('overlay-meta', listener)
   },

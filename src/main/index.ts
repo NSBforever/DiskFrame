@@ -1,10 +1,12 @@
 import { app, shell, BrowserWindow, ipcMain, protocol, crashReporter, Menu, dialog, powerMonitor } from 'electron'
 import { join, basename, extname } from 'path'
-import { spawn } from 'child_process'
+import { spawn, execFile } from 'child_process'
 import * as fs from 'fs'
 import { fileResponse } from './mediaRange'
 import { mediaUrl, mediaUrlPath } from './mediaUrl'
-import { startAutoUpdates } from './updater'
+import { initUpdates } from './updater'
+import { gpuSwitchFor, parseVideoControllers, readGpuSwitch, writeGpuSwitch, VIDEO_CONTROLLER_QUERY } from './gpuChoice'
+import { isUpdateMode } from './updateState'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import { listMountedVolumes, probeDrives, invalidateMountedVolumes } from './driveEnum'
@@ -38,8 +40,8 @@ import {
   setAiSearchButtonPref,
   getStartFullscreenPref,
   setStartFullscreenPref,
-  getAutoUpdatePref,
-  setAutoUpdatePref,
+  getUpdateModePref,
+  setUpdateModePref,
   getTrashedFiles,
   getTrashCount,
   softDeleteFiles,
@@ -90,16 +92,18 @@ import { SyncService, catalogueRoot } from './syncService'
 import {
   normalizeDrive,
   isSafeLocalPath,
-  isIndexableMedia,
+  hasMediaExtension,
   safePathList,
   safePathRefs,
   THUMB_UNAVAILABLE,
   THUMB_VOLUME_OFFLINE,
   THUMB_FOLDER_MISSING,
   THUMB_NO_ACCESS,
-  THUMB_NO_PREVIEW
+  THUMB_NO_PREVIEW,
+  videoExts
 } from './validation'
 import { parseSafeMode, subsystemEnabled } from './runtimeMode'
+import { needsFullWalk, parseIndexFormats, withFormat, type IndexFormats } from './indexFormat'
 import { resolveDriveLetters } from './driveIdentity'
 import { ThumbStageStats } from './thumbStages'
 import { heicToJpeg, stopHeicWorkers } from './heicPool'
@@ -116,7 +120,7 @@ import { readLibrary, stopLibraryWorker } from './libraryWorkerClient'
 /** Which extensions go down the ffmpeg path, so video decode time can be
  *  reported separately from photo decode time - they differ by an order of
  *  magnitude and one mean over both explains neither. */
-const VIDEO_THUMB_EXTS = new Set(['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.wmv', '.webm'])
+const VIDEO_THUMB_EXTS = new Set(videoExts)
 
 /** Logical cores, with a floor so a failure to read them cannot yield zero. */
 function cpuCount(): number {
@@ -201,6 +205,49 @@ if (safeMode.enabled && safeMode.disableGpu) {
   app.disableHardwareAcceleration()
 }
 
+// Render on the adapter the screens are attached to (gpuChoice.ts has the
+// measurements). A GPU can only be chosen before the app is ready, so this run
+// applies what the last one found and, once settled, finds out for the next.
+// Not in safe mode: a diagnostic session runs Chromium's own defaults.
+const gpuChoicePath = join(app.getPath('userData'), 'gpu-choice.json')
+
+// Per volume, the index format it was last fully walked at (see indexFormat.ts).
+const indexFormatPath = join(app.getPath('userData'), 'index-format.json')
+function readIndexFormats(): IndexFormats {
+  try {
+    return parseIndexFormats(fs.readFileSync(indexFormatPath, 'utf8'))
+  } catch {
+    return {}
+  }
+}
+function recordIndexFormat(volumeId: string | null | undefined): void {
+  if (!volumeId) return
+  try {
+    fs.writeFileSync(indexFormatPath, JSON.stringify(withFormat(readIndexFormats(), volumeId)))
+  } catch (err) {
+    diag('sync', `could not record the index format: ${err}`)
+  }
+}
+const gpuSwitch = safeMode.enabled ? null : readGpuSwitch(gpuChoicePath, process.env.DF_GPU)
+if (gpuSwitch) app.commandLine.appendSwitch(gpuSwitch)
+
+function refreshGpuChoice(): void {
+  if (process.platform !== 'win32' || safeMode.enabled) return
+  setTimeout(() => {
+    execFile(
+      'powershell',
+      ['-NoProfile', '-NonInteractive', '-Command', VIDEO_CONTROLLER_QUERY],
+      { timeout: 15000, windowsHide: true },
+      (err, stdout) => {
+        if (err) return diag('gpu', `adapter query failed (${err.message})`)
+        const next = gpuSwitchFor(parseVideoControllers(stdout))
+        diag('gpu', `this run: ${gpuSwitch ?? 'default'}; next run: ${next ?? 'default'}`)
+        writeGpuSwitch(gpuChoicePath, next)
+      }
+    )
+  }, 20_000).unref()
+}
+
 app.on('second-instance', () => {
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore()
@@ -249,6 +296,9 @@ const syncService = new SyncService({
     )
   },
   onFinished(drive, reason, outcome) {
+    // A complete walk on the current format: newly supported kinds of file in
+    // untouched folders have been found, so this volume is not walked again.
+    if ((reason === 'format upgrade' || reason === 'manual') && outcome.ok) recordIndexFormat(getCachedVolumeId(drive))
     if (!mainWindow || mainWindow.isDestroyed()) return
     mainWindow.webContents.send('sync-finished', { drive, reason, ...outcome })
     // An explicit "Check for changes" is waited on by the status bar.
@@ -358,6 +408,8 @@ watcherManager.onNeedsReconcile = (driveKey, reason) => {
 const ffmpegExe = ffmpegPath ? ffmpegPath.replace('app.asar', 'app.asar.unpacked') : 'ffmpeg'
 
 let mainWindow: BrowserWindow
+/** Copies and moves running right now. A restart to install an update waits for zero. */
+let transfersInFlight = 0
 let driveInterval: ReturnType<typeof setInterval> | null = null
 let memoryLogInterval: ReturnType<typeof setInterval> | null = null
 // Long-running background passes (thumbnails, capture dates) poll this so they
@@ -470,8 +522,21 @@ function sendFullscreenState(): void {
  *  button and Settings all come here, so the intent above is always current. */
 function setAppFullscreen(on: boolean): void {
   appFullscreen = on
-  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen() !== on) mainWindow.setFullScreen(on)
+  viewerFullscreen = null // F11 or Settings is the user's word on the window, viewer or not
+  applyWindowFullscreen()
   sendFullscreenState()
+}
+
+/**
+ * The viewer's F key: full screen (or not) for as long as the viewer is open,
+ * without changing the app's own setting. null = follow the app. Native window
+ * full screen, not the HTML API: only a real full-screen window hides the
+ * taskbar, and only the window can sit under mpv's video window.
+ */
+let viewerFullscreen: boolean | null = null
+function applyWindowFullscreen(): void {
+  const want = viewerFullscreen ?? appFullscreen
+  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isFullScreen() !== want) mainWindow.setFullScreen(want)
 }
 
 function createWindow(): void {
@@ -504,7 +569,7 @@ function createWindow(): void {
   mainWindow.on('leave-html-full-screen', () => {
     setTimeout(() => {
       if (mainWindow.isDestroyed()) return
-      if (mainWindow.isFullScreen() !== appFullscreen) mainWindow.setFullScreen(appFullscreen)
+      applyWindowFullscreen()
     }, 0)
   })
   mainWindow.on('move', () => refreshMpvBounds())
@@ -836,6 +901,7 @@ function generateThumbsForDrive(drivePath: string): void {
 
 app.whenReady().then(() => {
   if (!gotLock) return
+  refreshGpuChoice()
   diag('startup', `electron ready at ${uptimeMs()}ms`)
 
   // The window first. Everything below this is synchronous registration, so
@@ -891,8 +957,6 @@ app.whenReady().then(() => {
       } else {
         autoPurgeTrash().catch((err) => console.error('Error running auto-purge on startup:', err))
         sweepThumbOrphansOnce()
-        // Not in safe mode: a diagnostic session must not change the app under test.
-        if (getAutoUpdatePref()) startAutoUpdates(() => mainWindow, (m) => diag('updates', m))
       }
     }, 1500)
   })
@@ -1034,7 +1098,7 @@ app.whenReady().then(() => {
   })
   // Media only: shell.openPath on an .exe or .bat would run it.
   ipcMain.on('open-file', (_event, filePath: string) => {
-    if (isSafeLocalPath(filePath) && isIndexableMedia(filePath)) void shell.openPath(resolveStoredPath(filePath))
+    if (isSafeLocalPath(filePath) && hasMediaExtension(filePath)) void shell.openPath(resolveStoredPath(filePath))
   })
 
   // ── relinking a moved folder ──
@@ -1210,6 +1274,8 @@ app.whenReady().then(() => {
         }
       )
       attachWatcher()
+      // A fresh full scan already walked every folder with today's formats.
+      recordIndexFormat(liveVolumeId)
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('scan-complete', { count, drive: drivePath })
       }
@@ -1293,7 +1359,16 @@ app.whenReady().then(() => {
         syncService.cancel()
         watchWanted = drive
         attachWatcherFor(drive) // releases any other drive's watcher
-        if (subsystemEnabled(safeMode, 'scan')) syncService.request(drive, { reason: 'open', delayMs: 1500 })
+        if (subsystemEnabled(safeMode, 'scan')) {
+          // First open after an upgrade that indexes new kinds of file: one
+          // full walk, in the background, so they appear in untouched folders.
+          if (needsFullWalk(readIndexFormats(), liveVolumeId)) {
+            diag('sync', `${drive}: index format behind - one full walk to pick up newly supported formats`)
+            syncService.request(drive, { reason: 'format upgrade', full: true, delayMs: 1500 })
+          } else {
+            syncService.request(drive, { reason: 'open', delayMs: 1500 })
+          }
+        }
       }
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('drive-opened', {
@@ -1575,6 +1650,11 @@ app.whenReady().then(() => {
 
   // The app's own full screen: current state, and the preference for launch.
   ipcMain.handle('get-window-fullscreen', () => appFullscreen)
+  ipcMain.handle('set-viewer-fullscreen', (_event, on: unknown) => {
+    viewerFullscreen = on === true ? true : on === false ? false : null
+    applyWindowFullscreen()
+    return viewerFullscreen ?? appFullscreen
+  })
   ipcMain.handle('set-window-fullscreen', (_event, on: unknown) => {
     setAppFullscreen(on === true)
     return appFullscreen
@@ -1584,11 +1664,21 @@ app.whenReady().then(() => {
     setStartFullscreenPref(on === true)
     return true
   })
-  ipcMain.handle('get-auto-update', () => getAutoUpdatePref())
-  // Takes effect at the next launch; a check already running is left to finish.
-  ipcMain.handle('set-auto-update', (_event, on: unknown) => {
-    setAutoUpdatePref(on === true)
-    return true
+  ipcMain.handle('get-update-mode', () => getUpdateModePref())
+  // Read at every scheduled check, so a change applies without a restart.
+  ipcMain.handle('set-update-mode', (_event, mode: unknown) => {
+    if (isUpdateMode(mode)) setUpdateModePref(mode)
+    return getUpdateModePref()
+  })
+  // Registered with the other handlers, so the renderer can always ask for the
+  // state; the first check waits until startup has settled. Not in safe mode:
+  // a diagnostic session must not change the app under test.
+  initUpdates({
+    getWindow: () => mainWindow,
+    log: (m) => diag('updates', m),
+    getMode: getUpdateModePref,
+    isBusy: () => transfersInFlight > 0,
+    safeMode: safeMode.enabled
   })
 
   ipcMain.handle('get-ai-search-button', () => getAiSearchButtonPref())
@@ -2098,14 +2188,23 @@ app.whenReady().then(() => {
     throw new Error('No free file name at the destination')
   }
 
+  // Stopping is only ever between files: a file is either wholly at its
+  // destination or not there at all, and a move's original is removed only
+  // after its copy is verified. Files not reached stay exactly where they were.
+  let transferCancelRequested = false
+  ipcMain.handle('fs-cancel-transfer', () => {
+    if (transfersInFlight > 0) transferCancelRequested = true
+    return transfersInFlight > 0
+  })
+
   async function transferFiles(
     payload: unknown,
     mode: 'copy' | 'move'
-  ): Promise<{ success: string[]; failed: { path: string; error: string }[] }> {
+  ): Promise<{ success: string[]; failed: { path: string; error: string }[]; cancelled: number }> {
     const { filePaths, destDrive, destDir } = (payload ?? {}) as { filePaths?: unknown; destDrive?: unknown; destDir?: unknown }
     const sources = safePathList(filePaths)
     const drive = normalizeDrive(destDrive)
-    if (!drive || sources.length === 0) return { success: [], failed: [] }
+    if (!drive || sources.length === 0) return { success: [], failed: [], cancelled: 0 }
 
     // A folder the user picked on the destination drive, or that drive's root.
     // Anything else - another drive, a relative path, a folder that is not
@@ -2115,61 +2214,73 @@ app.whenReady().then(() => {
       const dir = String(destDir)
       const isDir = isSafeLocalPath(dir) && (await fs.promises.stat(dir).then((s) => s.isDirectory(), () => false))
       if (!isDir || normalizeDrive(dir.slice(0, 2)) !== drive) {
-        return { success: [], failed: sources.map((p) => ({ path: p, error: 'Destination folder is not on that drive' })) }
+        const error = isDir ? 'Destination folder is not on that drive' : 'Destination folder does not exist or cannot be opened'
+        return { success: [], failed: sources.map((p) => ({ path: p, error })), cancelled: 0 }
       }
       destRoot = dir
     }
     const success: string[] = []
     const failed: { path: string; error: string }[] = []
     let completed = 0
-
-    for (const src of sources) {
-      try {
-        // The file as it is now, which for a relinked folder is not the stored path.
-        const real = resolveStoredPath(src)
-        if (!(await fs.promises.access(real).then(() => true, () => false))) throw new Error('Source file does not exist')
-
-        if (mode === 'copy') {
-          const dest = await copyToFreeName(real, destRoot)
-          recordCopiedFile(src, dest, drive)
-        } else {
-          let dest: string
-          try {
-            dest = await freeName(real, destRoot)
-            await fs.promises.rename(real, dest)
-          } catch (renameErr) {
-            if ((renameErr as NodeJS.ErrnoException).code !== 'EXDEV') throw renameErr
-            // Across drives a move is a copy and a delete. The original goes
-            // only once the copy is complete; a short copy is removed instead.
-            dest = await copyToFreeName(real, destRoot)
-            const [a, b] = await Promise.all([fs.promises.stat(real), fs.promises.stat(dest)])
-            if (a.size !== b.size) {
-              await fs.promises.unlink(dest).catch(() => {})
-              throw new Error('Copy did not complete; the original was kept')
-            }
-            await fs.promises.unlink(real)
-          }
-          recordMovedFile(src, dest, drive)
+    let cancelled = 0
+    transfersInFlight++
+    transferCancelRequested = false
+    try {
+      for (const src of sources) {
+        if (transferCancelRequested) {
+          cancelled = sources.length - completed
+          break
         }
-        success.push(src)
-      } catch (err: any) {
-        console.error(`[fs-${mode}] Error on ${src}:`, err)
-        failed.push({ path: src, error: err?.message || `${mode} failed` })
-      }
+        try {
+          // The file as it is now, which for a relinked folder is not the stored path.
+          const real = resolveStoredPath(src)
+          if (!(await fs.promises.access(real).then(() => true, () => false))) throw new Error('Source file does not exist')
 
-      completed++
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('fs-io-progress', {
-          completed,
-          total: sources.length,
-          currentFile: basename(src)
-        })
+          if (mode === 'copy') {
+            const dest = await copyToFreeName(real, destRoot)
+            recordCopiedFile(src, dest, drive)
+          } else {
+            let dest: string
+            try {
+              dest = await freeName(real, destRoot)
+              await fs.promises.rename(real, dest)
+            } catch (renameErr) {
+              if ((renameErr as NodeJS.ErrnoException).code !== 'EXDEV') throw renameErr
+              // Across drives a move is a copy and a delete. The original goes
+              // only once the copy is complete; a short copy is removed instead.
+              dest = await copyToFreeName(real, destRoot)
+              const [a, b] = await Promise.all([fs.promises.stat(real), fs.promises.stat(dest)])
+              if (a.size !== b.size) {
+                await fs.promises.unlink(dest).catch(() => {})
+                throw new Error('Copy did not complete; the original was kept')
+              }
+              await fs.promises.unlink(real)
+            }
+            recordMovedFile(src, dest, drive)
+          }
+          success.push(src)
+        } catch (err: any) {
+          console.error(`[fs-${mode}] Error on ${src}:`, err)
+          failed.push({ path: src, error: err?.message || `${mode} failed` })
+        }
+
+        completed++
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('fs-io-progress', {
+            completed,
+            total: sources.length,
+            currentFile: basename(src)
+          })
+        }
       }
+    } finally {
+      transfersInFlight--
+      transferCancelRequested = false
     }
 
     // The user initiated this, so the destination gallery applies it directly.
     sendFilesUpdated(drive, 'initial')
-    return { success, failed }
+    return { success, failed, cancelled }
   }
 
   ipcMain.handle('fs-copy-paste', (_event, payload) => transferFiles(payload, 'copy'))

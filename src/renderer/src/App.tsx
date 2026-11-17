@@ -119,10 +119,12 @@ import DriveSelectionView from './components/DriveSelectionView'
 import PhotoGrid from './components/PhotoGrid'
 import MagneticDock from './components/MagneticDock'
 import MapPage from './components/MapPage'
+import { videoExts } from '../../main/validation'
 import UnresolvedFolders from './components/UnresolvedFolders'
 import AppearanceSetting from './components/AppearanceSetting'
 import AboutConnect from './components/AboutConnect'
 import GlassSelect from './components/GlassSelect'
+import { UpdateNotice, UpdateSettings } from './components/Updates'
 import DateScrubber from './components/DateScrubber'
 import TransferMenu, { type TransferDrive } from './components/TransferMenu'
 import { progressiveUpdateAction, groupSelectionRange } from '../../main/progressiveLibrary'
@@ -228,7 +230,6 @@ export interface ScannedFile {
 }
 
 const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic']
-const videoExts = ['.mp4', '.mov', '.avi', '.mkv', '.wmv']
 /** What a Years card can show: photos and videos, never documents. */
 const PREVIEW_EXTS = new Set([...photoExts, ...videoExts])
 const docExts = ['.pdf', '.docx', '.doc', '.txt', '.xlsx', '.pptx', '.csv']
@@ -544,7 +545,7 @@ function MapView({ files, onOpen }: { files: ScannedFile[]; onOpen: (f: ScannedF
       const marker = L.marker([first.lat, first.lng], { icon })
       const thumbsHtml = clusterFiles.slice(0, 4).map(f => {
         const src = f.thumb ? mediaUrl(f.thumb) : ''
-        return src ? `<img src="${src}" style="width:56px;height:56px;object-fit:cover;border-radius:4px;" />` : `<div style="width:56px;height:56px;background:#222226;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:18px;">${videoExts.includes(f.ext) ? '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--app-fg-dim, #8a8a8f);"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="17" x2="7" y2="17"/><line x1="17" y1="17" x2="22" y2="17"/><line x1="17" y1="7" x2="22" y2="7"/></svg>' : '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--app-fg-dim, #8a8a8f);"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>'}</div>`
+        return src ? `<img src="${src}" style="width:56px;height:56px;object-fit:cover;border-radius:4px;" />` : `<div style="width:56px;height:56px;background:#222226;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:18px;">${videoExts.includes(f.ext.toLowerCase()) ? '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--app-fg-dim, #8a8a8f);"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="17" x2="7" y2="17"/><line x1="17" y1="17" x2="22" y2="17"/><line x1="17" y1="7" x2="22" y2="7"/></svg>' : '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--app-fg-dim, #8a8a8f);"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>'}</div>`
       }).join('')
       marker.bindPopup(`<div style="font-size:12px;min-width:140px;font-family:system-ui,sans-serif;"><div style="font-weight:600;margin-bottom:6px;color:var(--app-fg, #f2f2f0);">${count} file${count > 1 ? 's' : ''}</div><div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px;">${thumbsHtml}</div><div style="font-size:10px;color:var(--app-fg-dim, #8a8a8f);">${new Date(first.date).toLocaleDateString()}</div>${count > 4 ? `<div style="font-size:10px;color:#e11d2e;margin-top:2px;">+${count - 4} more</div>` : ''}</div>`, { maxWidth: 200 })
       
@@ -634,6 +635,8 @@ const MainContentArea: React.FC<{
   formatGroupKey: (key: string) => string
   handleWheel: (e: React.WheelEvent) => void
   handleGroupCheckboxClick: (groupKey: string, e: React.MouseEvent) => void
+  handleMarquee: (paths: string[], add: boolean, done: boolean) => void
+  handleEmptyGridClick: () => void
   groupBy: string
   onDragStart: (file: ScannedFile, e: React.DragEvent) => void
   setActiveView: (view: string) => void
@@ -650,8 +653,6 @@ const MainContentArea: React.FC<{
   onAiSearchButtonChange: (enabled: boolean) => void
   startFullscreen: boolean
   onStartFullscreenChange: (on: boolean) => void
-  autoUpdate: boolean
-  onAutoUpdateChange: (on: boolean) => void
   unresolvedKey: number
   libraryState: 'idle' | 'loading' | 'ready'
   /** Discovery is still running, so every count on screen is a lower bound. */
@@ -707,6 +708,8 @@ const MainContentArea: React.FC<{
   formatGroupKey,
   handleWheel,
   handleGroupCheckboxClick,
+  handleMarquee,
+  handleEmptyGridClick,
   groupBy,
   onDragStart,
   setActiveView,
@@ -722,8 +725,6 @@ const MainContentArea: React.FC<{
   onAiSearchButtonChange,
   startFullscreen,
   onStartFullscreenChange,
-  autoUpdate,
-  onAutoUpdateChange,
   unresolvedKey,
   libraryState,
   discovering,
@@ -915,7 +916,7 @@ const MainContentArea: React.FC<{
   // re-renders this whole view. See DateScrubber's indicatorRef prop doc.
   const scrubberDotRef = useRef<HTMLDivElement>(null)
   const onScrollFracChange = useCallback((frac: number) => {
-    if (scrubberDotRef.current) scrubberDotRef.current.style.top = `${frac * 100}%`
+    if (scrubberDotRef.current) scrubberDotRef.current.style.transform = `translateY(${frac * 100}%)`
   }, [])
   const jumpToGroup = useCallback((key: string | undefined) => {
     setActiveView('Grid')
@@ -1306,6 +1307,8 @@ const MainContentArea: React.FC<{
           onFav={handleFav}
           onContextMenu={handleTileContextMenu}
           onGroupCheckboxClick={handleGroupCheckboxClick}
+          onMarquee={handleMarquee}
+          onEmptyClick={handleEmptyGridClick}
           scrollRequest={gridScrollRequest}
           scrollToTopNonce={scrollToTopNonce}
           thumbVersion={thumbVersion}
@@ -1374,6 +1377,12 @@ const MainContentArea: React.FC<{
             </div>
           </div>
 
+          {/* Two stacks rather than a row grid: the cards differ in height,
+              so pairing them row by row left holes. Each column is balanced
+              by content (~560 / ~600px at 1536x960), and on a narrow content
+              area the stacks simply follow one another. */}
+          <div className="settings-grid">
+          <div className="settings-col">
           <AppearanceSetting />
 
           {/* Same glass card as Appearance and the dock, so Settings reads as
@@ -1429,30 +1438,6 @@ const MainContentArea: React.FC<{
             </div>
           </section>
 
-          <section className="glass-panel settings-card" aria-labelledby="updates-heading">
-            <h3 id="updates-heading" className="settings-heading">
-              Updates
-            </h3>
-            <div className="settings-field">
-              <div className="settings-field-head">
-                <label htmlFor="settings-auto-update" className="settings-label">
-                  Update automatically
-                </label>
-                <input
-                  id="settings-auto-update"
-                  className="settings-switch"
-                  type="checkbox"
-                  checked={autoUpdate}
-                  onChange={(e) => onAutoUpdateChange(e.target.checked)}
-                />
-              </div>
-              <div className="settings-hint">
-                Checks GitHub for a new version when DiskFrame starts, downloads it in the background and
-                installs it when you close the app. Nothing about your files is sent. Applies from the next launch.
-              </div>
-            </div>
-          </section>
-
           <section className="glass-panel settings-card" aria-labelledby="playback-heading">
             <h3 id="playback-heading" className="settings-heading">
               Playback
@@ -1473,6 +1458,10 @@ const MainContentArea: React.FC<{
               <div className="settings-hint">Play a short muted preview when hovering a video tile.</div>
             </div>
           </section>
+          </div>
+
+          <div className="settings-col">
+          <UpdateSettings />
 
           <section className="glass-panel settings-card" aria-labelledby="search-heading">
             <h3 id="search-heading" className="settings-heading">
@@ -1503,6 +1492,8 @@ const MainContentArea: React.FC<{
             version={runtimeMode?.appVersion ?? null}
             buildCommit={runtimeMode?.buildCommit ?? null}
           />
+          </div>
+          </div>
         </div>
       )}
 
@@ -1766,18 +1757,6 @@ export default function App(): React.JSX.Element {
     setStartFullscreen(on)
     void window.api.setStartFullscreen(on)
   }, [])
-  // Automatic updates: the preference, and a version that has finished
-  // downloading (it installs on quit; the banner offers to do it now).
-  const [autoUpdate, setAutoUpdate] = useState(true)
-  const [updateReady, setUpdateReady] = useState<string | null>(null)
-  useEffect(() => {
-    window.api.getAutoUpdate?.().then(setAutoUpdate).catch(() => {})
-    return window.api.onUpdateReady?.((d) => setUpdateReady(d.version))
-  }, [])
-  const handleAutoUpdateChange = useCallback((on: boolean): void => {
-    setAutoUpdate(on)
-    void window.api.setAutoUpdate(on)
-  }, [])
 
   useEffect(() => {
     localStorage.setItem('diskframe-tile-size', String(tileSize))
@@ -1820,6 +1799,11 @@ export default function App(): React.JSX.Element {
 
   // File Copy/Cut/Paste States
   const [ioProgress, setIoProgress] = useState<{ completed: number; total: number; currentFile: string } | null>(null)
+  // Cancel was pressed; cleared when the overlay goes away.
+  const [transferStopping, setTransferStopping] = useState(false)
+  useEffect(() => {
+    if (!ioProgress) setTransferStopping(false)
+  }, [ioProgress])
   const [toastMsg, setToastMsg] = useState<string | null>(null)
   const [indexingFolder, setIndexingFolder] = useState(false)
 
@@ -2613,6 +2597,24 @@ export default function App(): React.JSX.Element {
 
   const lastSelectedPathRef = useRef<string | null>(null)
 
+  // Drag selection: the marquee's files, on top of what was selected when the
+  // drag began (Ctrl) or instead of it. The same `selected` set every bulk
+  // action reads, so Favourite, Transfer and Delete see drag-selected files.
+  const marqueeBaseRef = useRef<Set<string> | null>(null)
+  const handleMarquee = useCallback((paths: string[], add: boolean, done: boolean): void => {
+    if (!marqueeBaseRef.current) marqueeBaseRef.current = add ? new Set(selectedRef.current) : new Set()
+    const next = new Set(marqueeBaseRef.current)
+    for (const p of paths) next.add(p)
+    setSelected(next)
+    if (done) {
+      marqueeBaseRef.current = null
+      if (paths.length) lastSelectedPathRef.current = paths[paths.length - 1] // Shift+click ranges from here
+    }
+  }, [])
+  const handleEmptyGridClick = useCallback((): void => {
+    if (selectedRef.current.size) setSelected(new Set())
+  }, [])
+
   const handleTileOpen = useCallback((file: ScannedFile, indexOrList: number | ScannedFile[], _e?: React.MouseEvent): void => {
     // The viewer's opening flight starts from this file's own tile. Not the
     // event target: "Open in Viewer" in the context menu would hand over the
@@ -2778,7 +2780,8 @@ export default function App(): React.JSX.Element {
         const verb = mode === 'copy' ? 'Copied' : 'Moved'
         setToastMsg(
           `${verb} ${ok} of ${paths.length} to ${destDir}` +
-            (failed.length ? ` · ${failed.length} not ${mode === 'copy' ? 'copied' : 'moved'}: ${failed[0].error}` : '')
+            (failed.length ? ` · ${failed.length} not ${mode === 'copy' ? 'copied' : 'moved'}: ${failed[0].error}` : '') +
+            (res?.cancelled ? ` · stopped, ${res.cancelled} left where they were` : '')
         )
         setSelected(new Set())
         // Moved files have left this drive's gallery.
@@ -2916,7 +2919,7 @@ export default function App(): React.JSX.Element {
       const successCount = result?.success?.length ?? 0
       const failedCount = result?.failed?.length ?? 0
 
-      setToastMsg(`${action === 'copy' ? 'Copied' : 'Moved'} ${successCount} files to ${driveName}${failedCount > 0 ? `, ${failedCount} failed` : ''}`)
+      setToastMsg(`${action === 'copy' ? 'Copied' : 'Moved'} ${successCount} files to ${driveName}${failedCount > 0 ? `, ${failedCount} failed` : ''}${result?.cancelled ? `, stopped with ${result.cancelled} left where they were` : ''}`)
       setSelected(new Set())
     } catch (err) {
       console.error('Drop error', err)
@@ -2970,10 +2973,10 @@ export default function App(): React.JSX.Element {
               const successCount = result?.success?.length ?? 0
               const failedCount = result?.failed?.length ?? 0
               
-              setToastMsg(`${action === 'copy' ? 'Copied' : 'Moved'} ${successCount} files successfully${failedCount > 0 ? `, ${failedCount} failed` : ''}`)
+              setToastMsg(`${action === 'copy' ? 'Copied' : 'Moved'} ${successCount} files successfully${failedCount > 0 ? `, ${failedCount} failed` : ''}${result?.cancelled ? `, stopped with ${result.cancelled} left where they were` : ''}`)
               
               setSelected(new Set())
-              if (action === 'cut') {
+              if (action === 'cut' && !result?.cancelled) {
                 clipboardPathsRef.current = []
                 clipboardActionRef.current = null
               }
@@ -3024,10 +3027,40 @@ export default function App(): React.JSX.Element {
     <div style={{ display: 'flex', width: '100vw', height: '100vh', background: 'var(--app-bg, #0a0a0c)', color: 'var(--app-fg, #f2f2f0)', fontFamily: 'system-ui, sans-serif', fontSize: '13px', overflow: 'hidden', position: 'fixed', inset: 0 }}>
       <style>{`
         /* Inline animations for AI Search FAB Breathing Pulse */
+        /* Only transform and opacity move, so the pulse runs on the compositor.
+           Animating box-shadow itself forced a main-thread frame and a repaint
+           60 times a second for as long as the gallery was open; the brighter
+           glow is a second shadow on ::after, faded in and out instead.
+
+           Three breaths when the gallery appears, then it rests. Running for
+           ever, even on the compositor, it cost the gallery most of its frames:
+           a steady 2,000 px/s scroll over 10,000 photos drew 65-174 frames with
+           the pulse running and about 300 with it stopped (4 runs each). */
         @keyframes breathingPulse {
-          0% { transform: scale(1); opacity: 0.95; }
-          50% { transform: scale(1.03); opacity: 1; box-shadow: 0 0 20px rgba(225, 29, 46, 0.55); }
-          100% { transform: scale(1); opacity: 0.95; }
+          0%, 100% { transform: scale(1); opacity: 0.95; }
+          50% { transform: scale(1.03); opacity: 1; }
+        }
+        @keyframes breathingGlow {
+          0%, 100% { opacity: 0; }
+          50% { opacity: 1; }
+        }
+        .ai-fab::after {
+          content: '';
+          position: absolute;
+          inset: -1px;
+          border-radius: 50%;
+          box-shadow: 0 0 20px rgba(225, 29, 46, 0.55);
+          opacity: 0;
+          pointer-events: none;
+          animation: breathingGlow 4s ease-in-out 3;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .ai-fab, .ai-fab::after { animation: none !important; }
+        }
+        /* It had outline: none, so a keyboard user could not see it was focused. */
+        .ai-fab:focus-visible {
+          outline: 2px solid var(--app-fg, #f2f2f0);
+          outline-offset: 3px;
         }
         
         /* Checkbox visibility selectors on group-header hover */
@@ -3091,7 +3124,10 @@ export default function App(): React.JSX.Element {
         
         {/* Top bar header - only rendered after a drive is selected */}
         {selectedDrive && (
-          <div className="df-glass df-glass-strong" style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '12px 18px', flexShrink: 0, borderRadius: 0, borderLeft: 'none', borderRight: 'none', borderTop: 'none', flexWrap: 'wrap', rowGap: '8px' }}>
+          <div className="df-glass df-glass-strong" style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '12px 18px',
+            // Tall enough for the selection bar (36px + padding + border): selecting the first file or clearing the last
+            // no longer moves the whole gallery 9px - which also shifted tiles under the pointer mid drag-select.
+            minHeight: 'calc(36px + 24px + 1px)', boxSizing: 'border-box', flexShrink: 0, borderRadius: 0, borderLeft: 'none', borderRight: 'none', borderTop: 'none', flexWrap: 'wrap', rowGap: '8px' }}>
             
             <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '12px' }}>
               <button
@@ -3294,6 +3330,8 @@ export default function App(): React.JSX.Element {
           formatGroupKey={formatGroupKey}
           handleWheel={handleWheel}
           handleGroupCheckboxClick={handleGroupCheckboxClick}
+          handleMarquee={handleMarquee}
+          handleEmptyGridClick={handleEmptyGridClick}
           groupBy={groupBy}
           onDragStart={handleDragStart}
           setActiveView={setActiveView}
@@ -3310,8 +3348,6 @@ export default function App(): React.JSX.Element {
           onAiSearchButtonChange={handleAiSearchButtonChange}
           startFullscreen={startFullscreen}
           onStartFullscreenChange={handleStartFullscreenChange}
-          autoUpdate={autoUpdate}
-          onAutoUpdateChange={handleAutoUpdateChange}
           unresolvedKey={unresolvedKey}
           libraryState={libraryState}
           discovering={scanning}
@@ -3453,7 +3489,7 @@ export default function App(): React.JSX.Element {
 
       {/* Magnetic glass navigation dock, floating above the status bar */}
       {selectedDrive && (
-        <div className="gallery-chrome" style={{ position: 'fixed', bottom: '55px', left: '50%', transform: 'translateX(-50%)', zIndex: 1999 }}>
+        <div className="gallery-chrome app-dock-anchor">
           <MagneticDock items={dockItems} />
         </div>
       )}
@@ -3465,7 +3501,7 @@ export default function App(): React.JSX.Element {
       {selectedDrive && isGalleryPage && !lightbox && aiSearchButtonEnabled && (
         <button
           onClick={() => setShowAiOverlay(true)}
-          className="gallery-chrome"
+          className="gallery-chrome ai-fab"
           style={{
             position: 'fixed',
             bottom: '55px',
@@ -3481,8 +3517,7 @@ export default function App(): React.JSX.Element {
             justifyContent: 'center',
             cursor: 'pointer',
             zIndex: 2000,
-            outline: 'none',
-            animation: 'breathingPulse 4s ease-in-out infinite',
+            animation: 'breathingPulse 4s ease-in-out 3',
             transition: 'transform 0.15s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.15s'
           }}
           onMouseEnter={e => {
@@ -3500,6 +3535,7 @@ export default function App(): React.JSX.Element {
             e.currentTarget.style.transform = 'scale(1.08)'
           }}
           title="Ask AI Search Agent"
+          aria-label="Ask AI Search Agent"
         >
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <circle cx="12" cy="12" r="10" stroke="#e11d2e" strokeWidth="1.5" strokeDasharray="3 3" />
@@ -3698,17 +3734,7 @@ export default function App(): React.JSX.Element {
         </div>
       )}
 
-      {updateReady && (
-        <div className="glass-panel update-banner" role="status">
-          <span>DiskFrame {updateReady} is ready. It installs when you close the app.</span>
-          <button type="button" className="update-banner-restart" onClick={() => void window.api.installUpdate()}>
-            Restart now
-          </button>
-          <button type="button" className="update-banner-dismiss" aria-label="Dismiss" onClick={() => setUpdateReady(null)}>
-            ×
-          </button>
-        </div>
-      )}
+      <UpdateNotice busy={!!ioProgress || !!lightbox} />
 
       {/* Floating toast notification */}
       {toastMsg && (
@@ -3733,6 +3759,23 @@ export default function App(): React.JSX.Element {
             </div>
             <div style={{ width: '100%', height: '4px', background: 'var(--app-surface, var(--app-surface, #111114))', overflow: 'hidden' }}>
               <div style={{ width: `${(ioProgress.completed / ioProgress.total) * 100}%`, height: '100%', background: '#e11d2e', transition: 'width 0.15s ease' }} />
+            </div>
+            {/* Stops after the file in hand: nothing is ever left half-written. */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}>
+              <span style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)' }}>
+                {transferStopping ? 'Stopping after this file…' : 'Files not reached stay where they are.'}
+              </span>
+              <button
+                type="button"
+                className="df-button"
+                disabled={transferStopping || ioProgress.completed >= ioProgress.total}
+                onClick={() => {
+                  setTransferStopping(true)
+                  void window.api.fsCancelTransfer()
+                }}
+              >
+                Cancel
+              </button>
             </div>
           </div>
         </div>

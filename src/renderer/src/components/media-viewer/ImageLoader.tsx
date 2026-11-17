@@ -12,6 +12,7 @@ import {
   SkipForward
 } from 'lucide-react'
 import { mediaUrl } from '../../../../main/mediaUrl'
+import { videoExts } from '../../../../main/validation'
 
 interface ScannedFile {
   path: string
@@ -42,6 +43,9 @@ interface ImageLoaderProps {
   onFav?: (file: ScannedFile) => void
   onShowHelp?: () => void
   onToggleTheatre?: () => void
+  /** The viewer's full screen (the window's, owned by MediaViewer). */
+  onToggleFullscreen?: () => void
+  isFullscreen?: boolean
   /** True during the close animation, before unmount - stop audio immediately
    * rather than letting it play through the animation. */
   isClosing?: boolean
@@ -54,7 +58,6 @@ interface ImageLoaderProps {
 }
 
 const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif']
-const videoExts = ['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.wmv', '.webm']
 
 function toUrl(p: string): string {
   return mediaUrl(p)
@@ -63,13 +66,6 @@ function toUrl(p: string): string {
 /** Activity anywhere in the player - DOM or mpv's own forwarded mouse-pos. */
 export const VIEWER_ACTIVITY_EVENT = 'diskframe:viewer-activity'
 
-/**
- * Set by whichever viewer control is about to leave full screen on purpose (F,
- * the button, the video's own toggle). A full-screen exit that happens with
- * this unset is Escape, which Chromium consumes before any keydown handler
- * sees it - and the viewer treats that as "close", as Escape always meant.
- */
-export const fullscreenExitIntent = { current: false }
 
 /**
  * Why a file would not paint, and what to say about it.
@@ -133,6 +129,8 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   onFav,
   onShowHelp,
   onToggleTheatre,
+  onToggleFullscreen,
+  isFullscreen = false,
   isClosing,
   holdVideo = false,
   onVideoRevealed
@@ -143,6 +141,25 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   /** Null while the photo is fine. Set only once the main process has said why. */
   const [imgFailure, setImgFailure] = useState<FailureKind | null>(null)
   const [videoError, setVideoError] = useState(false)
+  // Why a video failed, asked like a photo's: "missing from disk" was shown for
+  // a damaged file that was right there, and for an unplugged drive alike.
+  const [videoFailure, setVideoFailure] = useState<FailureKind>('undecodable')
+  useEffect(() => {
+    setVideoFailure('undecodable') // not the last file's reason
+    if (!videoError) return
+    let live = true
+    window.api
+      .mediaStatus(file.path)
+      .then((s) => {
+        if (live) setVideoFailure(s.status !== 'ok' ? s.status : 'undecodable')
+      })
+      .catch(() => {
+        /* no answer: the decode message is still honest */
+      })
+    return () => {
+      live = false
+    }
+  }, [videoError, file.path])
   /**
    * Bumped by Retry, and in the load effect's deps so Retry re-runs the real
    * load rather than only clearing the message.
@@ -185,7 +202,6 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   const [controlsVisible, setControlsVisible] = useState(true)
   const [pointerOverControls, setPointerOverControls] = useState(false)
   const [controlsFocused, setControlsFocused] = useState(false)
-  const [isFullscreen, setIsFullscreen] = useState(false)
   const hideTimerRef = useRef<number | undefined>(undefined)
   // Last position mpv reported, so a repeated identical reading is not activity.
   const lastMpvMouseRef = useRef<{ x: number; y: number } | null>(null)
@@ -780,26 +796,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
     }
   }
 
-  // Local fullscreen triggers
-  const toggleFullscreen = useCallback(() => {
-    if (!videoContainerRef.current) return
-    if (!document.fullscreenElement) {
-      videoContainerRef.current.requestFullscreen().catch((err) => console.error(err))
-      setIsFullscreen(true)
-    } else {
-      fullscreenExitIntent.current = true
-      document.exitFullscreen().catch(() => {})
-      setIsFullscreen(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    const handleFsChange = () => {
-      setIsFullscreen(!!document.fullscreenElement)
-    }
-    document.addEventListener('fullscreenchange', handleFsChange)
-    return () => document.removeEventListener('fullscreenchange', handleFsChange)
-  }, [])
+  const toggleFullscreen = useCallback(() => onToggleFullscreen?.(), [onToggleFullscreen])
 
   // DOM mousemove anywhere over the player counts as activity. This covers
   // the chrome/toolbar area and the native/stream <video> path; the mpv path
@@ -924,6 +921,11 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
         say(isPlaying ? 'Paused' : 'Play')
       } else if (k === 'j' || k === 'J') seekTo(currentTime - 10, '-10s')
       else if (k === 'l' || k === 'L') seekTo(currentTime + 10, '+10s')
+      // Ctrl+arrows change video; plain and Shift+arrows seek inside this one.
+      else if (ctrl && (k === 'ArrowRight' || k === 'ArrowLeft')) {
+        if (!e.repeat) (k === 'ArrowRight' ? onNext : onPrev)?.()
+      } else if (shift && k === 'ArrowLeft') seekTo(currentTime - 10, '-10s')
+      else if (shift && k === 'ArrowRight') seekTo(currentTime + 10, '+10s')
       else if (k === 'ArrowLeft') seekTo(currentTime - 5, '-5s')
       else if (k === 'ArrowRight') seekTo(currentTime + 5, '+5s')
       else if (k === 'ArrowUp') setVol(volume * 100 + 5)
@@ -1220,7 +1222,14 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
             >
               <div style={{ fontSize: '64px' }}>&#127916;</div>
               <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--app-fg, #f2f2f0)' }}>{file.name}</div>
-              <div style={{ fontSize: '12px', color: 'var(--app-fg-dim, #8a8a8f)' }}>Media file could not be loaded or is missing from disk</div>
+              <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--app-fg, #f2f2f0)' }}>
+                {videoFailure === 'undecodable' ? 'Could not be played' : FAILURE_TEXT[videoFailure].title}
+              </div>
+              <div style={{ fontSize: '12px', color: 'var(--app-fg-dim, #8a8a8f)', maxWidth: '360px', textAlign: 'center' }}>
+                {videoFailure === 'undecodable'
+                  ? 'The video is on the drive and readable, but it is damaged or its contents could not be decoded.'
+                  : FAILURE_TEXT[videoFailure].detail}
+              </div>
             </div>
           ) : (videoMode === 'mpv' || videoUrl) ? (
             <>
