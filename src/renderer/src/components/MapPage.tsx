@@ -118,6 +118,9 @@ export default function MapPage({ query: galleryQuery, onOpenFile }: MapPageProp
   const hostRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<L.Map | null>(null)
   const layerRef = useRef<L.LayerGroup | null>(null)
+  /** Pins on the map, by what they show. A pin whose place is unchanged after a
+   *  zoom or pan is kept as it is - not destroyed and rebuilt with its picture. */
+  const pinsRef = useRef(new Map<string, L.Marker>())
   const reducedMotion = useReducedMotionPref()
 
   const [clusters, setClusters] = useState<MapCluster[]>([])
@@ -186,14 +189,26 @@ export default function MapPage({ query: galleryQuery, onOpenFile }: MapPageProp
       attributionControl: false,
       worldCopyJump: true,
       zoomAnimation: !reducedMotion,
-      fadeAnimation: !reducedMotion
+      fadeAnimation: !reducedMotion,
+      // Leaflet's defaults zoom one whole level per wheel notch, and bunch fast
+      // notches into one jump: zooming read as a series of lurches. Quarter
+      // levels, a finer wheel and a short debounce follow the hand instead.
+      zoomSnap: 0.25,
+      zoomDelta: 0.5,
+      wheelPxPerZoomLevel: 110,
+      wheelDebounceTime: 16
     }).setView([20, 0], 2)
     mapRef.current = map
     layerRef.current = L.layerGroup().addTo(map)
 
     const tiles = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
-      crossOrigin: true
+      crossOrigin: true,
+      // Not mid-animation: loading tiles for every in-between zoom step is
+      // what stalled the frames; they load once the zoom settles. A wider
+      // buffer keeps already-loaded tiles around for panning back.
+      updateWhenZooming: false,
+      keepBuffer: 4
     })
     // Tiles come from the network. If they cannot be fetched the map still
     // works - markers, zooming and places are all local - so this says so
@@ -226,6 +241,7 @@ export default function MapPage({ query: galleryQuery, onOpenFile }: MapPageProp
       map.remove()
       mapRef.current = null
       layerRef.current = null
+      pinsRef.current.clear()
     }
     // Built once. Reduced-motion changes are picked up on the next mount,
     // which is the right trade for not tearing the map down mid-interaction.
@@ -281,9 +297,15 @@ export default function MapPage({ query: galleryQuery, onOpenFile }: MapPageProp
     const map = mapRef.current
     const layer = layerRef.current
     if (!map || !layer) return
-    layer.clearLayers()
-
+    // Every settled zoom or pan brings a fresh cluster list. Rebuilding every
+    // pin from it made each one blink and reload its picture; now only pins
+    // whose place changed are removed or added (measured below in the commit).
+    const pins = pinsRef.current
+    const keep = new Set<string>()
     for (const c of clusters) {
+      const key = `${c.lat.toFixed(6)},${c.lng.toFixed(6)},${c.count},${c.thumb ?? ''}`
+      keep.add(key)
+      if (pins.has(key)) continue
       const badge =
         c.count > 1 ? `<span class="map-pin-count">${c.count.toLocaleString()}</span>` : ''
       const inner = c.thumb
@@ -304,6 +326,12 @@ export default function MapPage({ query: galleryQuery, onOpenFile }: MapPageProp
       // split a place stays on the wheel and the +/- control.
       marker.on('click', () => openCluster(c))
       marker.addTo(layer)
+      pins.set(key, marker)
+    }
+    for (const [key, marker] of pins) {
+      if (keep.has(key)) continue
+      layer.removeLayer(marker)
+      pins.delete(key)
     }
   }, [clusters, reducedMotion, openCluster])
 
