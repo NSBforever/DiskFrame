@@ -1583,11 +1583,14 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
     const d = dragRef.current
     if (!d || d.id !== e.pointerId) return
     cancelAnimationFrame(d.raf)
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
-    if (d.active && !cancelled) updateMarquee(true)
-    else if (!d.active && !cancelled && !e.ctrlKey && !e.metaKey && !e.shiftKey) propsRef.current.onEmptyClick?.()
+    // Settle first, release after: releasing fires lostpointercapture, which
+    // lands here again and must find the drag already over. A cancelled drag
+    // keeps what the rectangle covered, and still tells the caller it ended.
+    if (d.active) updateMarquee(true)
+    else if (!cancelled && !e.ctrlKey && !e.metaKey && !e.shiftKey) propsRef.current.onEmptyClick?.()
     dragRef.current = null
     setMarquee(null)
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
   }
   // Rows that arrive mid-drag join the selection without another mouse move.
   useEffect(() => {
