@@ -24,6 +24,17 @@ function tree(files: string[]): string {
   return root
 }
 
+/**
+ * The folders a change touched, dated a few seconds later - as they are in real
+ * use, where time passes between two scans. Without it a fast machine makes the
+ * change in the same millisecond as the first listing, the folder's mtime does
+ * not move, and the incremental pass rightly skips it (flaked on the CI runner).
+ */
+function changedLater(root: string, rels: string[]): void {
+  const t = new Date(Date.now() + 5000)
+  for (const r of rels) fs.utimesSync(path.join(root, r), t, t)
+}
+
 function known(root: string, rels: string[]): KnownFile[] {
   return rels.map((r) => {
     const p = path.join(root, r)
@@ -109,6 +120,7 @@ test('a file moved into a brand new folder elsewhere under the root is followed'
   const base = run(input(root, k)).folders // the record a previous open left behind
   fs.mkdirSync(path.join(root, 'b', 'new'))
   fs.renameSync(path.join(root, 'a', 'f.jpg'), path.join(root, 'b', 'new', 'f.jpg'))
+  changedLater(root, ['a', 'b'])
   const r = run(input(root, k, { folders: base }))
   assert.deepEqual(r.moved, ['a\\f.jpg -> b\\new\\f.jpg'])
   assert.deepEqual(r.removed, [])
@@ -124,6 +136,7 @@ test('new files are added, small photos and skipped folders are not', () => {
   fs.writeFileSync(path.join(root, 'node_modules', 'x.jpg'), Buffer.alloc(60 * 1024))
   fs.mkdirSync(path.join(root, 'fresh'))
   fs.writeFileSync(path.join(root, 'fresh', 'p.jpg'), Buffer.alloc(60 * 1024))
+  changedLater(root, ['a', '.'])
   const r = run(input(root, k, { folders: base }))
   assert.deepEqual(r.added.sort(), ['a\\new.mp4', 'fresh\\p.jpg'])
 })
