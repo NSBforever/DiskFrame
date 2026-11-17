@@ -12,6 +12,7 @@ import {
   SkipForward
 } from 'lucide-react'
 import { mediaUrl } from '../../../../main/mediaUrl'
+import { videoExts } from '../../../../main/validation'
 
 interface ScannedFile {
   path: string
@@ -54,7 +55,6 @@ interface ImageLoaderProps {
 }
 
 const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif']
-const videoExts = ['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.wmv', '.webm']
 
 function toUrl(p: string): string {
   return mediaUrl(p)
@@ -143,6 +143,24 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   /** Null while the photo is fine. Set only once the main process has said why. */
   const [imgFailure, setImgFailure] = useState<FailureKind | null>(null)
   const [videoError, setVideoError] = useState(false)
+  // Why a video failed, asked like a photo's: "missing from disk" was shown for
+  // a damaged file that was right there, and for an unplugged drive alike.
+  const [videoFailure, setVideoFailure] = useState<FailureKind>('undecodable')
+  useEffect(() => {
+    if (!videoError) return
+    let live = true
+    window.api
+      .mediaStatus(file.path)
+      .then((s) => {
+        if (live) setVideoFailure(s.status !== 'ok' ? s.status : 'undecodable')
+      })
+      .catch(() => {
+        /* no answer: the decode message is still honest */
+      })
+    return () => {
+      live = false
+    }
+  }, [videoError, file.path])
   /**
    * Bumped by Retry, and in the load effect's deps so Retry re-runs the real
    * load rather than only clearing the message.
@@ -1220,7 +1238,14 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
             >
               <div style={{ fontSize: '64px' }}>&#127916;</div>
               <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--app-fg, #f2f2f0)' }}>{file.name}</div>
-              <div style={{ fontSize: '12px', color: 'var(--app-fg-dim, #8a8a8f)' }}>Media file could not be loaded or is missing from disk</div>
+              <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--app-fg, #f2f2f0)' }}>
+                {videoFailure === 'undecodable' ? 'Could not be played' : FAILURE_TEXT[videoFailure].title}
+              </div>
+              <div style={{ fontSize: '12px', color: 'var(--app-fg-dim, #8a8a8f)', maxWidth: '360px', textAlign: 'center' }}>
+                {videoFailure === 'undecodable'
+                  ? 'The video is on the drive and readable, but it is damaged or its contents could not be decoded.'
+                  : FAILURE_TEXT[videoFailure].detail}
+              </div>
             </div>
           ) : (videoMode === 'mpv' || videoUrl) ? (
             <>

@@ -92,16 +92,18 @@ import { SyncService, catalogueRoot } from './syncService'
 import {
   normalizeDrive,
   isSafeLocalPath,
-  isIndexableMedia,
+  hasMediaExtension,
   safePathList,
   safePathRefs,
   THUMB_UNAVAILABLE,
   THUMB_VOLUME_OFFLINE,
   THUMB_FOLDER_MISSING,
   THUMB_NO_ACCESS,
-  THUMB_NO_PREVIEW
+  THUMB_NO_PREVIEW,
+  videoExts
 } from './validation'
 import { parseSafeMode, subsystemEnabled } from './runtimeMode'
+import { needsFullWalk, parseIndexFormats, withFormat, type IndexFormats } from './indexFormat'
 import { resolveDriveLetters } from './driveIdentity'
 import { ThumbStageStats } from './thumbStages'
 import { heicToJpeg, stopHeicWorkers } from './heicPool'
@@ -118,7 +120,7 @@ import { readLibrary, stopLibraryWorker } from './libraryWorkerClient'
 /** Which extensions go down the ffmpeg path, so video decode time can be
  *  reported separately from photo decode time - they differ by an order of
  *  magnitude and one mean over both explains neither. */
-const VIDEO_THUMB_EXTS = new Set(['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.wmv', '.webm'])
+const VIDEO_THUMB_EXTS = new Set(videoExts)
 
 /** Logical cores, with a floor so a failure to read them cannot yield zero. */
 function cpuCount(): number {
@@ -208,6 +210,24 @@ if (safeMode.enabled && safeMode.disableGpu) {
 // applies what the last one found and, once settled, finds out for the next.
 // Not in safe mode: a diagnostic session runs Chromium's own defaults.
 const gpuChoicePath = join(app.getPath('userData'), 'gpu-choice.json')
+
+// Per volume, the index format it was last fully walked at (see indexFormat.ts).
+const indexFormatPath = join(app.getPath('userData'), 'index-format.json')
+function readIndexFormats(): IndexFormats {
+  try {
+    return parseIndexFormats(fs.readFileSync(indexFormatPath, 'utf8'))
+  } catch {
+    return {}
+  }
+}
+function recordIndexFormat(volumeId: string | null | undefined): void {
+  if (!volumeId) return
+  try {
+    fs.writeFileSync(indexFormatPath, JSON.stringify(withFormat(readIndexFormats(), volumeId)))
+  } catch (err) {
+    diag('sync', `could not record the index format: ${err}`)
+  }
+}
 const gpuSwitch = safeMode.enabled ? null : readGpuSwitch(gpuChoicePath, process.env.DF_GPU)
 if (gpuSwitch) app.commandLine.appendSwitch(gpuSwitch)
 
@@ -276,6 +296,9 @@ const syncService = new SyncService({
     )
   },
   onFinished(drive, reason, outcome) {
+    // A complete walk on the current format: newly supported kinds of file in
+    // untouched folders have been found, so this volume is not walked again.
+    if ((reason === 'format upgrade' || reason === 'manual') && outcome.ok) recordIndexFormat(getCachedVolumeId(drive))
     if (!mainWindow || mainWindow.isDestroyed()) return
     mainWindow.webContents.send('sync-finished', { drive, reason, ...outcome })
     // An explicit "Check for changes" is waited on by the status bar.
@@ -1062,7 +1085,7 @@ app.whenReady().then(() => {
   })
   // Media only: shell.openPath on an .exe or .bat would run it.
   ipcMain.on('open-file', (_event, filePath: string) => {
-    if (isSafeLocalPath(filePath) && isIndexableMedia(filePath)) void shell.openPath(resolveStoredPath(filePath))
+    if (isSafeLocalPath(filePath) && hasMediaExtension(filePath)) void shell.openPath(resolveStoredPath(filePath))
   })
 
   // ── relinking a moved folder ──
@@ -1238,6 +1261,8 @@ app.whenReady().then(() => {
         }
       )
       attachWatcher()
+      // A fresh full scan already walked every folder with today's formats.
+      recordIndexFormat(liveVolumeId)
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('scan-complete', { count, drive: drivePath })
       }
@@ -1321,7 +1346,16 @@ app.whenReady().then(() => {
         syncService.cancel()
         watchWanted = drive
         attachWatcherFor(drive) // releases any other drive's watcher
-        if (subsystemEnabled(safeMode, 'scan')) syncService.request(drive, { reason: 'open', delayMs: 1500 })
+        if (subsystemEnabled(safeMode, 'scan')) {
+          // First open after an upgrade that indexes new kinds of file: one
+          // full walk, in the background, so they appear in untouched folders.
+          if (needsFullWalk(readIndexFormats(), liveVolumeId)) {
+            diag('sync', `${drive}: index format behind - one full walk to pick up newly supported formats`)
+            syncService.request(drive, { reason: 'format upgrade', full: true, delayMs: 1500 })
+          } else {
+            syncService.request(drive, { reason: 'open', delayMs: 1500 })
+          }
+        }
       }
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('drive-opened', {

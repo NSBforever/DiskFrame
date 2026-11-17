@@ -5,7 +5,58 @@
  */
 
 export const photoExts = ['.jpg', '.jpeg', '.png', '.heic', '.raw', '.cr2', '.nef', '.webp']
-export const videoExts = ['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.wmv', '.webm']
+/**
+ * Every video container DiskFrame indexes - the one list. The scan, sync,
+ * watcher, thumbnails, metadata, the Videos section and the viewer all read
+ * this; it used to be copied into a dozen files that had drifted apart, and
+ * none of them knew MPG, so a whole camera's worth of .MPG clips never
+ * appeared. These are containers, not codecs: what is inside is read by
+ * ffprobe at playback (streamServer.probeMedia), and mpv decodes all of them.
+ * Matching is case-insensitive (extensions are lower-cased first).
+ */
+export const videoExts = [
+  '.mp4',
+  '.m4v',
+  '.mov',
+  '.mpg',
+  '.mpeg',
+  '.avi',
+  '.mkv',
+  '.wmv',
+  '.webm',
+  '.flv',
+  '.3gp',
+  '.3g2',
+  '.mts',
+  '.m2ts',
+  '.ts',
+  '.vob',
+  '.ogv',
+  '.asf'
+]
+/**
+ * Extensions other software also uses: .ts and .mts are TypeScript sources as
+ * often as MPEG transport streams. Files with these are indexed only when
+ * their first bytes are transport-stream packets (see looksLikeMpegTs).
+ */
+export const SNIFFED_VIDEO_EXTS = ['.ts', '.mts']
+/** Bytes of a file's head that looksLikeMpegTs needs (three 192-byte packets' sync bytes). */
+export const MPEG_TS_HEAD_BYTES = 400
+
+/**
+ * Whether a file's first bytes are an MPEG transport stream: a 0x47 sync byte
+ * every 188 bytes (broadcast .ts), or every 192 bytes after a 4-byte timecode
+ * (BDAV .m2ts/.mts from camcorders and Blu-ray). Three packets must line up,
+ * which no plausible text file does.
+ */
+export function looksLikeMpegTs(head: Uint8Array): boolean {
+  const sync = (offsets: number[]): boolean => offsets.every((o) => o < head.length && head[o] === 0x47)
+  return sync([0, 188, 376]) || sync([4, 196, 388])
+}
+
+export function isVideoExt(ext: string): boolean {
+  return videoExts.includes(ext.toLowerCase())
+}
 export const docExts = ['.pdf', '.docx', '.doc', '.txt', '.xlsx', '.pptx', '.csv']
 export const allExts = [...photoExts, ...videoExts, ...docExts]
 /** Photos smaller than this are icons and slivers, not photos. Shared by the
@@ -43,6 +94,19 @@ function extensionOf(filePath: string): string {
  * each one for thumbnail generation.
  */
 export function isIndexableMedia(filePath: string): boolean {
+  const ext = extensionOf(filePath)
+  // .ts/.mts cannot be decided from the name: only mediaSniff, which reads
+  // the file, may index one (TypeScript sources share the extensions).
+  return allExts.includes(ext) && !SNIFFED_VIDEO_EXTS.includes(ext)
+}
+
+/**
+ * Whether the name is a media type DiskFrame knows, .ts/.mts included. For
+ * rows ALREADY in the index (they passed the content check when indexed):
+ * the startup purge and opening a file must not treat a real transport
+ * stream as junk. Never use it to decide whether to index a new path.
+ */
+export function hasMediaExtension(filePath: string): boolean {
   return allExts.includes(extensionOf(filePath))
 }
 

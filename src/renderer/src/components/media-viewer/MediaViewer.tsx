@@ -18,9 +18,9 @@ import {
   type Box
 } from '../../../../main/viewerGeometry'
 import { mediaUrl } from '../../../../main/mediaUrl'
+import { videoExts } from '../../../../main/validation'
 
 const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif']
-const videoExts = ['.mp4', '.mov', '.m4v', '.avi', '.mkv', '.wmv', '.webm']
 
 const OPEN_MS = 380
 const CLOSE_MS = 320

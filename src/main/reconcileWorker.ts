@@ -2,6 +2,7 @@ import { parentPort, workerData } from 'worker_threads'
 import * as fs from 'fs'
 import Database from 'better-sqlite3'
 import { runReconcile, nodeFs, type ReconcileInput } from './reconcile'
+import { passesContentCheck } from './mediaSniff'
 import { isGeneratedAsset, isWatchIgnoredPath } from './validation'
 
 /**
@@ -68,6 +69,7 @@ runReconcile(
   { ...options, ...catalogue, isExcluded: (p: string) => isGeneratedAsset(p) || isWatchIgnoredPath(p) },
   {
     ...real,
+    contentCheck: passesContentCheck,
     pace() {
       // ~80% duty cycle at most: after 40ms of work, step aside for 10ms.
       if (++sincePause < 10 && Date.now() - busySince < 40) return

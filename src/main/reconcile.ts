@@ -98,6 +98,9 @@ export interface FsAdapter {
   list(path: string): ListResult
   /** Called between folders; the worker uses it to throttle its own I/O. */
   pace?(): void
+  /** Whether a file's content matches its extension (.ts/.mts must be transport
+   *  streams, not TypeScript). Absent means every extension match counts. */
+  contentCheck?(path: string, ext: string): boolean
 }
 
 export interface ReconcileBatch {
@@ -266,6 +269,8 @@ export function runReconcile(input: ReconcileInput, fsx: FsAdapter, emit: (e: Re
     const st = fsx.stat(path)
     if (!st.ok || !st.isFile) return
     if (photoExts.has(ext) && st.size < input.minPhotoSize) return
+    // .ts/.mts are TypeScript as often as video: only transport streams count.
+    if (fsx.contentCheck && !fsx.contentCheck(path, ext)) return
     const found: FoundFile = { path, name, ext, size: st.size, mtime: Math.round(st.mtimeMs), ino: st.ino }
     // Same file id and size as a known file whose old path is gone: a move or
     // a rename, not a new file.

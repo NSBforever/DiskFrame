@@ -18,7 +18,8 @@ import {
   THUMB_VOLUME_OFFLINE,
   THUMB_FOLDER_MISSING,
   THUMB_NO_ACCESS,
-  THUMB_NO_PREVIEW
+  THUMB_NO_PREVIEW,
+  videoExts
 } from '../../../main/validation'
 import type { ScannedFile } from '../App'
 import { cellCountOf, cellSpan, mediaCountOf } from '../../../main/compactCells'
@@ -39,7 +40,7 @@ const MAX_COLS = 40
 const LEVEL_TARGETS = [380, 290, 220, 170, 132, 104, 82, 64, 50, 40]
 
 const PHOTO_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.heic', '.gif', '.bmp'])
-const VIDEO_EXTS = new Set(['.mp4', '.mov', '.avi', '.mkv', '.wmv', '.m4v', '.webm'])
+const VIDEO_EXTS = new Set(videoExts)
 const DOC_EXTS = new Set(['.pdf', '.docx', '.doc', '.txt', '.xlsx', '.pptx', '.csv'])
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v))

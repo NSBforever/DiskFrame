@@ -20,12 +20,14 @@ import {
   isUsableCaptureDate,
   isMassRemoval,
   isSameFileVersion,
-  isIndexableUserMedia,
+  hasMediaExtension,
+  isGeneratedAsset,
   videoExts,
   allExts,
   thumbnailExts
 } from './validation'
 import { listMountedVolumes } from './driveEnum'
+import { isIndexableMediaFile } from './mediaSniff'
 import { heicToJpeg } from './heicPool'
 import { readLibrary } from './libraryWorkerClient'
 import { LibraryReads, EPOCH_SCHEMA_SQL, type MapCluster } from './libraryReads'
@@ -1721,8 +1723,8 @@ const EXIF_EXTS = new Set([
   '.nef',
   '.png',
   '.webp',
-  '.mp4',
-  '.mov'
+  // Every video container: capture date and GPS come from ffprobe for all of them.
+  ...videoExts
 ])
 
 // Scoped to (path, volume_id): the file actually read from disk belongs to
@@ -1749,7 +1751,7 @@ const repairGpsStmt = db.prepare(`UPDATE files SET lat=?, lng=? WHERE path=? AND
 const markExifCheckedStmt = db.prepare('UPDATE files SET exif_checked = 2 WHERE path = ? AND volume_id IS ?')
 
 /** Extensions read with exifr; their positions needed the hemisphere fix. */
-const VIDEO_EXIF_EXTS = new Set(['.mp4', '.mov'])
+const VIDEO_EXIF_EXTS = new Set(videoExts)
 
 let exifBackfillRunning = false
 
@@ -2110,7 +2112,7 @@ export async function updateFileInPlace(filePath: string, statInput?: fs.Stats):
   // Also excludes the app's own thumbnails, cache and temp frames. Indexing
   // those made every photo and video appear twice: once as itself, and once as
   // a tile of its own generated thumbnail.
-  if (!isIndexableUserMedia(filePath)) return null
+  if (!isIndexableMediaFile(filePath)) return null
 
   let stat = statInput
   if (!stat) {
@@ -2276,7 +2278,9 @@ export function purgeGeneratedAssetRows(): { removed: number; scanned: number } 
   // Two classes of wrongly-indexed row: the app's own generated output, and
   // anything that was never media to begin with (.log/.db/.tmp and
   // extensionless files the old unfiltered watcher swept in).
-  const doomed = candidates.filter((r) => !isIndexableUserMedia(r.path))
+  // hasMediaExtension, not isIndexableUserMedia: a .ts/.mts row is a
+  // transport stream that passed the content check when it was indexed.
+  const doomed = candidates.filter((r) => !hasMediaExtension(r.path) || isGeneratedAsset(r.path))
   if (doomed.length === 0) return { removed: 0, scanned: candidates.length }
 
   const del = db.prepare('DELETE FROM files WHERE id = ?')
@@ -2382,7 +2386,7 @@ export function indexSampleFolder(folder: string, maxFiles: number): { count: nu
       }
       if (!entry.isFile()) continue
       const fullPath = join(dir, entry.name)
-      if (!isIndexableUserMedia(fullPath)) {
+      if (!isIndexableMediaFile(fullPath)) {
         skipped++
         continue
       }
@@ -2544,7 +2548,7 @@ export async function indexFolderBounded(
         continue
       }
       if (!entry.isFile()) continue
-      if (!isIndexableUserMedia(fullPath)) {
+      if (!isIndexableMediaFile(fullPath)) {
         skipped++
         continue
       }

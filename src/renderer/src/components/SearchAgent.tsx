@@ -1,3 +1,4 @@
+import { videoExts } from '../../../main/validation'
 import React, { useState, useMemo } from 'react'
 import Fuse from 'fuse.js'
 import { FileTile } from '../App'
@@ -168,7 +169,7 @@ export default function SearchAgent({
     if (parsedQuery.type === 'photo') {
       filtered = filtered.filter((f) => ['.jpg', '.jpeg', '.png', '.webp', '.heic'].includes(f.ext.toLowerCase()))
     } else if (parsedQuery.type === 'video') {
-      filtered = filtered.filter((f) => ['.mp4', '.mov', '.avi', '.mkv', '.wmv'].includes(f.ext.toLowerCase()))
+      filtered = filtered.filter((f) => videoExts.includes(f.ext.toLowerCase()))
     } else if (parsedQuery.type === 'doc') {
       filtered = filtered.filter((f) => ['.pdf', '.docx', '.doc', '.txt', '.xlsx', '.pptx', '.csv'].includes(f.ext.toLowerCase()))
     } else if (parsedQuery.type === 'screenshot') {

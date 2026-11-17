@@ -8,7 +8,8 @@ import {
   relinkMovedFile,
   getCachedVolumeId
 } from './scanner'
-import { isIndexableUserMedia, isWatchIgnoredPath } from './validation'
+import { isWatchIgnoredPath } from './validation'
+import { isIndexableMediaFile } from './mediaSniff'
 
 // How long a removed file's inode is remembered as a "possible move" before
 // being treated as a genuine delete. Windows reports a move/rename as a plain
@@ -138,7 +139,7 @@ export class WatcherManager {
       // traffic on a real machine is not media, and this is also what keeps
       // the app's own thumbnail/cache churn out of the index.
       if (isWatchIgnoredPath(rel)) return
-      if (!isIndexableUserMedia(fullPath)) {
+      if (!isIndexableMediaFile(fullPath)) {
         // Not a media file - but possibly a folder. Deleting or renaming a
         // folder in Explorer produces one event for the folder and none for
         // the files in it, so the per-file path below never hears of them.
