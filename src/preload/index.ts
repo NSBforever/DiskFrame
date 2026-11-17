@@ -1,6 +1,7 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 import type { UpdateMode, UpdateState } from '../main/updateState'
+import type { DropImportResult } from '../main/dropImport'
 
 const api = {
   getDrives: () => ipcRenderer.send('get-drives'),
@@ -242,8 +243,19 @@ const api = {
       ipcRenderer.removeListener('mpv-error', listener)
     }
   },
-  startNativeDrag: (filePaths: string[]) =>
-    ipcRenderer.send('start-native-drag', filePaths),
+  /** An OS drag of these files. `image` is the drag preview (PNG data URL at `scale`x); without one a plain icon is used. */
+  startNativeDrag: (filePaths: string[], image?: { dataUrl: string; scale: number }) =>
+    ipcRenderer.send('start-native-drag', filePaths, image),
+  /** The file-system path of a File dropped from Explorer (Electron no longer puts it on File). */
+  pathForFile: (file: File): string => {
+    try {
+      return webUtils.getPathForFile(file)
+    } catch {
+      return ''
+    }
+  },
+  /** Index files and folders dropped on the window, with the same code the scan, watcher and Index Folder use. */
+  importDropped: (paths: string[]): Promise<DropImportResult> => ipcRenderer.invoke('import-dropped', paths),
   onNativeDragError: (cb: (d: { error: string }) => void) => {
     const listener = (_e: unknown, d: any) => cb(d)
     ipcRenderer.on('native-drag-error', listener)

@@ -1,0 +1,68 @@
+/* Drop target for files from Explorer: a quiet frame inside the window and one
+   card. No input of its own (pointer-events: none), so the drop reaches the
+   window's handler. Above the dock and scrubber, below modals and toasts. */
+.drop-overlay {
+  position: fixed;
+  inset: 10px;
+  z-index: 8500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 16px;
+  border: 1.5px solid rgba(225, 29, 46, 0.55);
+  background: rgba(10, 10, 12, 0.5);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.16s ease, visibility 0s linear 0.16s;
+}
+.drop-overlay.is-on {
+  opacity: 1;
+  visibility: visible;
+  transition: opacity 0.16s ease;
+}
+
+.drop-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 24px 34px 22px;
+  border-radius: 14px;
+  background: rgba(20, 20, 24, 0.9);
+  border: 1px solid var(--app-hairline, rgba(255, 255, 255, 0.1));
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5);
+  color: var(--app-fg, #f2f2f0);
+  transform: translateY(6px) scale(0.98);
+  transition: transform 0.2s ease;
+}
+.drop-overlay.is-on .drop-card {
+  transform: none;
+}
+
+.drop-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 6px;
+  border-radius: 50%;
+  background: rgba(225, 29, 46, 0.12);
+  color: var(--app-accent, #e11d2e);
+}
+.drop-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+.drop-sub {
+  font-size: 12px;
+  color: var(--app-fg-dim, #8a8a8f);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drop-overlay,
+  .drop-card {
+    transition: none;
+  }
+}

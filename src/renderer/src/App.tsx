@@ -116,6 +116,9 @@ import MediaViewer, { findTileBox } from './components/media-viewer/MediaViewer'
 const GlobeView = React.lazy(() => import('./components/GlobeView'))
 import SearchAgent from './components/SearchAgent'
 import DriveSelectionView from './components/DriveSelectionView'
+import DropOverlay from './components/DropOverlay'
+import { dropSummary } from '../../main/dropImport'
+import { startFileDrag } from './dragPreview'
 import PhotoGrid from './components/PhotoGrid'
 import MagneticDock from './components/MagneticDock'
 import MapPage from './components/MapPage'
@@ -338,7 +341,7 @@ export const FileTile = React.memo(({
         ? selectedPaths
         : [file.path]
 
-      window.api.startNativeDrag(filePaths)
+      startFileDrag(filePaths, e.currentTarget)
     }
   }, [file.path, isSelected, selectedPaths, isTrashView])
 
@@ -1820,6 +1823,19 @@ export default function App(): React.JSX.Element {
   // Index one folder the user picks, through the normal library path.
   // Bounded by the main process (file count + depth); no thumbnails are
   // generated here - those follow the viewport like any other view.
+  // Files and folders dropped from Explorer: indexed by the same code as a
+  // scan or Index Folder (main/dropImport.ts); the gallery refreshes itself
+  // from the files-updated event, and the toast says what happened.
+  const handleDroppedPaths = useCallback(async (paths: string[]): Promise<void> => {
+    setToastMsg(`Adding ${paths.length.toLocaleString()} item${paths.length === 1 ? '' : 's'}…`)
+    try {
+      setToastMsg(dropSummary(await window.api.importDropped(paths)))
+    } catch (err) {
+      console.error('[drop]', err)
+      setToastMsg('Could not add the dropped files')
+    }
+  }, [])
+
   const handleIndexFolder = useCallback(async (): Promise<void> => {
     const folder = await window.api.pickFolder()
     if (!folder) return
@@ -2854,31 +2870,12 @@ export default function App(): React.JSX.Element {
   }, [])
 
   // Drag and Drop tiles
-  const handleDragStart = useCallback((file: ScannedFile, e: React.DragEvent) => {
-    const paths = Array.from(selected.size > 0 && selected.has(file.path) ? selected : [file.path])
-    e.dataTransfer.setData('text/plain', JSON.stringify({ paths }))
-
-    const badge = document.createElement('div')
-    badge.style.position = 'absolute'
-    badge.style.top = '-1000px'
-    badge.style.background = '#e11d2e'
-    badge.style.color = '#fff'
-    badge.style.padding = '4px 8px'
-    badge.style.borderRadius = '4px'
-    badge.style.fontFamily = 'sans-serif'
-    badge.style.fontSize = '12px'
-    badge.style.fontWeight = 'bold'
-    badge.style.border = '1px solid rgba(255,255,255,0.1)'
-    badge.innerText = `${paths.length} file${paths.length > 1 ? 's' : ''}`
-
-    document.body.appendChild(badge)
-    e.dataTransfer.setDragImage(badge, 0, 0)
-    setTimeout(() => {
-      if (document.body.contains(badge)) {
-        document.body.removeChild(badge)
-      }
-    }, 0)
-  }, [selected])
+  // Tiles start a real OS drag on mouse move (startFileDrag, with the file's
+  // own preview). Chromium's HTML drag of the same tile is cancelled: it used
+  // to start alongside it with a red "N files" badge as its image.
+  const handleDragStart = useCallback((_file: ScannedFile, e: React.DragEvent) => {
+    e.preventDefault()
+  }, [])
 
   // Drag and Drop drop-zones (Sidebar Drives)
   const _handleDragOverDrive = useCallback((e: React.DragEvent) => {
@@ -3735,6 +3732,7 @@ export default function App(): React.JSX.Element {
       )}
 
       <UpdateNotice busy={!!ioProgress || !!lightbox} />
+      <DropOverlay onDropPaths={handleDroppedPaths} />
 
       {/* Floating toast notification */}
       {toastMsg && (
