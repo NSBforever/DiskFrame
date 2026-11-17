@@ -1,14 +1,15 @@
 import * as fs from 'fs'
-import { join, isAbsolute, dirname } from 'path'
+import { join, isAbsolute, dirname, extname } from 'path'
 import { BrowserWindow } from 'electron'
 import {
   updateFileInPlace,
   removeFileRecord,
   getFileIno,
   relinkMovedFile,
-  getCachedVolumeId
+  getCachedVolumeId,
+  isIndexedPath
 } from './scanner'
-import { isWatchIgnoredPath } from './validation'
+import { isWatchIgnoredPath, SNIFFED_VIDEO_EXTS } from './validation'
 import { isIndexableMediaFile } from './mediaSniff'
 
 // How long a removed file's inode is remembered as a "possible move" before
@@ -149,6 +150,11 @@ export class WatcherManager {
         try {
           isFile = fs.statSync(fullPath).isFile()
         } catch {
+          // Gone. A deleted .ts/.mts can no longer be read to tell a transport
+          // stream from TypeScript; if it is in the index it was a video, so
+          // let the unlink path remove it.
+          if (SNIFFED_VIDEO_EXTS.includes(extname(fullPath).toLowerCase()) && isIndexedPath(fullPath, getCachedVolumeId(driveKey)))
+            return this.settle(fullPath, driveKey)
           isFile = /\.[a-z0-9]{1,5}$/i.test(rel) // gone: judge by its name
         }
         if (!isFile) this.onNeedsReconcile(driveKey, 'folder changed')

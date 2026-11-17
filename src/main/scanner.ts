@@ -2592,6 +2592,11 @@ export async function indexFolderBounded(
   return { added, seen, visited, skipped, drive, volumeId, stoppedBy, complete: stoppedBy === null }
 }
 
+/** Whether this volume's index has a row for the path (uses idx_files_identity). */
+export function isIndexedPath(filePath: string, volumeId: string | null): boolean {
+  return !!db.prepare('SELECT 1 FROM files WHERE volume_id IS ? AND path = ?').get(volumeId, filePath)
+}
+
 export function getFileIno(filePath: string): number | null {
   const row = db.prepare('SELECT ino FROM files WHERE path = ?').get(filePath) as { ino: number | null } | undefined
   return row?.ino ?? null

@@ -234,7 +234,7 @@ export function UpdateSettings(): React.JSX.Element {
         {state?.version && phase !== 'current' && <ReleaseNotes version={state.version} notes={state.notes} />}
         {state && !state.canInstall && phase !== 'unsupported' && (
           <div className="settings-hint">
-            This is the portable version, which cannot replace itself. Download Update opens the release page.
+            This is the portable version, which cannot replace itself. Update Now opens the release page.
           </div>
         )}
       </div>

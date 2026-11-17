@@ -147,6 +147,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   // a damaged file that was right there, and for an unplugged drive alike.
   const [videoFailure, setVideoFailure] = useState<FailureKind>('undecodable')
   useEffect(() => {
+    setVideoFailure('undecodable') // not the last file's reason
     if (!videoError) return
     let live = true
     window.api
