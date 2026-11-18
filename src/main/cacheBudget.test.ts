@@ -79,10 +79,14 @@ test('a junction inside a cache folder is neither deleted nor followed', () => {
 
 test('the orphan sweep removes only unreferenced files older than the cut-off', async () => {
   const { dir, names } = cache(4)
+  // The cut-off is taken BEFORE the fresh file is written, as in the app (the
+  // catalogue is read, then files appear). Reading the clock after the write
+  // failed under load: a second between the two made the new file "old".
+  const cutoff = Date.now() - 1000
   const fresh = path.join(dir, hex(50) + '.jpg')
-  fs.writeFileSync(fresh, Buffer.alloc(1000)) // written "after" the catalogue was read
+  fs.writeFileSync(fresh, Buffer.alloc(1000)) // written after the catalogue was read
   const live = new Set([names[1], names[3]])
-  const r = await sweepOrphans(dir, live, Date.now() - 1000)
+  const r = await sweepOrphans(dir, live, cutoff)
   assert.equal(r.removed, 2)
   assert.deepEqual(fs.readdirSync(dir).sort(), [names[1], names[3], hex(50) + '.jpg'].sort())
 })
