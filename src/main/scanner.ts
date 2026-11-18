@@ -1400,7 +1400,16 @@ export async function generateThumbForFile(
       // The picture's own shape, short side THUMB_SIZE - see thumbShape.ts.
       // One decode: 'outside' scales without cropping, and only a panorama
       // past the 3:1 cap takes a second, tiny pass to crop it.
-      let { data, info } = await sharp(fullPath)
+      //
+      // Read with fs first, never sharp(path): libvips memory-maps the file,
+      // and a bad sector under a mapped page raises EXCEPTION_IN_PAGE_ERROR
+      // (0xC0000006) - not a JS error - which kills the main process and the
+      // whole app (crash dump 2026-11-18, WD USB drive with bad blocks). fs
+      // turns the same sector into a rejected EIO that lands in the catch below.
+      // Costs no extra I/O: a JPEG/PNG decode reads the whole file anyway.
+      // ponytail: whole file in memory per in-flight thumb; fine for photos,
+      // stream via sharp's writable input if multi-GB images ever matter.
+      let { data, info } = await sharp(await fs.promises.readFile(fullPath))
         .rotate()
         .resize(THUMB_SIZE, THUMB_SIZE, { fit: 'outside' })
         .jpeg({ quality: 80 })
@@ -1418,6 +1427,8 @@ export async function generateThumbForFile(
       await fs.promises.rename(tmp, thumbPath)
       return thumbPath
     } catch (e) {
+      // EIO here is the drive reporting an unreadable sector - worth a trace.
+      console.error('[thumb] could not make thumbnail', fullPath, (e as NodeJS.ErrnoException).code ?? String(e))
       return null
     }
   }
