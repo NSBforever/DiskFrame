@@ -13,6 +13,7 @@ function makeDb(): DatabaseSync {
     CREATE UNIQUE INDEX idx_files_identity ON files (volume_id, path);
     CREATE TABLE favourite_paths (path TEXT NOT NULL, volume_id TEXT, added_at TEXT, PRIMARY KEY (path, volume_id));
     CREATE TABLE folder_snapshot (volume_id TEXT NOT NULL, path TEXT NOT NULL, mtime INTEGER, children TEXT, PRIMARY KEY (volume_id, path));
+    CREATE TABLE event_file_links (path TEXT NOT NULL, volume_id TEXT, calendar_id TEXT NOT NULL, event_id TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (path, volume_id, calendar_id, event_id));
   `)
   return db
 }
@@ -75,10 +76,13 @@ test('favourites follow only files that moved; folder snapshots follow the volum
   add(db, 'D:\\fav.jpg', 'G:', G)
   db.prepare('INSERT INTO favourite_paths (path, volume_id) VALUES (?, ?), (?, ?)').run('D:\\fav.jpg', G, 'D:\\x.jpg', G)
   db.prepare('INSERT INTO folder_snapshot (volume_id, path, mtime) VALUES (?, ?, 5), (?, ?, 7)').run(G, 'D:\\DCIM', OTHER, 'D:\\DCIM')
+  db.prepare("INSERT INTO event_file_links VALUES (?, ?, 'primary', 'e1', 'confirmed', 'T'), (?, ?, 'primary', 'e1', 'manual', 'T')").run('D:\\fav.jpg', G, 'D:\\x.jpg', G)
   move(db, G, 'G:')
   const favs = (db.prepare('SELECT path FROM favourite_paths ORDER BY path').all() as { path: string }[]).map((r) => r.path)
   // D:\x.jpg collided and stayed, so its favourite stays with it.
   assert.deepEqual(favs, ['D:\\x.jpg', 'G:\\fav.jpg'])
+  const links = (db.prepare('SELECT path FROM event_file_links ORDER BY path').all() as { path: string }[]).map((r) => r.path)
+  assert.deepEqual(links, ['D:\\x.jpg', 'G:\\fav.jpg'], 'event links follow their files the same way')
   const snaps = (db.prepare('SELECT volume_id, path, mtime FROM folder_snapshot ORDER BY volume_id').all() as object[]).map((r) => ({ ...r }))
   assert.deepEqual(snaps, [
     { volume_id: G, path: 'G:\\DCIM', mtime: 5 },

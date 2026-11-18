@@ -11,7 +11,8 @@ Branch: `feat/memory-timeline-v1.4.0`. Audited at `44eeabf` on 2026-11-18.
 | 3 This design | Approved, D1-D4 accepted |
 | 6 Timestamps: D1 local days, D4 provenance + EXIF offsets | Done (`0e89a04`, `6d578f1`) |
 | 4-5 OAuth, credentials, sync, cache, Settings card | Done, verified against a local mock of Google. **Not yet run against real Google**: needs the owner's OAuth client. |
-| 7-9 Matching, Memory Timeline UI, date navigation | Not started |
+| 7 Event-to-file matching, user decisions | Done: `eventMatch.ts`, `calendarDay.ts`, `calendar-day` / `calendar-link` IPC. Busiest real day (5,386 files): 3.5 ms. |
+| 8-9 Memory Timeline UI, date navigation | Not started |
 
 Implementation notes that differ from the plan below:
 - On `410 Gone` the cache is **not** wiped first. A full resync removes what it did not see, but
@@ -19,6 +20,11 @@ Implementation notes that differ from the plan below:
   (seen in the app: 410 followed by 401).
 - Against the loopback mock (`DF_GOOGLE_API_BASE`, loopback only) the app follows the sign-in
   redirect itself instead of opening the browser; real Google always uses the system browser.
+- Matching refinements (stage 7), each making it suggest less: in the buffer the time fit falls
+  from 1.0 to 0.5 (not to 0); timed events over 12 hours give context only, like all-day events;
+  only files whose time is evidence (camera/recording time) are candidates or burst members, so a
+  bulk copy can neither be suggested nor chain camera shots together. On the busiest real day
+  5,376 of 5,386 files were such copies, and 10 were placed.
 - Build/runtime configuration: `DF_GOOGLE_CLIENT_ID` (and optional `DF_GOOGLE_CLIENT_SECRET`) at
   build time (release workflow reads repository secrets of the same names) or in the
   environment for development.

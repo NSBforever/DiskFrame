@@ -12,3 +12,30 @@ export interface CalendarStatus {
   autoSync: boolean
   bufferMin: number
 }
+
+/** One file shown under an event: the user's link, or a suggestion. */
+export interface DayFile {
+  path: string
+  name: string
+  ext: string
+  thumb: string | null
+  date: string
+  score: number
+  status: 'suggested' | 'confirmed' | 'manual'
+}
+
+/** One calendar event on a local day, with its files. */
+export interface DayEvent {
+  calendarId: string
+  eventId: string
+  summary: string
+  location: string
+  allDay: boolean
+  startMs: number
+  endMs: number
+  recurring: boolean
+  files: DayFile[]
+}
+
+/** confirm / reject (remove a suggestion) / add by hand / undo any of those. */
+export type LinkOp = 'confirm' | 'reject' | 'manual' | 'undo'

@@ -54,6 +54,13 @@ export function moveVolumeToLetter(
          AND EXISTS (SELECT 1 FROM files f WHERE f.volume_id = favourite_paths.volume_id AND f.path = ? || substr(favourite_paths.path, 3))
          AND NOT EXISTS (SELECT 1 FROM files f WHERE f.volume_id = favourite_paths.volume_id AND f.path = favourite_paths.path)`
     ).run(L, volumeId, l, L)
+    // The user's event links follow their files exactly as favourites do.
+    db.prepare(
+      `UPDATE OR IGNORE event_file_links SET path = ? || substr(path, 3)
+       WHERE volume_id = ? AND upper(substr(path, 1, 2)) = ?
+         AND EXISTS (SELECT 1 FROM files f WHERE f.volume_id = event_file_links.volume_id AND f.path = ? || substr(event_file_links.path, 3))
+         AND NOT EXISTS (SELECT 1 FROM files f WHERE f.volume_id = event_file_links.volume_id AND f.path = event_file_links.path)`
+    ).run(L, volumeId, l, L)
     db.prepare(
       `UPDATE OR IGNORE folder_snapshot SET path = ? || substr(path, 3) WHERE volume_id = ? AND upper(substr(path, 1, 2)) = ?`
     ).run(L, volumeId, l)

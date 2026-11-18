@@ -1694,7 +1694,9 @@ app.whenReady().then(() => {
     getWindow: () => mainWindow,
     prefs: { get: getCalendarPrefs, set: setCalendarPrefs },
     log: (m) => diag('calendar', m),
-    safeMode: safeMode.enabled
+    safeMode: safeMode.enabled,
+    volumeOf: (drive) => getCachedVolumeId(drive),
+    isSafeLocalPath
   })
 
   ipcMain.handle('get-ai-search-button', () => getAiSearchButtonPref())

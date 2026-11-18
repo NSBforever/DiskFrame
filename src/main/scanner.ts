@@ -1246,14 +1246,14 @@ export function getFavourites(volumeId: string | null): ScannedFile[] {
  */
 function repointPath(oldPath: string, newPath: string, volumeId?: string | null): void {
   if (!oldPath || !newPath || oldPath === newPath) return
-  if (volumeId !== undefined) {
-    db.prepare('UPDATE OR REPLACE favourite_paths SET path = ? WHERE path = ? AND volume_id IS ?').run(
-      newPath,
-      oldPath,
-      volumeId
-    )
-  } else {
-    db.prepare('UPDATE OR REPLACE favourite_paths SET path = ? WHERE path = ?').run(newPath, oldPath)
+  // Favourites and the user's calendar links are both decisions about a file,
+  // keyed by (path, volume_id), and both follow it when it moves.
+  for (const table of ['favourite_paths', 'event_file_links']) {
+    if (volumeId !== undefined) {
+      db.prepare(`UPDATE OR REPLACE ${table} SET path = ? WHERE path = ? AND volume_id IS ?`).run(newPath, oldPath, volumeId)
+    } else {
+      db.prepare(`UPDATE OR REPLACE ${table} SET path = ? WHERE path = ?`).run(newPath, oldPath)
+    }
   }
 }
 

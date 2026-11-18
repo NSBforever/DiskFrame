@@ -1,6 +1,6 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 import type { UpdateMode, UpdateState } from '../main/updateState'
-import type { CalendarStatus } from '../main/calendarTypes'
+import type { CalendarStatus, DayEvent, LinkOp } from '../main/calendarTypes'
 
 interface DriveInfo {
   name: string
@@ -170,6 +170,8 @@ declare global {
       calendarSyncNow: () => Promise<CalendarStatus>
       calendarDisconnect: () => Promise<CalendarStatus>
       calendarSetPrefs: (p: { autoSync?: boolean; bufferMin?: number }) => Promise<CalendarStatus>
+      calendarDay: (drive: string, day: string) => Promise<DayEvent[]>
+      calendarLink: (l: { op: LinkOp; path: string; calendarId: string; eventId: string }) => Promise<boolean>
       onCalendarStatus: (callback: (s: CalendarStatus) => void) => () => void
       transcodeVideo: (inputPath: string) => Promise<string>
       onTranscodeDone: (callback: (data: { inputPath: string; outPath: string }) => void) => () => void

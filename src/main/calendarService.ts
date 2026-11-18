@@ -4,7 +4,8 @@ import { authorize, googleConfig, OAuthError, refreshAccess, revokeToken, type F
 import { credentialStore } from './credentialStore'
 import { forgetCalendarData, getAccount, saveAccount, type CalDb } from './calendarStore'
 import { syncCalendar, SyncError } from './calendarSync'
-import type { CalendarState, CalendarStatus } from './calendarTypes'
+import type { CalendarState, CalendarStatus, DayEvent, LinkOp } from './calendarTypes'
+import { dayEvents, setLink } from './calendarDay'
 
 /**
  * Google Calendar for the app: Settings actions, background sync, and the one
@@ -33,6 +34,9 @@ export function initCalendar(opts: {
   prefs: CalendarPrefsIO
   log: (m: string) => void
   safeMode: boolean
+  /** The volume verifiably mounted at a drive letter, from live hardware. */
+  volumeOf: (drive: string) => string | null
+  isSafeLocalPath: (p: string) => boolean
 }): void {
   const { db, prefs, log } = opts
   const cfg: GoogleConfig | null = opts.safeMode ? null : googleConfig()
@@ -161,6 +165,29 @@ export function initCalendar(opts: {
     return status()
   })
   ipcMain.handle('calendar-disconnect', () => disconnect())
+  // Reads work with or without a connection: saved events stay browsable
+  // offline, after an expired sign-in, and in a build without a client id.
+  ipcMain.handle('calendar-day', (_e, rawDrive: unknown, rawDay: unknown): DayEvent[] => {
+    if (typeof rawDrive !== 'string' || !/^[A-Za-z]:$/.test(rawDrive)) return []
+    if (typeof rawDay !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(rawDay)) return []
+    return dayEvents(db, rawDay, opts.volumeOf(rawDrive.toUpperCase()), prefs.get().bufferMin)
+  })
+  ipcMain.handle('calendar-link', (_e, raw: unknown): boolean => {
+    const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+    const op = r.op as LinkOp
+    if (!['confirm', 'reject', 'manual', 'undo'].includes(op)) return false
+    if (typeof r.path !== 'string' || !opts.isSafeLocalPath(r.path)) return false
+    if (typeof r.calendarId !== 'string' || typeof r.eventId !== 'string' || r.eventId.length > 1024 || r.calendarId.length > 1024) return false
+    const volumeId = opts.volumeOf(r.path.slice(0, 2).toUpperCase())
+    if (!volumeId) return false
+    if (op !== 'undo') {
+      // Only a real event and a real indexed file can be linked.
+      if (!db.prepare('SELECT 1 FROM calendar_events WHERE calendar_id = ? AND event_id = ?').get(r.calendarId, r.eventId)) return false
+      if (!db.prepare('SELECT 1 FROM files WHERE path = ? AND volume_id = ?').get(r.path, volumeId)) return false
+    }
+    setLink(db, op, r.path, volumeId, r.calendarId, r.eventId)
+    return true
+  })
   ipcMain.handle('calendar-set-prefs', (_e, raw: unknown) => {
     const p = (raw && typeof raw === 'object' ? raw : {}) as { autoSync?: unknown; bufferMin?: unknown }
     prefs.set({
