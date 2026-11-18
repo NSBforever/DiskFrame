@@ -4,8 +4,8 @@ import { authorize, googleConfig, OAuthError, refreshAccess, revokeToken, type F
 import { credentialStore } from './credentialStore'
 import { forgetCalendarData, getAccount, saveAccount, type CalDb } from './calendarStore'
 import { syncCalendar, SyncError } from './calendarSync'
-import type { CalendarState, CalendarStatus, DayEvent, LinkOp } from './calendarTypes'
-import { dayEvents, eventDays, setLink } from './calendarDay'
+import type { CalendarState, CalendarStatus, DayFile, EventDetail, EventsList, LinkOp } from './calendarTypes'
+import { eventDetail, pickerFiles, setLink } from './calendarEvents'
 
 /**
  * Google Calendar for the app: Settings actions, background sync, and the one
@@ -37,6 +37,10 @@ export function initCalendar(opts: {
   /** The volume verifiably mounted at a drive letter, from live hardware. */
   volumeOf: (drive: string) => string | null
   isSafeLocalPath: (p: string) => boolean
+  /** scanner.coverForFile */
+  coverFor: (path: string, ext: string, volumeId: string | null) => Promise<string | null>
+  /** calendarEvents.eventCards, on the library worker thread */
+  readEvents: (volumeId: string | null, bufferMin: number) => Promise<EventsList>
 }): void {
   const { db, prefs, log } = opts
   const cfg: GoogleConfig | null = opts.safeMode ? null : googleConfig()
@@ -167,12 +171,29 @@ export function initCalendar(opts: {
   ipcMain.handle('calendar-disconnect', () => disconnect())
   // Reads work with or without a connection: saved events stay browsable
   // offline, after an expired sign-in, and in a build without a client id.
-  ipcMain.handle('calendar-day', (_e, rawDrive: unknown, rawDay: unknown): DayEvent[] => {
-    if (typeof rawDrive !== 'string' || !/^[A-Za-z]:$/.test(rawDrive)) return []
-    if (typeof rawDay !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(rawDay)) return []
-    return dayEvents(db, rawDay, opts.volumeOf(rawDrive.toUpperCase()), prefs.get().bufferMin)
+  const volume = (rawDrive: unknown): string | null =>
+    typeof rawDrive === 'string' && /^[A-Za-z]:$/.test(rawDrive) ? opts.volumeOf(rawDrive.toUpperCase()) : null
+  const isId = (v: unknown): v is string => typeof v === 'string' && v.length > 0 && v.length <= 1024
+  ipcMain.handle('calendar-events', async (_e, rawDrive: unknown): Promise<EventsList> => {
+    const t = Date.now()
+    const list = await opts.readEvents(volume(rawDrive), prefs.get().bufferMin)
+    log(`events list: ${list.cards.length} with files, ${list.others.length} without, ${Date.now() - t}ms`)
+    return list
   })
-  ipcMain.handle('calendar-event-days', (): string[] => eventDays(db))
+  ipcMain.handle('calendar-event', (_e, rawDrive: unknown, calendarId: unknown, eventId: unknown): EventDetail | null =>
+    isId(calendarId) && isId(eventId) ? eventDetail(db, volume(rawDrive), calendarId, eventId, prefs.get().bufferMin) : null
+  )
+  ipcMain.handle('calendar-event-candidates', (_e, rawDrive: unknown, calendarId: unknown, eventId: unknown): DayFile[] =>
+    isId(calendarId) && isId(eventId) ? pickerFiles(db, volume(rawDrive), calendarId, eventId) : []
+  )
+  // A larger image for an event's cover; null (use the thumbnail) for videos,
+  // an unindexed path, or a file that cannot be read right now.
+  ipcMain.handle('calendar-cover', async (_e, rawPath: unknown): Promise<string | null> => {
+    if (typeof rawPath !== 'string' || !opts.isSafeLocalPath(rawPath)) return null
+    const volumeId = opts.volumeOf(rawPath.slice(0, 2).toUpperCase())
+    const row = db.prepare('SELECT ext FROM files WHERE path = ? AND volume_id IS ? AND hidden = 0 AND trashed_at IS NULL').get(rawPath, volumeId) as { ext: string } | undefined
+    return row ? opts.coverFor(rawPath, row.ext, volumeId) : null
+  })
   ipcMain.handle('calendar-link', (_e, raw: unknown): boolean => {
     const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
     const op = r.op as LinkOp

@@ -729,8 +729,6 @@ export interface PhotoGridProps {
   onFav: (file: ScannedFile) => void
   onContextMenu: (file: ScannedFile, list: ScannedFile[], e: React.MouseEvent) => void
   onGroupCheckboxClick: (key: string, e: React.MouseEvent) => void
-  /** Extra content for a group's header (calendar events on that day). */
-  headerExtra?: (key: string) => React.ReactNode
   /**
    * Drag selection on empty gallery space. `paths` is every file the marquee
    * touches now; `add` (Ctrl held) keeps what was selected before the drag.
@@ -1297,7 +1295,6 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
           <div key={'h:' + s.key} className="pg-header" style={{ top: s.top, left: PAD_X, right: PAD_X, height: HEADER_H }}>
             <div className="pg-header-title">{formatGroupKey(s.key)}</div>
             <div className="pg-header-count">{s.count.toLocaleString()} items</div>
-            {props.headerExtra?.(s.key)}
             <button
               className="pg-header-select"
               onClick={e => props.onGroupCheckboxClick(s.key, e)}

@@ -335,3 +335,49 @@ written to the files themselves.
   without asking again.
 - **D4. Timestamp fallback.** Recommended: earliest of creation/modification time (above).
   Alternative: the brief's creation-then-modification order.
+
+---
+
+## 10. Events section (2026-11-18, replaces the stage 8-9 gallery UI)
+
+The owner reviewed stages 8-9 and redirected: calendar events must **not** appear inside the
+date-based gallery. Events become their own destination in the dock. Photos stays exactly as it
+was before stage 8.
+
+### What happens to the stage 8-9 work
+
+| Piece | Fate |
+|---|---|
+| Header chips in Grid/Timeline (`DayEventStrip`, `headerExtra`, `dayHeaderExtra`) | Removed - Photos returns to its pre-1.4 look |
+| Day drawer (`DayPanel`) and "Add to Event…" in the gallery context menu | Removed |
+| Card logic: Keep / Not from this event / Remove / Undo, mini-timeline | Reused in the event detail page |
+| Stage 7 engine (`eventMatch.ts`), `dayEvents`, `setLink`, links table, move upkeep | Kept unchanged - the detail page uses them as they are |
+| `calendar-day`, `calendar-event-days` IPC, `eventDays()` | Removed (no gallery chips) |
+
+### New pieces
+
+- **`calendarEvents.ts` (main, pure over the narrow DB interface).** `eventCards()` runs the
+  Stage 7 matcher once over the whole calendar: events sorted and grouped into clusters whose
+  windows (`start - buffer .. end + buffer`) overlap, each cluster matched against only the
+  evidence files in its range (binary search over one sorted list), so overlaps resolve exactly as
+  in `dayEvents`. Returns, per event with at least one file: title, times, calendar location,
+  confirmed/suggested counts, a cover file and the photos' GPS centre if they have one. Events
+  without files are returned separately (title/date only). `eventDetail()` is `dayEvents()` for
+  the event's day, so detail and list never disagree. `pickerFiles()` lists every live photo/video
+  of the event's day(s) for manual adding - including ones with only a file date, which the
+  matcher never suggests.
+- **Covers.** A 720 px JPEG per cover file, made on demand (sharp from a buffer, never a path -
+  see the 1.3.0 crash) into `userData/covers`, cached. Photos preferred over videos; a confirmed
+  photo over a suggestion. Videos fall back to their existing thumbnail.
+- **Location.** Shown on cards only from the calendar event's own location. If that is empty and
+  the event's photos carry GPS, the detail page offers "Open map" for their centre (as the Info
+  panel does). No place names are derived from coordinates: the only lookup in the codebase is a
+  hardcoded 17-city table used by search, which would mislabel nearby towns.
+- **Renderer.** `Events` in the dock (between Map and Favourites). `EventsPage`: cinematic cover
+  cards grouped by year, newest first, the latest event wider; "Other calendar events" (no
+  photos) collapsed at the bottom. `EventDetail`: cover hero with title, date/time, place;
+  "In this event" (confirmed + added) and "Suggested" (outlined, Keep / Not from this event, Keep
+  all) using the gallery's own tiles and viewer; Add photos picker; Undo. States: not set up, not
+  connected, syncing, offline (saved events), no events with photos.
+- **Rules unchanged.** Nothing is suggested that Stage 7 would not suggest; all-day and >12 h
+  events (a trip) only hold photos the user adds.

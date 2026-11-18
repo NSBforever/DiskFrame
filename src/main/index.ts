@@ -6,6 +6,7 @@ import { fileResponse } from './mediaRange'
 import { mediaUrl, mediaUrlPath } from './mediaUrl'
 import { initUpdates } from './updater'
 import { initCalendar } from './calendarService'
+import { eventCards } from './calendarEvents'
 import { gpuSwitchFor, parseVideoControllers, readGpuSwitch, writeGpuSwitch, VIDEO_CONTROLLER_QUERY } from './gpuChoice'
 import { isUpdateMode } from './updateState'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -84,6 +85,7 @@ import {
   backupBeforeMigration,
   getFavouritePaths,
   getDateProvenance,
+  coverForFile,
   getCalendarPrefs,
   setCalendarPrefs,
   catalogueDb,
@@ -1696,7 +1698,11 @@ app.whenReady().then(() => {
     log: (m) => diag('calendar', m),
     safeMode: safeMode.enabled,
     volumeOf: (drive) => getCachedVolumeId(drive),
-    isSafeLocalPath
+    isSafeLocalPath,
+    coverFor: coverForFile,
+    // Off the main thread; answered on it only if the worker is unavailable.
+    readEvents: (volumeId, bufferMin) =>
+      readLibrary(catalogueDbPath, { kind: 'events', volumeId, bufferMin }, () => eventCards(catalogueDb, volumeId, bufferMin))
   })
 
   ipcMain.handle('get-ai-search-button', () => getAiSearchButtonPref())

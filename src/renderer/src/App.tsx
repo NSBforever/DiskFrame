@@ -126,8 +126,7 @@ import { videoExts } from '../../main/validation'
 import UnresolvedFolders from './components/UnresolvedFolders'
 import AppearanceSetting from './components/AppearanceSetting'
 import { CalendarSettings } from './components/CalendarSettings'
-import { DayEventStrip, DayPanel } from './components/MemoryTimeline'
-import { useCalendarEventDays } from './hooks/useCalendarDays'
+import { EventsSection } from './components/Events'
 import type { DayFile } from '../../main/calendarTypes'
 import AboutConnect from './components/AboutConnect'
 import GlassSelect from './components/GlassSelect'
@@ -179,7 +178,7 @@ import {
   PanelLeftClose,
   Maximize2,
   Minimize2,
-  CalendarDays
+  CalendarHeart
 } from 'lucide-react'
 import { mediaUrl } from '../../main/mediaUrl'
 
@@ -298,16 +297,20 @@ export const FileTile = React.memo(({
   onDragStart?: (file: ScannedFile, e: React.DragEvent) => void
   selectedPaths?: string[]
 }): React.JSX.Element => {
-  const [loaded, setLoaded] = useState(false)
-  const [error, setError] = useState(false)
+  // Loaded / failed are remembered PER IMAGE KEY, not reset in an effect:
+  // the reset ran after paint, and a cached thumbnail's load event could fire
+  // before it, so the reset wiped the flag and the tile kept its spinner
+  // forever over a fully loaded image (found on the Events page).
+  const [loadedKey, setLoadedKey] = useState<string | null>(null)
+  const [errorKey, setErrorKey] = useState<string | null>(null)
   const [hovered, setHovered] = useState(false)
   const isPhoto = photoExts.includes(file.ext.toLowerCase())
   const isVideo = videoExts.includes(file.ext.toLowerCase())
   const isDoc = docExts.includes(file.ext.toLowerCase())
   const hasThumb = !!file.thumb
   const imgKey = file.thumb ?? 'no-thumb'
-
-  useEffect(() => { setLoaded(false); setError(false) }, [file.thumb])
+  const loaded = loadedKey === imgKey
+  const error = errorKey === imgKey
 
   const iconSize = tileSize < 80 ? 20 : 28
   const subFontSize = tileSize < 80 ? '7px' : '9px'
@@ -401,7 +404,7 @@ export const FileTile = React.memo(({
             </div>
           )}
           <img key={imgKey} src={thumbUrl(file)} loading="lazy" decoding="async"
-            onLoad={() => setLoaded(true)} onError={() => { setError(true); setLoaded(true) }}
+            onLoad={() => setLoadedKey(imgKey)} onError={() => { setErrorKey(imgKey); setLoadedKey(imgKey) }}
             style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: loaded ? 1 : 0, transition: 'opacity 0.2s', willChange: 'transform' }}
           />
           {isVideo && loaded && (
@@ -618,8 +621,7 @@ const MainContentArea: React.FC<{
   handleFav: (file: ScannedFile) => void
   handleSelect: (file: ScannedFile, e: React.MouseEvent) => void
   handleTileContextMenu: (file: ScannedFile, currentList: ScannedFile[], e: React.MouseEvent) => void
-  /** Calendar events for a day group's header; undefined when there are none to show. */
-  dayHeaderExtra?: (key: string) => React.ReactNode
+  onOpenSettings: () => void
   trashedFiles: ScannedFile[]
   handleRestore: (file: ScannedFile) => void
   setShowEmptyTrashConfirm: (show: boolean) => void
@@ -698,7 +700,7 @@ const MainContentArea: React.FC<{
   handleFav,
   handleSelect,
   handleTileContextMenu,
-  dayHeaderExtra,
+  onOpenSettings,
   trashedFiles,
   handleRestore,
   setShowEmptyTrashConfirm,
@@ -973,7 +975,6 @@ const MainContentArea: React.FC<{
               )}
             </div>
             <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', marginTop: '4px' }}>{filesCount} files</div>
-            {dayHeaderExtra && <div style={{ marginTop: '8px' }}>{dayHeaderExtra(monthKey)}</div>}
           </div>
         )
       }
@@ -1212,6 +1213,32 @@ const MainContentArea: React.FC<{
   // of the map's own controls at every window size.
   // Not gated on `scanning`: the map reads the index, so a background scan is
   // no reason to drop the user back into the gallery when they ask for Map.
+  // Events is a destination of its own too: browsing by calendar event, kept
+  // apart from the date gallery. Tiles are the gallery's own, so opening,
+  // favouriting and the context menu behave exactly as they do there.
+  if (activeNav === 'events') {
+    return (
+      <EventsSection
+        drive={selectedDrive}
+        onOpenSettings={onOpenSettings}
+        // A DayFile carries every gallery-row field, so it is a ScannedFile.
+        renderTile={(f: DayFile, list: DayFile[], size: number) => (
+          <FileTile
+            file={f as unknown as ScannedFile}
+            thumbKey={f.thumb}
+            onOpen={(file, e) => handleTileOpen(file, list as unknown as ScannedFile[], e)}
+            onFav={handleFav}
+            isFav={favourites.has(f.path)}
+            isSelected={false}
+            onSelect={() => {}}
+            onContextMenu={(file, e) => handleTileContextMenu(file, list as unknown as ScannedFile[], e)}
+            tileSize={size}
+          />
+        )}
+      />
+    )
+  }
+
   if (activeNav === 'map') {
     return (
       <div
@@ -1327,7 +1354,6 @@ const MainContentArea: React.FC<{
           hoverPreviewsEnabled={hoverPreviewsEnabled}
           onVisibleKeyChange={onVisibleKeyChange}
           onScrollFracChange={onScrollFracChange}
-          headerExtra={dayHeaderExtra}
         />
         <DateScrubber
           groups={libraryGroups}
@@ -1747,7 +1773,7 @@ export default function App(): React.JSX.Element {
   // query nor loses which filter the user was browsing.
   const [galleryNav, setGalleryNav] = useState('all')
   useEffect(() => {
-    if (activeNav !== 'settings' && activeNav !== 'map') setGalleryNav(activeNav)
+    if (activeNav !== 'settings' && activeNav !== 'map' && activeNav !== 'events') setGalleryNav(activeNav)
   }, [activeNav])
   const [hoverPreviewsEnabled, setHoverPreviewsEnabled] = useState(
     () => localStorage.getItem('diskframe-hover-previews') !== 'off'
@@ -2471,22 +2497,8 @@ export default function App(): React.JSX.Element {
   // Settings is its own page: grouping, sorting, the view tabs, gallery
   // search, Index Folder, the date ruler, the action circle and the
   // gallery footer all belong to the library, not to it.
-  const isGalleryPage = activeNav !== 'settings' && activeNav !== 'map'
+  const isGalleryPage = activeNav !== 'settings' && activeNav !== 'map' && activeNav !== 'events'
   const formatGroupKey = useMemo(() => makeGroupFormatter(groupBy), [groupBy])
-
-  // Google Calendar in the gallery: chips on day headers, a panel per day.
-  const calendarDays = useCalendarEventDays()
-  const [dayPanel, setDayPanel] = useState<{ day: string; pickFor?: { path: string; name: string } } | null>(null)
-  useEffect(() => setDayPanel(null), [selectedDrive])
-  const dayHeaderExtra = useMemo(
-    () =>
-      groupBy === 'day' && calendarDays.days.size > 0
-        ? (key: string): React.ReactNode => (
-            <DayEventStrip drive={selectedDrive} day={key} hasEvents={calendarDays.days.has(key)} onOpen={(day) => setDayPanel({ day })} />
-          )
-        : undefined,
-    [groupBy, calendarDays, selectedDrive]
-  )
   patchLibraryThumbRef.current = library.patchThumb
 
 
@@ -2523,6 +2535,7 @@ export default function App(): React.JSX.Element {
       { id: 'photos', label: 'Photos', icon: <ImageIcon size={18} />, isActive: activeNav === 'photos', onClick: () => setActiveNav('photos') },
       { id: 'videos', label: 'Videos', icon: <Film size={18} />, isActive: activeNav === 'videos', onClick: () => setActiveNav('videos') },
       { id: 'map', label: 'Map', icon: <MapIcon size={18} />, isActive: activeNav === 'map', onClick: () => setActiveNav('map') },
+      { id: 'events', label: 'Events', icon: <CalendarHeart size={18} />, isActive: activeNav === 'events', onClick: () => setActiveNav('events') },
       { id: 'favourites', label: 'Favourites', icon: <Star size={18} />, isActive: activeNav === 'favourites', badge: favCount, onClick: () => setActiveNav('favourites') },
       { id: 'trash', label: 'Trash', icon: <Trash2 size={18} />, isActive: activeNav === 'trash', badge: trashCount, onClick: () => setActiveNav('trash') },
       { id: 'settings', label: 'Settings', icon: <Settings size={18} />, isActive: activeNav === 'settings', onClick: () => setActiveNav('settings') }
@@ -3127,6 +3140,7 @@ export default function App(): React.JSX.Element {
               { id: 'docs', label: 'Documents', icon: <FileText size={14} /> },
               { id: 'screenshots', label: 'Screenshots', icon: <Camera size={14} /> },
               { id: 'places', label: 'Places Map', icon: <MapIcon size={14} /> },
+              { id: 'events', label: 'Events', icon: <CalendarHeart size={14} /> },
               { id: 'favourites', label: 'Favourites', icon: <Star size={14} /> },
               { id: 'trash', label: 'Trash', icon: <Trash2 size={14} /> },
               { id: 'settings', label: 'Settings', icon: <Settings size={14} /> }
@@ -3336,7 +3350,7 @@ export default function App(): React.JSX.Element {
           handleFav={handleFav}
           handleSelect={handleSelect}
           handleTileContextMenu={handleTileContextMenu}
-          dayHeaderExtra={dayHeaderExtra}
+          onOpenSettings={() => setActiveNav('settings')}
           trashedFiles={trashedFiles}
           handleRestore={handleRestore}
           setShowEmptyTrashConfirm={setShowEmptyTrashConfirm}
@@ -3679,30 +3693,6 @@ export default function App(): React.JSX.Element {
         />
       )}
 
-      {dayPanel && (
-        <DayPanel
-          drive={selectedDrive}
-          day={dayPanel.day}
-          pickFor={dayPanel.pickFor}
-          onClose={() => setDayPanel(null)}
-          // A DayFile carries every gallery-row field, so it is a ScannedFile.
-          onOpenFile={(f, list) => handleTileOpen(f as unknown as ScannedFile, list as unknown as ScannedFile[])}
-          renderThumb={(f: DayFile, list: DayFile[], size: number) => (
-            <FileTile
-              file={f as unknown as ScannedFile}
-              thumbKey={f.thumb}
-              onOpen={(file, e) => handleTileOpen(file, list as unknown as ScannedFile[], e)}
-              onFav={handleFav}
-              isFav={favourites.has(f.path)}
-              isSelected={false}
-              onSelect={() => {}}
-              onContextMenu={(file, e) => handleTileContextMenu(file, list as unknown as ScannedFile[], e)}
-              tileSize={size}
-            />
-          )}
-        />
-      )}
-
       {/* Custom Context Menu Overlay */}
       {contextMenu && (
         <div
@@ -3745,23 +3735,6 @@ export default function App(): React.JSX.Element {
               >
                 <FolderOpen size={12} color="var(--app-fg-dim, #8a8a8f)" /> Show in Folder
               </div>
-              {calendarDays.days.size > 0 && (
-                <div
-                  role="menuitem"
-                  tabIndex={0}
-                  onClick={() => {
-                    const d = new Date(contextMenu.file.date)
-                    const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
-                    setDayPanel({ day, pickFor: { path: contextMenu.file.path, name: contextMenu.file.name } })
-                    setContextMenu(null)
-                  }}
-                  style={{ padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}
-                  onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'}
-                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-                >
-                  <CalendarDays size={12} color="var(--app-fg-dim, #8a8a8f)" /> Add to Event…
-                </div>
-              )}
               <div
                 onClick={() => navigator.clipboard.writeText(contextMenu.file.path)}
                 style={{ padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}

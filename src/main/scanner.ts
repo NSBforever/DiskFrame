@@ -1454,6 +1454,40 @@ function existingThumb(fullPath: string, volumeId?: string | null): string | nul
   return null
 }
 
+/** Event covers (Events page): larger than a grid thumbnail, made on demand. */
+const coverDir = join(app.getPath('userData'), 'covers')
+const COVER_SIZE = 900
+
+/**
+ * A cover image for one file, short side COVER_SIZE, cached by volume, path
+ * and modification time (an edited photo gets a new cover). Read with fs
+ * first, never sharp(path) - see generateThumbForFile and the 1.3.0 crash.
+ * Videos return null; the Events page uses their thumbnail instead.
+ */
+export async function coverForFile(fullPath: string, ext: string, volumeId: string | null): Promise<string | null> {
+  const lowerExt = ext.toLowerCase()
+  if (!sharpExts.includes(lowerExt) && lowerExt !== '.heic') return null
+  try {
+    const st = await fs.promises.stat(fullPath)
+    const out = join(coverDir, `${makeHash(`${volumeId ?? ''}\u0000${fullPath}\u0000${Math.round(st.mtimeMs)}`)}.jpg`)
+    if (fs.existsSync(out)) return out
+    await fs.promises.mkdir(coverDir, { recursive: true })
+    if (lowerExt === '.heic') return (await heicToJpeg(fullPath, out, { size: COVER_SIZE, quality: 82 })) ? out : null
+    const data = await sharp(await fs.promises.readFile(fullPath))
+      .rotate()
+      .resize(COVER_SIZE, COVER_SIZE, { fit: 'outside', withoutEnlargement: true })
+      .jpeg({ quality: 82 })
+      .toBuffer()
+    const tmp = `${out}.${process.pid}.tmp`
+    await fs.promises.writeFile(tmp, data)
+    await fs.promises.rename(tmp, out)
+    return out
+  } catch (e) {
+    console.error('[cover] could not make cover', fullPath, (e as NodeJS.ErrnoException).code ?? String(e))
+    return null
+  }
+}
+
 export async function generateThumbForFile(
   fullPath: string,
   ext: string,
@@ -1833,8 +1867,19 @@ const updateGpsOnlyStmt = db.prepare(
 const repairGpsStmt = db.prepare(`UPDATE files SET lat=?, lng=? WHERE path=? AND volume_id IS ?`)
 
 // exif_checked: 0 = never read, 1 = read before the hemisphere fix (a photo's
-// stored position may be mirrored), 2 = read with the GPS reference tags.
+// stored position may be mirrored), 2 = read with the GPS reference tags,
+// 3 = re-read for its date provenance (below).
 const markExifCheckedStmt = db.prepare('UPDATE files SET exif_checked = 2 WHERE path = ? AND volume_id IS ?')
+const markRelabelledStmt = db.prepare('UPDATE files SET exif_checked = 3 WHERE path = ? AND volume_id IS ?')
+
+// The date_source migration could only label from stored columns: a capture
+// time EQUAL to the file's mtime (a photo never copied or edited) looked like
+// "no metadata" and was labelled mtime. On a real catalogue sample, 103 of 300
+// such photos had a camera time - and Events never suggests an mtime date.
+// Those rows are read once more, for provenance only.
+const relabelStmt = db.prepare(
+  `UPDATE files SET date=?, year=?, month=?, date_source=?, date_offset_min=? WHERE path=? AND volume_id IS ? AND date_source='mtime'`
+)
 
 /** Extensions read with exifr; their positions needed the hemisphere fix. */
 const VIDEO_EXIF_EXTS = new Set(videoExts)
@@ -1874,10 +1919,11 @@ export async function enrichExifBackfill(
     // ISO 6709 string and are not affected.
     const pending = db
       .prepare(
-        `SELECT path, ext, volume_id, exif_checked FROM files
+        `SELECT path, ext, volume_id, exif_checked, date_source FROM files
          WHERE trashed_at IS NULL AND ext IN (${placeholders})
            AND (exif_checked = 0
-                OR (exif_checked = 1 AND lat IS NOT NULL AND ext NOT IN (${videoList.map(() => '?').join(',')})))
+                OR (exif_checked = 1 AND lat IS NOT NULL AND ext NOT IN (${videoList.map(() => '?').join(',')}))
+                OR (exif_checked IN (1, 2) AND date_source = 'mtime'))
            ${volumeId ? 'AND volume_id = ?' : ''}
          ORDER BY date DESC`
       )
@@ -1886,6 +1932,7 @@ export async function enrichExifBackfill(
       ext: string
       volume_id: string | null
       exif_checked: number
+      date_source: string | null
     }[]
 
     const total = pending.length
@@ -1904,7 +1951,8 @@ export async function enrichExifBackfill(
         if (shouldStop?.()) return
         await whenIdle?.()
         if (shouldStop?.()) return
-        const { path: fullPath, ext, volume_id: rowVolumeId, exif_checked: wasChecked } = pending[cursor++]
+        const { path: fullPath, ext, volume_id: rowVolumeId, exif_checked: wasChecked, date_source: rowSource } = pending[cursor++]
+        const relabel = wasChecked > 0 && rowSource === 'mtime'
         const lowerExt = ext.toLowerCase()
         // A file that cannot be reached right now (drive unplugged, path on a
         // letter the volume no longer has) is left unchecked for a later pass.
@@ -1933,10 +1981,21 @@ export async function enrichExifBackfill(
             source = offsetMin !== null ? 'exif-offset' : 'exif'
           }
 
-          if (wasChecked === 1) {
+          if (wasChecked === 1 && lat !== null && lng !== null) {
             // Repair: the date was already corrected on the first read; only
             // the position can be wrong, so only the position is rewritten.
-            if (lat !== null && lng !== null) repairGpsStmt.run(lat, lng, fullPath, rowVolumeId)
+            repairGpsStmt.run(lat, lng, fullPath, rowVolumeId)
+          }
+          if (relabel) {
+            // Provenance only: the stored date already is this time (it equals
+            // mtime), unless the photo records its time zone.
+            if (isUsableCaptureDate(date)) {
+              const d = date as Date
+              relabelStmt.run(d.toISOString(), d.getFullYear().toString(), d.toLocaleString('default', { month: 'long' }), source, offsetMin, fullPath, rowVolumeId)
+              corrected++
+            }
+          } else if (wasChecked === 1) {
+            /* position-only repair, done above */
           } else if (isUsableCaptureDate(date)) {
             const d = date as Date
             updateExifStmt.run(
@@ -1965,7 +2024,8 @@ export async function enrichExifBackfill(
         }
         // Marked either way, so a file that genuinely has no EXIF is not
         // re-parsed on every launch for the rest of the library's life.
-        markExifCheckedStmt.run(fullPath, rowVolumeId)
+        if (relabel) markRelabelledStmt.run(fullPath, rowVolumeId)
+        else markExifCheckedStmt.run(fullPath, rowVolumeId)
 
         checked++
         if (checked % 500 === 0) {
