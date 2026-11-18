@@ -12,7 +12,7 @@ Branch: `feat/memory-timeline-v1.4.0`. Audited at `44eeabf` on 2026-11-18.
 | 6 Timestamps: D1 local days, D4 provenance + EXIF offsets | Done (`0e89a04`, `6d578f1`) |
 | 4-5 OAuth, credentials, sync, cache, Settings card | Done, verified against a local mock of Google. **Not yet run against real Google**: needs the owner's OAuth client. |
 | 7 Event-to-file matching, user decisions | Done: `eventMatch.ts`, `calendarDay.ts`, `calendar-day` / `calendar-link` IPC. Busiest real day (5,386 files): 3.5 ms. |
-| 8-9 Memory Timeline UI, date navigation | Not started |
+| 8-9 Memory Timeline UI, date navigation | Done: header chips (Grid and Timeline, day grouping only), day panel with event cards, mini-timeline, Keep / Not from this event / Remove / Undo, Add to Event… from the context menu, open-in-viewer sequences. Verified in the app on generated fixtures. |
 
 Implementation notes that differ from the plan below:
 - On `410 Gone` the cache is **not** wiped first. A full resync removes what it did not see, but
@@ -25,6 +25,11 @@ Implementation notes that differ from the plan below:
   only files whose time is evidence (camera/recording time) are candidates or burst members, so a
   bulk copy can neither be suggested nor chain camera shots together. On the busiest real day
   5,376 of 5,386 files were such copies, and 10 were placed.
+- UI (stages 8-9): "View all files" is the expanded event card - every associated file in a
+  mini-timeline that opens the viewer with the event's files as its sequence - rather than a new
+  library query filter; the map's "files at this place" panel set that precedent. The panel docks
+  left of the date scrubber and below the viewer; Esc/arrow keys belong to the viewer while it is
+  open.
 - Build/runtime configuration: `DF_GOOGLE_CLIENT_ID` (and optional `DF_GOOGLE_CLIENT_SECRET`) at
   build time (release workflow reads repository secrets of the same names) or in the
   environment for development.

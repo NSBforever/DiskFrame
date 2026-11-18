@@ -20,6 +20,15 @@ export interface DayFile {
   ext: string
   thumb: string | null
   date: string
+  /** The rest of a gallery row, so the viewer and Info get what they expect. */
+  size: number
+  year: string
+  month: string
+  lat: number | null
+  lng: number | null
+  drive: string
+  favourited: number
+  volume_id: string | null
   score: number
   status: 'suggested' | 'confirmed' | 'manual'
 }

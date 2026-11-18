@@ -126,6 +126,9 @@ import { videoExts } from '../../main/validation'
 import UnresolvedFolders from './components/UnresolvedFolders'
 import AppearanceSetting from './components/AppearanceSetting'
 import { CalendarSettings } from './components/CalendarSettings'
+import { DayEventStrip, DayPanel } from './components/MemoryTimeline'
+import { useCalendarEventDays } from './hooks/useCalendarDays'
+import type { DayFile } from '../../main/calendarTypes'
 import AboutConnect from './components/AboutConnect'
 import GlassSelect from './components/GlassSelect'
 import { UpdateNotice, UpdateSettings } from './components/Updates'
@@ -175,7 +178,8 @@ import {
   PanelLeft,
   PanelLeftClose,
   Maximize2,
-  Minimize2
+  Minimize2,
+  CalendarDays
 } from 'lucide-react'
 import { mediaUrl } from '../../main/mediaUrl'
 
@@ -614,6 +618,8 @@ const MainContentArea: React.FC<{
   handleFav: (file: ScannedFile) => void
   handleSelect: (file: ScannedFile, e: React.MouseEvent) => void
   handleTileContextMenu: (file: ScannedFile, currentList: ScannedFile[], e: React.MouseEvent) => void
+  /** Calendar events for a day group's header; undefined when there are none to show. */
+  dayHeaderExtra?: (key: string) => React.ReactNode
   trashedFiles: ScannedFile[]
   handleRestore: (file: ScannedFile) => void
   setShowEmptyTrashConfirm: (show: boolean) => void
@@ -692,6 +698,7 @@ const MainContentArea: React.FC<{
   handleFav,
   handleSelect,
   handleTileContextMenu,
+  dayHeaderExtra,
   trashedFiles,
   handleRestore,
   setShowEmptyTrashConfirm,
@@ -966,6 +973,7 @@ const MainContentArea: React.FC<{
               )}
             </div>
             <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', marginTop: '4px' }}>{filesCount} files</div>
+            {dayHeaderExtra && <div style={{ marginTop: '8px' }}>{dayHeaderExtra(monthKey)}</div>}
           </div>
         )
       }
@@ -1319,6 +1327,7 @@ const MainContentArea: React.FC<{
           hoverPreviewsEnabled={hoverPreviewsEnabled}
           onVisibleKeyChange={onVisibleKeyChange}
           onScrollFracChange={onScrollFracChange}
+          headerExtra={dayHeaderExtra}
         />
         <DateScrubber
           groups={libraryGroups}
@@ -2464,6 +2473,20 @@ export default function App(): React.JSX.Element {
   // gallery footer all belong to the library, not to it.
   const isGalleryPage = activeNav !== 'settings' && activeNav !== 'map'
   const formatGroupKey = useMemo(() => makeGroupFormatter(groupBy), [groupBy])
+
+  // Google Calendar in the gallery: chips on day headers, a panel per day.
+  const calendarDays = useCalendarEventDays()
+  const [dayPanel, setDayPanel] = useState<{ day: string; pickFor?: { path: string; name: string } } | null>(null)
+  useEffect(() => setDayPanel(null), [selectedDrive])
+  const dayHeaderExtra = useMemo(
+    () =>
+      groupBy === 'day' && calendarDays.days.size > 0
+        ? (key: string): React.ReactNode => (
+            <DayEventStrip drive={selectedDrive} day={key} hasEvents={calendarDays.days.has(key)} onOpen={(day) => setDayPanel({ day })} />
+          )
+        : undefined,
+    [groupBy, calendarDays, selectedDrive]
+  )
   patchLibraryThumbRef.current = library.patchThumb
 
 
@@ -3313,6 +3336,7 @@ export default function App(): React.JSX.Element {
           handleFav={handleFav}
           handleSelect={handleSelect}
           handleTileContextMenu={handleTileContextMenu}
+          dayHeaderExtra={dayHeaderExtra}
           trashedFiles={trashedFiles}
           handleRestore={handleRestore}
           setShowEmptyTrashConfirm={setShowEmptyTrashConfirm}
@@ -3655,6 +3679,30 @@ export default function App(): React.JSX.Element {
         />
       )}
 
+      {dayPanel && (
+        <DayPanel
+          drive={selectedDrive}
+          day={dayPanel.day}
+          pickFor={dayPanel.pickFor}
+          onClose={() => setDayPanel(null)}
+          // A DayFile carries every gallery-row field, so it is a ScannedFile.
+          onOpenFile={(f, list) => handleTileOpen(f as unknown as ScannedFile, list as unknown as ScannedFile[])}
+          renderThumb={(f: DayFile, list: DayFile[], size: number) => (
+            <FileTile
+              file={f as unknown as ScannedFile}
+              thumbKey={f.thumb}
+              onOpen={(file, e) => handleTileOpen(file, list as unknown as ScannedFile[], e)}
+              onFav={handleFav}
+              isFav={favourites.has(f.path)}
+              isSelected={false}
+              onSelect={() => {}}
+              onContextMenu={(file, e) => handleTileContextMenu(file, list as unknown as ScannedFile[], e)}
+              tileSize={size}
+            />
+          )}
+        />
+      )}
+
       {/* Custom Context Menu Overlay */}
       {contextMenu && (
         <div
@@ -3697,6 +3745,23 @@ export default function App(): React.JSX.Element {
               >
                 <FolderOpen size={12} color="var(--app-fg-dim, #8a8a8f)" /> Show in Folder
               </div>
+              {calendarDays.days.size > 0 && (
+                <div
+                  role="menuitem"
+                  tabIndex={0}
+                  onClick={() => {
+                    const d = new Date(contextMenu.file.date)
+                    const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+                    setDayPanel({ day, pickFor: { path: contextMenu.file.path, name: contextMenu.file.name } })
+                    setContextMenu(null)
+                  }}
+                  style={{ padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                >
+                  <CalendarDays size={12} color="var(--app-fg-dim, #8a8a8f)" /> Add to Event…
+                </div>
+              )}
               <div
                 onClick={() => navigator.clipboard.writeText(contextMenu.file.path)}
                 style={{ padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}

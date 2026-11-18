@@ -171,6 +171,7 @@ declare global {
       calendarDisconnect: () => Promise<CalendarStatus>
       calendarSetPrefs: (p: { autoSync?: boolean; bufferMin?: number }) => Promise<CalendarStatus>
       calendarDay: (drive: string, day: string) => Promise<DayEvent[]>
+      calendarEventDays: () => Promise<string[]>
       calendarLink: (l: { op: LinkOp; path: string; calendarId: string; eventId: string }) => Promise<boolean>
       onCalendarStatus: (callback: (s: CalendarStatus) => void) => () => void
       transcodeVideo: (inputPath: string) => Promise<string>

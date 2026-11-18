@@ -39,9 +39,16 @@ interface FileRow {
   thumb: string | null
   date: string
   date_source: string | null
+  size: number
+  year: string
+  month: string
+  lat: number | null
+  lng: number | null
+  drive: string
+  favourited: number
 }
 
-const FILE_COLS = 'path, volume_id, name, ext, thumb, date, date_source'
+const FILE_COLS = 'path, volume_id, name, ext, thumb, date, date_source, size, year, month, lat, lng, drive, favourited'
 const LIVE = 'hidden = 0 AND trashed_at IS NULL'
 
 export function dayEvents(db: CalDb, day: string, volumeId: string | null, bufferMin: number): DayEvent[] {
@@ -128,7 +135,9 @@ export function dayEvents(db: CalDb, day: string, volumeId: string | null, buffe
     files: (matched.get(keyOf(e.calendar_id, e.event_id)) ?? [])
       .map((m) => {
         const f = byPath.get(m.path)!
-        return { path: f.path, name: f.name, ext: f.ext, thumb: f.thumb, date: f.date, score: m.score, status: m.status }
+        const { date_source, ...row } = f
+        void date_source // provenance stays in main; the panel shows the date itself
+        return { ...row, score: m.score, status: m.status }
       })
       .sort((a, b) => a.date.localeCompare(b.date))
   }))
@@ -148,4 +157,24 @@ export function setLink(db: CalDb, op: LinkOp, path: string, volumeId: string | 
     state,
     now.toISOString()
   )
+}
+
+/**
+ * Local days that have at least one event, for deciding which day headers
+ * look for events at all. Multi-day events count on each day (capped: a
+ * months-long entry is context for its first weeks, not for every header).
+ */
+export function eventDays(db: CalDb): string[] {
+  const rows = db.prepare('SELECT DISTINCT start_day, end_day FROM calendar_events').all() as { start_day: string; end_day: string }[]
+  const days = new Set<string>()
+  for (const r of rows) {
+    const [y, m, d] = r.start_day.split('-').map(Number)
+    for (let i = 0; i < 31; i++) {
+      const t = new Date(y, m - 1, d + i)
+      const key = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`
+      if (key > r.end_day) break
+      days.add(key)
+    }
+  }
+  return [...days]
 }

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 import { CALENDAR_SCHEMA_SQL, applyEventChanges } from './calendarStore.ts'
 import { normalizeEvent } from './eventNormalize.ts'
-import { dayEvents, setLink } from './calendarDay.ts'
+import { dayEvents, eventDays, setLink } from './calendarDay.ts'
 
 const VOL = 'VOL-E'
 // Local wall-clock times, so the test means the same thing in any zone.
@@ -13,7 +13,8 @@ function makeDb(): DatabaseSync {
   const db = new DatabaseSync(':memory:')
   db.exec(CALENDAR_SCHEMA_SQL)
   db.exec(`CREATE TABLE files (id INTEGER PRIMARY KEY, path TEXT, volume_id TEXT, name TEXT, ext TEXT, thumb TEXT, date TEXT,
-           date_source TEXT DEFAULT 'mtime', hidden INTEGER DEFAULT 0, trashed_at TEXT)`)
+           date_source TEXT DEFAULT 'mtime', hidden INTEGER DEFAULT 0, trashed_at TEXT,
+           size INTEGER DEFAULT 1, year TEXT, month TEXT, lat REAL, lng REAL, drive TEXT DEFAULT 'E:', favourited INTEGER DEFAULT 0)`)
   return db
 }
 const file = (db: DatabaseSync, name: string, when: Date, source = 'exif', opts: { vol?: string; trashed?: boolean } = {}): void => {
@@ -79,4 +80,11 @@ test('a file just before midnight goes to the evening event it belongs to, not t
   file(db, 'late.jpg', at(17, 23, 58)) // 8 min after party, 12 min before early
   assert.deepEqual(view(db, '2026-11-18'), { early: [] }, 'asking for the 18th does not steal it')
   assert.deepEqual(view(db, '2026-11-17'), { party: ['late.jpg:suggested'] })
+})
+
+test('event days: every day an event touches, multi-day included', () => {
+  const db = makeDb()
+  event(db, 'team', at(18, 10), at(18, 11))
+  applyEventChanges(db, 'primary', [normalizeEvent({ id: 'trip', start: { date: '2026-11-29' }, end: { date: '2026-12-02' } })], at(18, 0).getTime())
+  assert.deepEqual(eventDays(db).sort(), ['2026-11-18', '2026-11-29', '2026-11-30', '2026-12-01'])
 })

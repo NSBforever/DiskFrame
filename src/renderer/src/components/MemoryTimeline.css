@@ -1,0 +1,341 @@
+/* Memory Timeline: calendar events inside the gallery. Same glass, type and
+   accent as the rest of DiskFrame; one accent, used sparingly. */
+
+/* Header chips */
+.mt-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  padding-bottom: 1px;
+}
+.mt-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 240px;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--app-fg, #f2f2f0);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.mt-chip svg {
+  flex: none;
+  color: var(--app-accent, #e11d2e);
+}
+.mt-chip:hover,
+.mt-chip:focus-visible {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.2);
+  outline: none;
+}
+.mt-chip-time {
+  color: var(--app-fg-dim, #8a8a8f);
+  font-variant-numeric: tabular-nums;
+}
+.mt-chip-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mt-chip-count {
+  color: var(--app-fg-dim, #8a8a8f);
+  font-variant-numeric: tabular-nums;
+}
+.mt-chip-quiet {
+  color: var(--app-fg-dim, #8a8a8f);
+  background: transparent;
+}
+
+/* Day panel: a drawer like Info, below the viewer (1000) so a file opened
+   from it shows on top, and docked left of the date scrubber (right 6px +
+   44px wide, z 1500) so the scrubber stays usable beside it. */
+.mt-panel {
+  position: fixed;
+  top: 72px;
+  right: 54px;
+  bottom: 110px;
+  width: min(390px, calc(100vw - 86px));
+  border-radius: 14px;
+  border-right: 1px solid rgba(255, 255, 255, 0.14);
+  z-index: 900;
+  display: flex;
+  flex-direction: column;
+  color: var(--app-fg, #f2f2f0);
+  outline: none;
+  animation: mtSlide 0.22s ease-out;
+}
+@keyframes mtSlide {
+  from {
+    transform: translateX(16px);
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mt-panel {
+    animation: none;
+  }
+}
+.mt-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 16px 12px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.mt-panel-title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+.mt-panel-sub {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--app-fg-dim, #8a8a8f);
+}
+.mt-panel-body {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 12px 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mt-pick {
+  margin: 12px 12px 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--app-surface-2, #161619);
+  font-size: 12px;
+}
+.mt-empty {
+  padding: 32px 8px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--app-fg-dim, #8a8a8f);
+}
+.mt-muted {
+  color: var(--app-fg-dim, #8a8a8f);
+  font-size: 11px;
+}
+
+.mt-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-fg-dim, #8a8a8f);
+  cursor: pointer;
+}
+.mt-icon-btn:hover,
+.mt-icon-btn:focus-visible {
+  color: var(--app-fg, #f2f2f0);
+  background: rgba(255, 255, 255, 0.08);
+  outline: none;
+}
+
+/* Event card */
+.mt-card {
+  padding: 12px 12px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+.mt-card.is-open {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+.mt-card.is-empty {
+  padding-bottom: 12px;
+}
+.mt-card-when {
+  font-size: 11px;
+  color: var(--app-fg-dim, #8a8a8f);
+  font-variant-numeric: tabular-nums;
+}
+.mt-card-title {
+  margin-top: 3px;
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-wrap: anywhere;
+}
+.mt-card-repeat {
+  color: var(--app-fg-dim, #8a8a8f);
+  flex: none;
+}
+.mt-card-where {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--app-fg-dim, #8a8a8f);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.mt-card-none {
+  margin-top: 8px;
+}
+.mt-card-actions {
+  margin-top: 10px;
+}
+.mt-card-toggle {
+  margin-top: 10px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 2px;
+  border: none;
+  background: transparent;
+  color: var(--app-fg, #f2f2f0);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.mt-card-toggle:focus-visible {
+  outline: 1px solid rgba(255, 255, 255, 0.3);
+}
+.mt-chevron {
+  color: var(--app-fg-dim, #8a8a8f);
+  transition: transform 0.18s ease;
+}
+.mt-card.is-open .mt-chevron {
+  transform: rotate(180deg);
+}
+
+.mt-strip-thumbs {
+  display: flex;
+  gap: 4px;
+  margin-top: 8px;
+}
+.mt-thumb {
+  width: 56px;
+  height: 56px;
+  flex: none;
+  border-radius: 4px;
+  overflow: hidden;
+}
+/* A suggestion is outlined; a confirmed link is not. Text says it too. */
+.mt-thumb.is-suggested {
+  outline: 1px dashed rgba(255, 255, 255, 0.28);
+  outline-offset: -1px;
+}
+.mt-more {
+  width: 56px;
+  height: 56px;
+  flex: none;
+  border: none;
+  border-radius: 4px;
+  background: var(--app-surface-2, #161619);
+  color: var(--app-fg-dim, #8a8a8f);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* Expanded: the event as a small timeline */
+.mt-timeline {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+}
+.mt-row {
+  display: grid;
+  grid-template-columns: 54px 44px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 0;
+}
+.mt-row-time {
+  font-size: 11px;
+  color: var(--app-fg-dim, #8a8a8f);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.mt-row-thumb {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--app-surface-2, #161619);
+  cursor: pointer;
+}
+.mt-row.is-suggested .mt-row-thumb {
+  outline: 1px dashed rgba(255, 255, 255, 0.28);
+  outline-offset: -1px;
+}
+.mt-row-main {
+  min-width: 0;
+}
+.mt-row-name {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mt-row-status {
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--app-fg-dim, #8a8a8f);
+}
+.mt-row-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0.55;
+  transition: opacity 0.15s ease;
+}
+.mt-row:hover .mt-row-actions,
+.mt-row-actions:focus-within {
+  opacity: 1;
+}
+.mt-mark {
+  grid-template-columns: 54px 44px 1fr;
+}
+.mt-mark-dot {
+  justify-self: center;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--app-accent, #e11d2e);
+}
+.mt-card-step {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+}
+
+.mt-undo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 12px 12px;
+  padding: 8px 8px 8px 14px;
+  border-radius: 8px;
+  background: var(--app-surface-2, #161619);
+  font-size: 12px;
+}
+.mt-undo span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

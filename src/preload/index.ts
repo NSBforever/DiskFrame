@@ -97,6 +97,7 @@ const api = {
   calendarDisconnect: () => ipcRenderer.invoke('calendar-disconnect'),
   calendarSetPrefs: (p: { autoSync?: boolean; bufferMin?: number }) => ipcRenderer.invoke('calendar-set-prefs', p),
   calendarDay: (drive: string, day: string) => ipcRenderer.invoke('calendar-day', drive, day),
+  calendarEventDays: () => ipcRenderer.invoke('calendar-event-days'),
   calendarLink: (l: { op: 'confirm' | 'reject' | 'manual' | 'undo'; path: string; calendarId: string; eventId: string }) => ipcRenderer.invoke('calendar-link', l),
   onCalendarStatus: (cb: (s: unknown) => void) => {
     const listener = (_e: unknown, s: unknown): void => cb(s)

@@ -5,7 +5,7 @@ import { credentialStore } from './credentialStore'
 import { forgetCalendarData, getAccount, saveAccount, type CalDb } from './calendarStore'
 import { syncCalendar, SyncError } from './calendarSync'
 import type { CalendarState, CalendarStatus, DayEvent, LinkOp } from './calendarTypes'
-import { dayEvents, setLink } from './calendarDay'
+import { dayEvents, eventDays, setLink } from './calendarDay'
 
 /**
  * Google Calendar for the app: Settings actions, background sync, and the one
@@ -172,6 +172,7 @@ export function initCalendar(opts: {
     if (typeof rawDay !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(rawDay)) return []
     return dayEvents(db, rawDay, opts.volumeOf(rawDrive.toUpperCase()), prefs.get().bufferMin)
   })
+  ipcMain.handle('calendar-event-days', (): string[] => eventDays(db))
   ipcMain.handle('calendar-link', (_e, raw: unknown): boolean => {
     const r = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
     const op = r.op as LinkOp
