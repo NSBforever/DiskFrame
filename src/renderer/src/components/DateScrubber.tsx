@@ -1,5 +1,6 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react'
 import './DateScrubber.css'
+import { groupYear } from '../hooks/useLibrary'
 
 interface LibraryGroup {
   key: string
@@ -65,8 +66,8 @@ export default function DateScrubber({
     let cum = 0
     let lastYear: string | null = null
     for (const g of groups) {
-      const iso = g.maxDate || g.key
-      const year = /^\d{4}/.test(iso) ? iso.slice(0, 4) : UNKNOWN
+      const y = groupYear(g)
+      const year = y === 'Unknown' ? UNKNOWN : y
       list.push({
         key: g.key,
         year,

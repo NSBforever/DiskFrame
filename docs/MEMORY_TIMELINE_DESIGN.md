@@ -1,6 +1,6 @@
 # DiskFrame 1.4.0 Memory Timeline: architecture audit and design
 
-Status: **proposal, awaiting owner approval** (Stage 3). No calendar code exists yet.
+Status: **approved 2026-11-18**: D1-D4 accepted as recommended (see the end).
 Branch: `feat/memory-timeline-v1.4.0`. Audited at `44eeabf` on 2026-11-18.
 
 The figures below come from a read-only snapshot of the owner's catalogue
@@ -121,8 +121,7 @@ CREATE INDEX IF NOT EXISTS idx_links_event ON event_file_links (calendar_id, eve
 -- Timestamp provenance on the existing table.
 ALTER TABLE files ADD COLUMN date_source TEXT;       -- see section 7
 ALTER TABLE files ADD COLUMN date_offset_min INTEGER; -- known UTC offset, else NULL
-ALTER TABLE files ADD COLUMN local_day TEXT;          -- capture day in local time
--- + index (volume_id, hidden, trashed_at, local_day) once measured, see section 6
+-- No local_day column: measured unnecessary, see section 6.
 
 -- Preferences, on the existing single-row table.
 ALTER TABLE delete_prefs ADD COLUMN calendar_auto_sync INTEGER DEFAULT 1;
@@ -131,8 +130,7 @@ ALTER TABLE delete_prefs ADD COLUMN calendar_buffer_min INTEGER DEFAULT 30;
 
 `date_source` backfill needs no file reads: rows whose `date` equals `mtime` get
 `'mtime'`; checked rows that differ get `'exif'` (photos) or `'quicktime'` (videos).
-`local_day` backfill is one `UPDATE ... SET local_day = date(date, 'localtime')`,
-batched in the library worker. Moves and relinks update `event_file_links` in the
+Moves and relinks update `event_file_links` in the
 same statements that already update `favourite_paths`.
 
 **All-day events** are calendar dates, not instants. `start_day`/`end_day` hold them as
@@ -195,11 +193,11 @@ cached events and the user's confirmations is decision **D2** below.
 
 | Risk | Mitigation | Measure before shipping |
 |---|---|---|
-| Switching day grouping to local days changes the hottest query (`GROUP BY` over 100k rows). | Store `local_day` (no per-row function), index it like `date`. | Summary query time on lib10k + snapshot, before/after; same harness as the 1.3.0 gallery work. |
+| Switching day grouping to local days changes the hottest query (`GROUP BY` over 100k rows). | **Done (D1), measured:** `strftime(..., 'localtime')` in the group key, no stored column. 62k-file volume, 6 alternating runs: summary 45 → 67 ms, ordered ids 76 → 108 ms, both on the library worker thread, once per query/catalogue version. A stored `local_day` column (triggers on every write + 200k-row backfill) was not worth ~30 ms. Upgrade path noted in code. | Done. |
 | Event chips in day headers cost a query per visible day. | One query per visible range (`start_day <= ? AND end_day >= ?`), cached with the page cache. | Brisk-scroll frame times with 0 / 1k / 10k cached events. |
 | Suggestion scoring on every render. | Computed in the main process per visible event, memoized by `(event, volume, data_version)`. | Long tasks in scroll trace. |
 | Initial full sync of a large calendar. | Paged, off the main thread's critical path, `whenIdle`-gated, never blocks opening the gallery. | Sync of 10k-instance mock calendar. |
-| `local_day` / `date_source` backfill on 200k rows. | Batched in the library worker, resumable. | Main-thread stalls during backfill. |
+| `date_source` backfill on 200k rows. | Batched in the library worker, resumable. | Main-thread stalls during backfill. |
 | Infinite recurrences produce many future instances. | Stored (cheap), pruned at query time to days that have files. | Row count on a mock calendar with daily recurring events. |
 
 ## 7. Timestamps and matching
@@ -262,7 +260,7 @@ written to the files themselves.
   410 → wipe and full sync, 401 → refresh → retry once, revoked → `revoked` status,
   offline → keep cache).
 - **Migration test** on a copy of a real catalogue: row counts, `date_source` and
-  `local_day` distributions, 1.3.0 still opening it.
+  group counts per day before/after, 1.3.0 still opening it.
 - **App tests on isolated profiles** (existing CDP harness): a local mock Google endpoint
   via `DF_GOOGLE_API_BASE`, like `DF_UPDATE_FEED`. Settings states, sync, chips, timeline
   cards, filtered gallery, association edits surviving a restart and a re-index.
@@ -289,7 +287,7 @@ written to the files themselves.
      "unverified app" screen and is capped at **100 users for the project's lifetime**.
      Verification can take weeks to months.
 
-## Decisions for the owner
+## Decisions (accepted 2026-11-18, all as recommended)
 
 - **D1. Local-day grouping fix.** Recommended: ship it in 1.4.0 (7.3% of files move to
   their correct day). Alternative: keep UTC days and only use local days for events.

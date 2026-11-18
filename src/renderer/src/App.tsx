@@ -131,7 +131,7 @@ import { UpdateNotice, UpdateSettings } from './components/Updates'
 import DateScrubber from './components/DateScrubber'
 import TransferMenu, { type TransferDrive } from './components/TransferMenu'
 import { progressiveUpdateAction, groupSelectionRange } from '../../main/progressiveLibrary'
-import { useLibrary, type LibraryGroup, type LibraryQuery } from './hooks/useLibrary'
+import { useLibrary, groupYear, type LibraryGroup, type LibraryQuery } from './hooks/useLibrary'
 
 /**
  * Group keys come out of SQL in a sortable form (an ISO date slice, rounded
@@ -831,7 +831,7 @@ const MainContentArea: React.FC<{
     items.push({ type: 'years-header', key: 'years-header' })
     const yearTotals: Record<string, { count: number; offset: number }> = {}
     for (const g of libraryGroups) {
-      const year = (g.maxDate || g.key).slice(0, 4) || 'Unknown'
+      const year = groupYear(g)
       const bucket = yearTotals[year]
       if (bucket) bucket.count += g.count
       else yearTotals[year] = { count: g.count, offset: g.offset }
@@ -927,7 +927,7 @@ const MainContentArea: React.FC<{
   }, [setActiveView])
   const handleYearClick = useCallback((year: string) => {
     setYearFilter(null)
-    jumpToGroup(libraryGroups.find(g => (g.maxDate || g.key).slice(0, 4) === year)?.key)
+    jumpToGroup(libraryGroups.find(g => groupYear(g) === year)?.key)
   }, [libraryGroups, setYearFilter, jumpToGroup])
 
   const renderItem = (item: any) => {
@@ -2411,7 +2411,7 @@ export default function App(): React.JSX.Element {
     if (activeView !== 'Years' || !libraryQuery || library.groups.length === 0) return
     const firstOffset: Record<string, number> = {}
     for (const g of library.groups) {
-      const y = (g.maxDate || g.key).slice(0, 4) || 'Unknown'
+      const y = groupYear(g)
       if (firstOffset[y] === undefined) firstOffset[y] = g.offset
     }
     let cancelled = false
