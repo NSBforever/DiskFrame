@@ -785,6 +785,11 @@ body.viewer-open .gallery-chrome {
   flex-direction: column;
   gap: 10px;
 }
+/* The Calendar card is the only one with several fields in a row. */
+.calendar-card > .settings-field + .settings-field,
+.calendar-card > .settings-field + .settings-hint {
+  margin-top: 18px;
+}
 .settings-field-head {
   display: flex;
   align-items: center;

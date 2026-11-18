@@ -3,6 +3,7 @@ import * as fs from 'fs'
 import * as cp from 'child_process'
 import { readPhotoMeta } from './photoGps'
 import { fsEarliest, type DateSource } from './captureTime'
+import { CALENDAR_SCHEMA_SQL } from './calendarStore'
 import Database from 'better-sqlite3'
 import { app, utilityProcess } from 'electron'
 import sharp from 'sharp'
@@ -581,6 +582,9 @@ db.exec(`
 // table drops its triggers.
 db.exec(EPOCH_SCHEMA_SQL)
 
+// Google Calendar cache (1.4.0). New tables only: older builds ignore them.
+db.exec(CALENDAR_SCHEMA_SQL)
+
 // favourite_paths needs the same (path, volume_id) identity as files, for the
 // same reason: two different volumes can now share a literal path, and a
 // favourite keyed on path alone could not tell them apart. Existing rows are
@@ -662,6 +666,9 @@ if (!deletePrefsCols.includes('auto_update')) {
   } catch (e) {
     console.error('Error migrating delete_prefs (auto_update):', e)
   }
+}
+for (const [col, def] of [['calendar_auto_sync', 1], ['calendar_buffer_min', 30]] as const) {
+  if (!deletePrefsCols.includes(col)) db.prepare(`ALTER TABLE delete_prefs ADD COLUMN ${col} INTEGER DEFAULT ${def}`).run()
 }
 
 export interface ScannedFile {
@@ -831,6 +838,30 @@ export function getUpdateModePref(): UpdateMode {
     return 'auto'
   }
 }
+
+export interface CalendarPrefs {
+  autoSync: boolean
+  /** Minutes before and after an event that still count toward it. */
+  bufferMin: number
+}
+
+export function getCalendarPrefs(): CalendarPrefs {
+  const row = db.prepare('SELECT calendar_auto_sync a, calendar_buffer_min b FROM delete_prefs WHERE id = 1').get() as
+    | { a: number | null; b: number | null }
+    | undefined
+  return { autoSync: row?.a !== 0, bufferMin: typeof row?.b === 'number' ? row.b : 30 }
+}
+
+export function setCalendarPrefs(p: Partial<CalendarPrefs>): CalendarPrefs {
+  db.prepare('INSERT OR IGNORE INTO delete_prefs (id) VALUES (1)').run()
+  if (typeof p.autoSync === 'boolean') db.prepare('UPDATE delete_prefs SET calendar_auto_sync = ? WHERE id = 1').run(p.autoSync ? 1 : 0)
+  if (typeof p.bufferMin === 'number' && Number.isFinite(p.bufferMin))
+    db.prepare('UPDATE delete_prefs SET calendar_buffer_min = ? WHERE id = 1').run(Math.max(0, Math.min(120, Math.round(p.bufferMin))))
+  return getCalendarPrefs()
+}
+
+/** The catalogue connection, for modules that keep their own SQL (calendarStore). */
+export const catalogueDb = db
 
 export function setUpdateModePref(mode: UpdateMode): void {
   try {

@@ -25,7 +25,12 @@ function buildCommit(): string {
 export default defineConfig({
   main: {
     define: {
-      __DF_COMMIT__: JSON.stringify(buildCommit())
+      __DF_COMMIT__: JSON.stringify(buildCommit()),
+      // Google OAuth "Desktop app" client, from the build environment (a CI
+      // secret for releases). Google treats a desktop client as public, but it
+      // still stays out of git. Unset = Calendar shows as not set up.
+      __DF_GOOGLE_CLIENT_ID__: JSON.stringify(process.env.DF_GOOGLE_CLIENT_ID ?? ''),
+      __DF_GOOGLE_CLIENT_SECRET__: JSON.stringify(process.env.DF_GOOGLE_CLIENT_SECRET ?? '')
     },
     build: {
       rollupOptions: {

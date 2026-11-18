@@ -125,6 +125,7 @@ import MapPage from './components/MapPage'
 import { videoExts } from '../../main/validation'
 import UnresolvedFolders from './components/UnresolvedFolders'
 import AppearanceSetting from './components/AppearanceSetting'
+import { CalendarSettings } from './components/CalendarSettings'
 import AboutConnect from './components/AboutConnect'
 import GlassSelect from './components/GlassSelect'
 import { UpdateNotice, UpdateSettings } from './components/Updates'
@@ -1465,6 +1466,7 @@ const MainContentArea: React.FC<{
 
           <div className="settings-col">
           <UpdateSettings />
+          <CalendarSettings />
 
           <section className="glass-panel settings-card" aria-labelledby="search-heading">
             <h3 id="search-heading" className="settings-heading">

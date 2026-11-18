@@ -1,5 +1,6 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 import type { UpdateMode, UpdateState } from '../main/updateState'
+import type { CalendarStatus } from '../main/calendarTypes'
 
 interface DriveInfo {
   name: string
@@ -164,6 +165,12 @@ declare global {
       openFile: (filePath: string) => void
       readFileBase64: (filePath: string) => Promise<string>
       onThumbReady: (callback: (data: { filePath: string; thumbPath: string }) => void) => () => void
+      calendarStatus: () => Promise<CalendarStatus>
+      calendarConnect: () => Promise<CalendarStatus>
+      calendarSyncNow: () => Promise<CalendarStatus>
+      calendarDisconnect: () => Promise<CalendarStatus>
+      calendarSetPrefs: (p: { autoSync?: boolean; bufferMin?: number }) => Promise<CalendarStatus>
+      onCalendarStatus: (callback: (s: CalendarStatus) => void) => () => void
       transcodeVideo: (inputPath: string) => Promise<string>
       onTranscodeDone: (callback: (data: { inputPath: string; outPath: string }) => void) => () => void
       onTranscodeProgress: (

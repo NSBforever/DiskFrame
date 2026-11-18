@@ -5,6 +5,7 @@ import * as fs from 'fs'
 import { fileResponse } from './mediaRange'
 import { mediaUrl, mediaUrlPath } from './mediaUrl'
 import { initUpdates } from './updater'
+import { initCalendar } from './calendarService'
 import { gpuSwitchFor, parseVideoControllers, readGpuSwitch, writeGpuSwitch, VIDEO_CONTROLLER_QUERY } from './gpuChoice'
 import { isUpdateMode } from './updateState'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -83,6 +84,9 @@ import {
   backupBeforeMigration,
   getFavouritePaths,
   getDateProvenance,
+  getCalendarPrefs,
+  setCalendarPrefs,
+  catalogueDb,
   catalogueDbPath
 } from './scanner'
 import type { LibraryQuery } from './libraryQuery'
@@ -1683,6 +1687,13 @@ app.whenReady().then(() => {
     log: (m) => diag('updates', m),
     getMode: getUpdateModePref,
     isBusy: () => transfersInFlight > 0,
+    safeMode: safeMode.enabled
+  })
+  initCalendar({
+    db: catalogueDb,
+    getWindow: () => mainWindow,
+    prefs: { get: getCalendarPrefs, set: setCalendarPrefs },
+    log: (m) => diag('calendar', m),
     safeMode: safeMode.enabled
   })
 

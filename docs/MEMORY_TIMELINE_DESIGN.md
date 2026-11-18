@@ -3,6 +3,26 @@
 Status: **approved 2026-11-18**: D1-D4 accepted as recommended (see the end).
 Branch: `feat/memory-timeline-v1.4.0`. Audited at `44eeabf` on 2026-11-18.
 
+## Progress
+
+| Stage | State |
+|---|---|
+| 1 External-drive crash | Done (`44eeabf`) |
+| 3 This design | Approved, D1-D4 accepted |
+| 6 Timestamps: D1 local days, D4 provenance + EXIF offsets | Done (`0e89a04`, `6d578f1`) |
+| 4-5 OAuth, credentials, sync, cache, Settings card | Done, verified against a local mock of Google. **Not yet run against real Google**: needs the owner's OAuth client. |
+| 7-9 Matching, Memory Timeline UI, date navigation | Not started |
+
+Implementation notes that differ from the plan below:
+- On `410 Gone` the cache is **not** wiped first. A full resync removes what it did not see, but
+  only once it completes. Wiping first lost every saved event when the resync then failed
+  (seen in the app: 410 followed by 401).
+- Against the loopback mock (`DF_GOOGLE_API_BASE`, loopback only) the app follows the sign-in
+  redirect itself instead of opening the browser; real Google always uses the system browser.
+- Build/runtime configuration: `DF_GOOGLE_CLIENT_ID` (and optional `DF_GOOGLE_CLIENT_SECRET`) at
+  build time (release workflow reads repository secrets of the same names) or in the
+  environment for development.
+
 The figures below come from a read-only snapshot of the owner's catalogue
 (206,499 indexed files, 5 volumes), not from synthetic data.
 
