@@ -4,6 +4,8 @@ import { LibraryReads, type ReadDb } from './libraryReads'
 import type { LibraryQuery } from './libraryQuery'
 import { basename } from 'path'
 import { sweepOrphans, thumbNames } from './cacheBudget'
+import { eventCards } from './calendarEvents'
+import type { CalDb } from './calendarStore'
 
 /**
  * Library reads on their own connection, off the main thread.
@@ -24,12 +26,16 @@ type Request =
   | { id: number; kind: 'clusters'; query: LibraryQuery; zoom: number }
   | { id: number; kind: 'owed'; volumeId: string; exts: string[]; maxAttempts: number; limit: number }
   | { id: number; kind: 'folders'; volumeId: string }
+  // The Events list: the Stage 7 matcher over the whole calendar, ~100-350 ms
+  // on a 62k-file volume with ~7k events - far too long for the main thread.
+  | { id: number; kind: 'events'; volumeId: string | null; bufferMin: number }
 
 const run = db.transaction((m: Request) => {
   if (m.kind === 'summary') return reads.summary(m.query)
   if (m.kind === 'page') return reads.page(m.query, m.offset, m.limit)
   if (m.kind === 'owed') return reads.owedThumbnails(m.volumeId, m.exts, m.maxAttempts, m.limit)
   if (m.kind === 'folders') return reads.folders(m.volumeId)
+  if (m.kind === 'events') return eventCards(db as unknown as CalDb, m.volumeId, m.bufferMin)
   return reads.clusters(m.query, m.zoom)
 })
 

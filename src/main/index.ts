@@ -5,6 +5,8 @@ import * as fs from 'fs'
 import { fileResponse } from './mediaRange'
 import { mediaUrl, mediaUrlPath } from './mediaUrl'
 import { initUpdates } from './updater'
+import { initCalendar } from './calendarService'
+import { eventCards } from './calendarEvents'
 import { gpuSwitchFor, parseVideoControllers, readGpuSwitch, writeGpuSwitch, VIDEO_CONTROLLER_QUERY } from './gpuChoice'
 import { isUpdateMode } from './updateState'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -82,6 +84,11 @@ import {
   reconcileDriveLetterForVolume,
   backupBeforeMigration,
   getFavouritePaths,
+  getDateProvenance,
+  coverForFile,
+  getCalendarPrefs,
+  setCalendarPrefs,
+  catalogueDb,
   catalogueDbPath
 } from './scanner'
 import type { LibraryQuery } from './libraryQuery'
@@ -1684,6 +1691,19 @@ app.whenReady().then(() => {
     isBusy: () => transfersInFlight > 0,
     safeMode: safeMode.enabled
   })
+  initCalendar({
+    db: catalogueDb,
+    getWindow: () => mainWindow,
+    prefs: { get: getCalendarPrefs, set: setCalendarPrefs },
+    log: (m) => diag('calendar', m),
+    safeMode: safeMode.enabled,
+    volumeOf: (drive) => getCachedVolumeId(drive),
+    isSafeLocalPath,
+    coverFor: coverForFile,
+    // Off the main thread; answered on it only if the worker is unavailable.
+    readEvents: (volumeId, bufferMin) =>
+      readLibrary(catalogueDbPath, { kind: 'events', volumeId, bufferMin }, () => eventCards(catalogueDb, volumeId, bufferMin))
+  })
 
   ipcMain.handle('get-ai-search-button', () => getAiSearchButtonPref())
   ipcMain.handle('set-ai-search-button', (_event, enabled: boolean) => {
@@ -2141,6 +2161,9 @@ app.whenReady().then(() => {
    * preview and the viewer cannot disagree about one path. Reports only - it
    * never deletes a record and never copies the file anywhere.
    */
+  ipcMain.handle('date-provenance', (_event, raw: unknown) =>
+    typeof raw === 'string' && raw.length < 32768 ? getDateProvenance(raw) : { source: null, offsetMin: null }
+  )
   ipcMain.handle('media-status', (_event, raw: unknown) => {
     const filePath = typeof raw === 'string' ? raw : ''
     if (!isSafeLocalPath(filePath)) return { status: 'missing', volumeKnown: false, resolved: filePath }

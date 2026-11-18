@@ -1,5 +1,6 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 import type { UpdateMode, UpdateState } from '../main/updateState'
+import type { CalendarStatus, DayFile, EventDetail, EventsList, LinkOp } from '../main/calendarTypes'
 
 interface DriveInfo {
   name: string
@@ -164,6 +165,17 @@ declare global {
       openFile: (filePath: string) => void
       readFileBase64: (filePath: string) => Promise<string>
       onThumbReady: (callback: (data: { filePath: string; thumbPath: string }) => void) => () => void
+      calendarStatus: () => Promise<CalendarStatus>
+      calendarConnect: () => Promise<CalendarStatus>
+      calendarSyncNow: () => Promise<CalendarStatus>
+      calendarDisconnect: () => Promise<CalendarStatus>
+      calendarSetPrefs: (p: { autoSync?: boolean; bufferMin?: number }) => Promise<CalendarStatus>
+      calendarEvents: (drive: string) => Promise<EventsList>
+      calendarEvent: (drive: string, calendarId: string, eventId: string) => Promise<EventDetail | null>
+      calendarEventCandidates: (drive: string, calendarId: string, eventId: string) => Promise<DayFile[]>
+      calendarCover: (path: string) => Promise<string | null>
+      calendarLink: (l: { op: LinkOp; path: string; calendarId: string; eventId: string }) => Promise<boolean>
+      onCalendarStatus: (callback: (s: CalendarStatus) => void) => () => void
       transcodeVideo: (inputPath: string) => Promise<string>
       onTranscodeDone: (callback: (data: { inputPath: string; outPath: string }) => void) => () => void
       onTranscodeProgress: (
@@ -252,6 +264,7 @@ declare global {
         resolved: string
         missingRoot: string | null
       }>
+      dateProvenance: (filePath: string) => Promise<{ source: string | null; offsetMin: number | null }>
       cancelIndexFolder: () => Promise<boolean>
       favouritePaths: () => Promise<string[]>
       playMpv: (

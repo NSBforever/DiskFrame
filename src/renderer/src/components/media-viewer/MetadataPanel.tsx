@@ -17,6 +17,30 @@ interface ScannedFile {
   thumb: string | null
 }
 
+/**
+ * What the catalogue date actually is (main/captureTime.ts DateSource). Most
+ * files have no capture time at all, and calling a modification time "Date
+ * Taken" claimed something nobody knows.
+ */
+function dateProvenance(source: string | null | undefined, offsetMin: number | null | undefined): { heading: string; note: string } {
+  const tz = (m: number): string => `UTC${m < 0 ? '-' : '+'}${String(Math.floor(Math.abs(m) / 60)).padStart(2, '0')}:${String(Math.abs(m) % 60).padStart(2, '0')}`
+  switch (source) {
+    case 'exif-offset':
+      return { heading: 'Date Taken', note: `From the camera, taken at ${tz(offsetMin ?? 0)}` }
+    case 'exif':
+      return { heading: 'Date Taken', note: 'From the camera (no time zone recorded)' }
+    case 'quicktime':
+      return { heading: 'Date Recorded', note: 'From the video file' }
+    case 'birthtime':
+      return { heading: 'Date', note: 'File created - the file records no capture time' }
+    case 'mtime':
+      return { heading: 'Date', note: 'File last modified - the file records no capture time' }
+    default:
+      // Not in the catalogue (or not answered yet): say nothing rather than guess.
+      return { heading: 'Date Taken', note: '' }
+  }
+}
+
 interface MetadataPanelProps {
   file: ScannedFile
   isOpen: boolean
@@ -62,6 +86,21 @@ export const MetadataPanel: React.FC<MetadataPanelProps> = ({
 }) => {
   const [meta, setMeta] = useState<ParsedMetadata | null>(null)
   const [loading, setLoading] = useState(false)
+  const [prov, setProv] = useState<{ source: string | null; offsetMin: number | null } | null>(null)
+
+  useEffect(() => {
+    if (!isOpen) return
+    let live = true
+    setProv(null)
+    window.api
+      .dateProvenance(file.path)
+      .then((p) => live && setProv(p))
+      .catch(() => live && setProv(null))
+    return () => {
+      live = false
+    }
+  }, [file.path, isOpen])
+  const dateInfo = dateProvenance(prov?.source, prov?.offsetMin)
 
   useEffect(() => {
     if (!isOpen) return
@@ -298,10 +337,17 @@ export const MetadataPanel: React.FC<MetadataPanelProps> = ({
           {/* Date Taken */}
           {meta?.dateTaken && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Date Taken</div>
+              <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                {dateInfo.heading}
+              </div>
               <div style={{ fontSize: '13px', color: 'var(--app-fg, #f2f2f0)', display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <span>📅</span> {meta.dateTaken}
               </div>
+              {dateInfo.note && (
+                <div data-date-source={prov?.source ?? ''} style={{ fontSize: '10px', color: 'var(--app-fg-dim, #8a8a8f)' }}>
+                  {dateInfo.note}
+                </div>
+              )}
             </div>
           )}
 

@@ -33,6 +33,18 @@ export interface LibraryGroup {
   offset: number
 }
 
+/**
+ * The local calendar year a group belongs to. maxDate is a UTC ISO string, so
+ * slicing it gave the UTC year: a photo taken on the evening of 31 December
+ * east of Greenwich counted toward the next year. Group keys are local days
+ * (libraryQuery.groupKeyExpr), so the year must be local too.
+ */
+export function groupYear(g: Pick<LibraryGroup, 'key' | 'maxDate'>): string {
+  const t = g.maxDate ? new Date(g.maxDate) : null
+  if (t && !isNaN(t.getTime())) return String(t.getFullYear())
+  return /^\d{4}/.test(g.key) ? g.key.slice(0, 4) : 'Unknown'
+}
+
 export const PAGE_SIZE = 200
 /** Pages kept resident. 12 x 200 rows is far more than any viewport needs, and
  *  is the ceiling on how much file metadata the renderer holds at once. */

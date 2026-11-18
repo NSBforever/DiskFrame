@@ -180,18 +180,27 @@ export function buildWhere(q: LibraryQuery): { sql: string; params: unknown[] } 
 }
 
 /**
- * SQL expression producing a group key. Day/month/year slice the ISO date so
- * the key sorts identically to the date itself; the renderer turns the key
- * into a human label so locale formatting stays out of SQL.
+ * SQL expression producing a group key. Day/month/year are the LOCAL calendar
+ * day/month/year of `date` (a UTC ISO string), so a key still sorts with the
+ * date itself; the renderer turns the key into a human label so locale
+ * formatting stays out of SQL.
+ *
+ * These used to slice the UTC string, so at UTC+5:30 anything taken between
+ * midnight and 05:30 sat under the previous day - 15,148 of 206,499 files in
+ * a real catalogue. 'localtime' is this process's zone, the same one the
+ * year/month columns and the renderer's labels use. Measured on a 62k-file
+ * volume (worker thread, once per query/catalogue version): summary 45 -> 67
+ * ms, ordered ids 76 -> 108 ms.
+ * ponytail: per-row strftime; store a local_day column if volumes reach ~1M.
  */
 export function groupKeyExpr(groupBy: GroupBy): string {
   switch (groupBy) {
     case 'day':
-      return "substr(date, 1, 10)"
+      return "strftime('%Y-%m-%d', date, 'localtime')"
     case 'month':
-      return "substr(date, 1, 7)"
+      return "strftime('%Y-%m', date, 'localtime')"
     case 'year':
-      return "substr(date, 1, 4)"
+      return "strftime('%Y', date, 'localtime')"
     case 'location':
       return "CASE WHEN lat IS NULL OR lng IS NULL THEN 'none' ELSE (CAST(ROUND(lat * 2) / 2 AS TEXT) || ',' || CAST(ROUND(lng * 2) / 2 AS TEXT)) END"
     case 'favorites':

@@ -1,0 +1,618 @@
+/* Events: browse photos by calendar event. Photography first; the app's dark
+   glass for everything around it; one accent, used sparingly. */
+
+.ev-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+}
+.ev-page {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 28px 32px 132px; /* clear of the floating dock */
+  color: var(--app-fg, #f2f2f0);
+}
+@media (max-width: 760px) {
+  .ev-page {
+    padding: 20px 16px 132px;
+  }
+}
+.ev-dim {
+  color: var(--app-fg-dim, #8a8a8f);
+}
+
+/* Landing header */
+.ev-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 28px;
+}
+.ev-title {
+  margin: 0;
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: -0.8px;
+  line-height: 1;
+}
+.ev-sub {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--app-fg-dim, #8a8a8f);
+}
+.ev-pill {
+  flex: none;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 11px;
+  color: var(--app-fg-dim, #8a8a8f);
+  white-space: nowrap;
+}
+.ev-pill.is-warn {
+  color: var(--app-fg, #f2f2f0);
+  border-color: rgba(225, 29, 46, 0.35);
+}
+
+/* Year groups */
+.ev-year + .ev-year {
+  margin-top: 40px;
+}
+.ev-year-label {
+  margin: 0 0 14px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  color: var(--app-fg-dim, #8a8a8f);
+}
+.ev-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  /* One row height for every card: the featured one is simply twice as wide,
+     so cards beside it line up instead of leaving a gap below. */
+  grid-auto-rows: clamp(240px, 21vw, 340px);
+  gap: 18px;
+}
+
+/* Cover card */
+.ev-card {
+  position: relative;
+  display: block;
+  padding: 0;
+  border: none;
+  border-radius: 16px;
+  overflow: hidden;
+  cursor: pointer;
+  text-align: left;
+  color: #fff;
+  /* Shown until the photo loads, and for an event without a still image. */
+  background: radial-gradient(120% 90% at 20% 0%, #2a2a33 0%, #141418 60%, #0d0d10 100%);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06) inset, 0 10px 30px rgba(0, 0, 0, 0.35);
+  transition: transform 0.35s cubic-bezier(0.2, 0.7, 0.2, 1), box-shadow 0.35s ease;
+}
+.ev-card.is-featured {
+  grid-column: span 2;
+}
+@media (max-width: 700px) {
+  .ev-card.is-featured {
+    grid-column: auto;
+  }
+}
+.ev-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.08) inset, 0 18px 44px rgba(0, 0, 0, 0.5);
+}
+.ev-card:focus-visible {
+  outline: 2px solid var(--app-accent, #e11d2e);
+  outline-offset: 3px;
+}
+.ev-card-img,
+.ev-hero-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.ev-card-img {
+  opacity: 0;
+  transform: scale(1.02);
+  transition: opacity 0.4s ease, transform 0.9s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.ev-card-img.is-loaded {
+  opacity: 1;
+}
+.ev-card:hover .ev-card-img.is-loaded {
+  transform: scale(1.06);
+}
+.ev-card-shade {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(to top, rgba(0, 0, 0, 0.82) 0%, rgba(0, 0, 0, 0.45) 32%, rgba(0, 0, 0, 0) 62%),
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.35) 0%, rgba(0, 0, 0, 0) 22%);
+  pointer-events: none;
+}
+.ev-card-count {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(18, 18, 22, 0.42);
+  backdrop-filter: blur(14px) saturate(1.6);
+  -webkit-backdrop-filter: blur(14px) saturate(1.6);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+.ev-card-text {
+  position: absolute;
+  left: 20px;
+  right: 20px;
+  bottom: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.45);
+}
+.ev-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.4px;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+.ev-card.is-featured .ev-card-title {
+  font-size: 32px;
+  letter-spacing: -0.8px;
+}
+.ev-card-repeat {
+  flex: none;
+  opacity: 0.75;
+}
+.ev-card-when {
+  font-size: 13px;
+  opacity: 0.88;
+}
+.ev-card-where {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  opacity: 0.8;
+}
+.ev-card-new {
+  margin-top: 4px;
+  align-self: flex-start;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  opacity: 0.75;
+}
+
+/* Loading and empty states */
+.ev-loading {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-auto-rows: clamp(240px, 21vw, 340px);
+  gap: 18px;
+}
+.ev-skel {
+  border-radius: 16px;
+  background: linear-gradient(100deg, #141418 30%, #1c1c22 50%, #141418 70%);
+  background-size: 200% 100%;
+  animation: evShimmer 1.4s ease-in-out infinite;
+}
+.ev-skel-feature {
+  grid-column: span 2;
+}
+.ev-skel-hero {
+  height: 340px;
+  border-radius: 20px;
+}
+@keyframes evShimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ev-skel {
+    animation: none;
+  }
+  .ev-card,
+  .ev-card-img {
+    transition: none;
+  }
+}
+.ev-empty {
+  max-width: 520px;
+  margin: 48px auto;
+  padding: 32px;
+  text-align: center;
+}
+.ev-empty h2 {
+  margin: 12px 0 8px;
+  font-size: 18px;
+  font-weight: 600;
+}
+.ev-empty p {
+  margin: 0 0 20px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--app-fg-dim, #8a8a8f);
+}
+.ev-empty-icon {
+  color: var(--app-accent, #e11d2e);
+}
+
+/* Events without photos */
+.ev-others {
+  margin-top: 44px;
+}
+.ev-others summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  list-style: none;
+}
+.ev-others summary::-webkit-details-marker {
+  display: none;
+}
+.ev-others summary span {
+  margin-left: 8px;
+  font-weight: 400;
+  color: var(--app-fg-dim, #8a8a8f);
+}
+.ev-others summary::before {
+  content: '›';
+  display: inline-block;
+  width: 14px;
+  color: var(--app-fg-dim, #8a8a8f);
+  transition: transform 0.2s ease;
+}
+.ev-others[open] summary::before {
+  transform: rotate(90deg);
+}
+.ev-others-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 6px;
+  max-width: 760px;
+}
+.ev-others-list button {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 190px 1fr auto;
+  gap: 14px;
+  align-items: baseline;
+  padding: 9px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--app-fg, #f2f2f0);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.ev-others-list button:hover,
+.ev-others-list button:focus-visible {
+  background: rgba(255, 255, 255, 0.06);
+  outline: none;
+}
+.ev-others-when,
+.ev-others-where {
+  font-size: 12px;
+  color: var(--app-fg-dim, #8a8a8f);
+}
+
+/* Event page */
+.ev-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 16px;
+  padding: 6px 12px 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--app-fg, #f2f2f0);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.ev-back:hover,
+.ev-back:focus-visible {
+  background: rgba(255, 255, 255, 0.09);
+  outline: none;
+}
+.ev-hero {
+  position: relative;
+  height: clamp(260px, 38vh, 420px);
+  border-radius: 20px;
+  overflow: hidden;
+  background: radial-gradient(120% 90% at 20% 0%, #2a2a33 0%, #141418 60%, #0d0d10 100%);
+  color: #fff;
+}
+.ev-hero-text {
+  position: absolute;
+  left: 32px;
+  right: 32px;
+  bottom: 28px;
+  text-shadow: 0 1px 14px rgba(0, 0, 0, 0.45);
+}
+.ev-hero-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: 40px;
+  font-weight: 700;
+  letter-spacing: -1px;
+  line-height: 1.05;
+  overflow-wrap: anywhere;
+}
+.ev-hero-when {
+  margin-top: 10px;
+  font-size: 15px;
+  opacity: 0.9;
+}
+.ev-hero-where {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 13px;
+  opacity: 0.85;
+}
+.ev-hero .ev-dim {
+  color: rgba(255, 255, 255, 0.7);
+}
+.ev-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 18px 0 8px;
+}
+.ev-actions .df-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ev-files {
+  margin-top: 28px;
+}
+.ev-files-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.ev-files-head h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+.ev-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--app-fg-dim, #8a8a8f);
+  max-width: 640px;
+}
+.ev-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: 6px;
+  margin-top: 14px;
+}
+.ev-tile {
+  position: relative;
+  aspect-ratio: 1;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.ev-tile > :first-child {
+  width: 100%;
+  height: 100%;
+}
+/* A suggestion is outlined; the section heading and its buttons say it too. */
+.ev-tile.is-suggested {
+  outline: 1.5px dashed rgba(255, 255, 255, 0.35);
+  outline-offset: -1.5px;
+}
+.ev-tile-actions {
+  position: absolute;
+  /* Above the gallery tile, which takes z-index 1-2 for its own hover. */
+  z-index: 3;
+  right: 6px;
+  bottom: 6px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.ev-tile:hover .ev-tile-actions,
+.ev-tile:focus-within .ev-tile-actions {
+  opacity: 1;
+  transform: none;
+}
+.ev-tile-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  background: rgba(14, 14, 18, 0.6);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: #fff;
+  cursor: pointer;
+}
+.ev-tile-btn:hover,
+.ev-tile-btn:focus-visible {
+  background: rgba(14, 14, 18, 0.85);
+  border-color: rgba(255, 255, 255, 0.4);
+  outline: none;
+}
+.ev-tile-badge {
+  position: absolute;
+  z-index: 3;
+  left: 6px;
+  top: 6px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(14, 14, 18, 0.6);
+  backdrop-filter: blur(10px);
+  font-size: 10px;
+  font-weight: 600;
+  color: #fff;
+  pointer-events: none;
+}
+
+/* Undo */
+.ev-undo {
+  position: fixed;
+  left: 50%;
+  bottom: 112px;
+  transform: translateX(-50%);
+  z-index: 950;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 8px 8px 16px;
+  font-size: 12px;
+  max-width: calc(100vw - 32px);
+}
+.ev-undo span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Add photos */
+.ev-modal-back {
+  position: fixed;
+  inset: 0;
+  z-index: 960;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.45);
+}
+.ev-modal {
+  width: min(880px, 100%);
+  max-height: min(720px, calc(100vh - 48px));
+  display: flex;
+  flex-direction: column;
+  outline: none;
+  color: var(--app-fg, #f2f2f0);
+}
+.ev-modal-head,
+.ev-modal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+}
+.ev-modal-head {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.ev-modal-head h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+.ev-modal-head p {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+.ev-modal-foot {
+  justify-content: flex-end;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.ev-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 20px 16px;
+}
+.ev-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--app-fg-dim, #8a8a8f);
+  cursor: pointer;
+}
+.ev-icon-btn:hover,
+.ev-icon-btn:focus-visible {
+  color: var(--app-fg, #f2f2f0);
+  background: rgba(255, 255, 255, 0.08);
+  outline: none;
+}
+.ev-tiles-pick {
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+}
+.ev-pick {
+  position: relative;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--app-surface-2, #161619);
+  cursor: pointer;
+  aspect-ratio: 1;
+}
+.ev-pick-img,
+.ev-pick-img img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.ev-pick.is-on {
+  outline: 2px solid var(--app-accent, #e11d2e);
+  outline-offset: -2px;
+}
+.ev-pick:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.6);
+  outline-offset: -2px;
+}
+.ev-pick-time {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(14, 14, 18, 0.6);
+  font-size: 10px;
+  color: #fff;
+}
+.ev-pick-check {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--app-accent, #e11d2e);
+  color: #fff;
+}

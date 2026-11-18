@@ -2,6 +2,8 @@ import { join, basename, extname, dirname } from 'path'
 import * as fs from 'fs'
 import * as cp from 'child_process'
 import { readPhotoMeta } from './photoGps'
+import { fsEarliest, type DateSource } from './captureTime'
+import { CALENDAR_SCHEMA_SQL } from './calendarStore'
 import Database from 'better-sqlite3'
 import { app, utilityProcess } from 'electron'
 import sharp from 'sharp'
@@ -432,6 +434,31 @@ if (!cols.includes('thumb_fail_count'))
 if (!cols.includes('thumb_fail_sig'))
   db.prepare('ALTER TABLE files ADD COLUMN thumb_fail_sig TEXT').run()
 
+// Where `date` came from (captureTime.ts DateSource) and, when the photo said,
+// its UTC offset. Every scan path writes a modification time, hence the
+// default; only the capture-date backfill, an in-place update and a copy
+// change it. Existing rows are labelled from what is already stored - a date
+// that differs from mtime after a capture-date read came from the file's own
+// metadata - so no file is opened for this. Additive: older builds ignore it.
+if (!cols.includes('date_source')) {
+  db.transaction(() => {
+    db.prepare("ALTER TABLE files ADD COLUMN date_source TEXT DEFAULT 'mtime'").run()
+    db.prepare('ALTER TABLE files ADD COLUMN date_offset_min INTEGER').run()
+    const videos = videoExts.map(() => '?').join(',')
+    const r = db
+      .prepare(
+        `UPDATE files SET date_source = CASE WHEN lower(ext) IN (${videos}) THEN 'quicktime' ELSE 'exif' END
+         WHERE exif_checked > 0 AND date IS NOT NULL AND mtime IS NOT NULL
+           AND abs(CAST(strftime('%s', date) AS INTEGER) * 1000 - mtime) >= 2000`
+      )
+      .run(...videoExts)
+    // Legacy rows with no stored mtime cannot be told apart without opening
+    // the file: unknown, not a claim (35,972 rows in one real catalogue).
+    const u = db.prepare('UPDATE files SET date_source = NULL WHERE mtime IS NULL').run()
+    console.log(`[migrate] date_source: ${r.changes} from file metadata, ${u.changes} unknown, the rest mtime`)
+  })()
+}
+
 // Left behind by an older schema that had an `is_vaulted` column. SQLite keeps
 // the index definition around, and every write to `files` has to consider it.
 try {
@@ -555,6 +582,9 @@ db.exec(`
 // table drops its triggers.
 db.exec(EPOCH_SCHEMA_SQL)
 
+// Google Calendar cache (1.4.0). New tables only: older builds ignore them.
+db.exec(CALENDAR_SCHEMA_SQL)
+
 // favourite_paths needs the same (path, volume_id) identity as files, for the
 // same reason: two different volumes can now share a literal path, and a
 // favourite keyed on path alone could not tell them apart. Existing rows are
@@ -637,6 +667,9 @@ if (!deletePrefsCols.includes('auto_update')) {
     console.error('Error migrating delete_prefs (auto_update):', e)
   }
 }
+for (const [col, def] of [['calendar_auto_sync', 1], ['calendar_buffer_min', 30]] as const) {
+  if (!deletePrefsCols.includes(col)) db.prepare(`ALTER TABLE delete_prefs ADD COLUMN ${col} INTEGER DEFAULT ${def}`).run()
+}
 
 export interface ScannedFile {
   path: string
@@ -659,6 +692,9 @@ export interface ScannedFile {
   hash?: string
   ino?: number | null
   volume_id?: string | null
+  /** captureTime.ts DateSource */
+  date_source?: string | null
+  date_offset_min?: number | null
 }
 
 // ─── PIN MANAGEMENT ───────────────────────────────────────────────────────────
@@ -802,6 +838,30 @@ export function getUpdateModePref(): UpdateMode {
     return 'auto'
   }
 }
+
+export interface CalendarPrefs {
+  autoSync: boolean
+  /** Minutes before and after an event that still count toward it. */
+  bufferMin: number
+}
+
+export function getCalendarPrefs(): CalendarPrefs {
+  const row = db.prepare('SELECT calendar_auto_sync a, calendar_buffer_min b FROM delete_prefs WHERE id = 1').get() as
+    | { a: number | null; b: number | null }
+    | undefined
+  return { autoSync: row?.a !== 0, bufferMin: typeof row?.b === 'number' ? row.b : 30 }
+}
+
+export function setCalendarPrefs(p: Partial<CalendarPrefs>): CalendarPrefs {
+  db.prepare('INSERT OR IGNORE INTO delete_prefs (id) VALUES (1)').run()
+  if (typeof p.autoSync === 'boolean') db.prepare('UPDATE delete_prefs SET calendar_auto_sync = ? WHERE id = 1').run(p.autoSync ? 1 : 0)
+  if (typeof p.bufferMin === 'number' && Number.isFinite(p.bufferMin))
+    db.prepare('UPDATE delete_prefs SET calendar_buffer_min = ? WHERE id = 1').run(Math.max(0, Math.min(120, Math.round(p.bufferMin))))
+  return getCalendarPrefs()
+}
+
+/** The catalogue connection, for modules that keep their own SQL (calendarStore). */
+export const catalogueDb = db
 
 export function setUpdateModePref(mode: UpdateMode): void {
   try {
@@ -1186,14 +1246,14 @@ export function getFavourites(volumeId: string | null): ScannedFile[] {
  */
 function repointPath(oldPath: string, newPath: string, volumeId?: string | null): void {
   if (!oldPath || !newPath || oldPath === newPath) return
-  if (volumeId !== undefined) {
-    db.prepare('UPDATE OR REPLACE favourite_paths SET path = ? WHERE path = ? AND volume_id IS ?').run(
-      newPath,
-      oldPath,
-      volumeId
-    )
-  } else {
-    db.prepare('UPDATE OR REPLACE favourite_paths SET path = ? WHERE path = ?').run(newPath, oldPath)
+  // Favourites and the user's calendar links are both decisions about a file,
+  // keyed by (path, volume_id), and both follow it when it moves.
+  for (const table of ['favourite_paths', 'event_file_links']) {
+    if (volumeId !== undefined) {
+      db.prepare(`UPDATE OR REPLACE ${table} SET path = ? WHERE path = ? AND volume_id IS ?`).run(newPath, oldPath, volumeId)
+    } else {
+      db.prepare(`UPDATE OR REPLACE ${table} SET path = ? WHERE path = ?`).run(newPath, oldPath)
+    }
   }
 }
 
@@ -1240,6 +1300,15 @@ export function toggleFavourite(filePath: string, volumeId?: string | null): boo
     db.prepare('DELETE FROM favourite_paths WHERE path = ? AND volume_id IS ?').run(filePath, rowVolumeId)
   }
   return on
+}
+
+/** Where one file's catalogue date came from (captureTime.ts), for the Info panel.
+ *  Not part of a gallery page: pages carry only what the grid draws. */
+export function getDateProvenance(filePath: string): { source: string | null; offsetMin: number | null } {
+  const row = db
+    .prepare('SELECT date_source, date_offset_min FROM files WHERE path = ? ORDER BY (volume_id IS ?) DESC LIMIT 1')
+    .get(filePath, getCachedVolumeId(filePath.slice(0, 2))) as { date_source: string | null; date_offset_min: number | null } | undefined
+  return { source: row?.date_source ?? null, offsetMin: row?.date_offset_min ?? null }
 }
 
 /** Every favourited path, including ones whose file does not currently resolve. */
@@ -1385,6 +1454,40 @@ function existingThumb(fullPath: string, volumeId?: string | null): string | nul
   return null
 }
 
+/** Event covers (Events page): larger than a grid thumbnail, made on demand. */
+const coverDir = join(app.getPath('userData'), 'covers')
+const COVER_SIZE = 900
+
+/**
+ * A cover image for one file, short side COVER_SIZE, cached by volume, path
+ * and modification time (an edited photo gets a new cover). Read with fs
+ * first, never sharp(path) - see generateThumbForFile and the 1.3.0 crash.
+ * Videos return null; the Events page uses their thumbnail instead.
+ */
+export async function coverForFile(fullPath: string, ext: string, volumeId: string | null): Promise<string | null> {
+  const lowerExt = ext.toLowerCase()
+  if (!sharpExts.includes(lowerExt) && lowerExt !== '.heic') return null
+  try {
+    const st = await fs.promises.stat(fullPath)
+    const out = join(coverDir, `${makeHash(`${volumeId ?? ''}\u0000${fullPath}\u0000${Math.round(st.mtimeMs)}`)}.jpg`)
+    if (fs.existsSync(out)) return out
+    await fs.promises.mkdir(coverDir, { recursive: true })
+    if (lowerExt === '.heic') return (await heicToJpeg(fullPath, out, { size: COVER_SIZE, quality: 82 })) ? out : null
+    const data = await sharp(await fs.promises.readFile(fullPath))
+      .rotate()
+      .resize(COVER_SIZE, COVER_SIZE, { fit: 'outside', withoutEnlargement: true })
+      .jpeg({ quality: 82 })
+      .toBuffer()
+    const tmp = `${out}.${process.pid}.tmp`
+    await fs.promises.writeFile(tmp, data)
+    await fs.promises.rename(tmp, out)
+    return out
+  } catch (e) {
+    console.error('[cover] could not make cover', fullPath, (e as NodeJS.ErrnoException).code ?? String(e))
+    return null
+  }
+}
+
 export async function generateThumbForFile(
   fullPath: string,
   ext: string,
@@ -1400,7 +1503,16 @@ export async function generateThumbForFile(
       // The picture's own shape, short side THUMB_SIZE - see thumbShape.ts.
       // One decode: 'outside' scales without cropping, and only a panorama
       // past the 3:1 cap takes a second, tiny pass to crop it.
-      let { data, info } = await sharp(fullPath)
+      //
+      // Read with fs first, never sharp(path): libvips memory-maps the file,
+      // and a bad sector under a mapped page raises EXCEPTION_IN_PAGE_ERROR
+      // (0xC0000006) - not a JS error - which kills the main process and the
+      // whole app (crash dump 2026-11-18, WD USB drive with bad blocks). fs
+      // turns the same sector into a rejected EIO that lands in the catch below.
+      // Costs no extra I/O: a JPEG/PNG decode reads the whole file anyway.
+      // ponytail: whole file in memory per in-flight thumb; fine for photos,
+      // stream via sharp's writable input if multi-GB images ever matter.
+      let { data, info } = await sharp(await fs.promises.readFile(fullPath))
         .rotate()
         .resize(THUMB_SIZE, THUMB_SIZE, { fit: 'outside' })
         .jpeg({ quality: 80 })
@@ -1418,6 +1530,8 @@ export async function generateThumbForFile(
       await fs.promises.rename(tmp, thumbPath)
       return thumbPath
     } catch (e) {
+      // EIO here is the drive reporting an unreadable sector - worth a trace.
+      console.error('[thumb] could not make thumbnail', fullPath, (e as NodeJS.ErrnoException).code ?? String(e))
       return null
     }
   }
@@ -1732,7 +1846,13 @@ const EXIF_EXTS = new Set([
 // its EXIF onto every row at a colliding path, including another volume's
 // that is not even connected.
 const updateExifStmt = db.prepare(
-  `UPDATE files SET date=?, year=?, month=?, lat=?, lng=? WHERE path=? AND volume_id IS ? AND lat IS NULL`
+  `UPDATE files SET date=?, year=?, month=?, lat=?, lng=?, date_source=?, date_offset_min=? WHERE path=? AND volume_id IS ? AND lat IS NULL`
+)
+
+// No capture metadata: the file's creation time, when it is earlier than the
+// mtime the scan wrote (captureTime.fsEarliest). Only over an mtime date.
+const updateBirthtimeStmt = db.prepare(
+  `UPDATE files SET date=?, year=?, month=?, date_source='birthtime' WHERE path=? AND volume_id IS ? AND date_source='mtime'`
 )
 
 // A file with GPS but no capture date must keep whatever date it already has
@@ -1747,8 +1867,19 @@ const updateGpsOnlyStmt = db.prepare(
 const repairGpsStmt = db.prepare(`UPDATE files SET lat=?, lng=? WHERE path=? AND volume_id IS ?`)
 
 // exif_checked: 0 = never read, 1 = read before the hemisphere fix (a photo's
-// stored position may be mirrored), 2 = read with the GPS reference tags.
+// stored position may be mirrored), 2 = read with the GPS reference tags,
+// 3 = re-read for its date provenance (below).
 const markExifCheckedStmt = db.prepare('UPDATE files SET exif_checked = 2 WHERE path = ? AND volume_id IS ?')
+const markRelabelledStmt = db.prepare('UPDATE files SET exif_checked = 3 WHERE path = ? AND volume_id IS ?')
+
+// The date_source migration could only label from stored columns: a capture
+// time EQUAL to the file's mtime (a photo never copied or edited) looked like
+// "no metadata" and was labelled mtime. On a real catalogue sample, 103 of 300
+// such photos had a camera time - and Events never suggests an mtime date.
+// Those rows are read once more, for provenance only.
+const relabelStmt = db.prepare(
+  `UPDATE files SET date=?, year=?, month=?, date_source=?, date_offset_min=? WHERE path=? AND volume_id IS ? AND date_source='mtime'`
+)
 
 /** Extensions read with exifr; their positions needed the hemisphere fix. */
 const VIDEO_EXIF_EXTS = new Set(videoExts)
@@ -1788,10 +1919,11 @@ export async function enrichExifBackfill(
     // ISO 6709 string and are not affected.
     const pending = db
       .prepare(
-        `SELECT path, ext, volume_id, exif_checked FROM files
+        `SELECT path, ext, volume_id, exif_checked, date_source FROM files
          WHERE trashed_at IS NULL AND ext IN (${placeholders})
            AND (exif_checked = 0
-                OR (exif_checked = 1 AND lat IS NOT NULL AND ext NOT IN (${videoList.map(() => '?').join(',')})))
+                OR (exif_checked = 1 AND lat IS NOT NULL AND ext NOT IN (${videoList.map(() => '?').join(',')}))
+                OR (exif_checked IN (1, 2) AND date_source = 'mtime'))
            ${volumeId ? 'AND volume_id = ?' : ''}
          ORDER BY date DESC`
       )
@@ -1800,6 +1932,7 @@ export async function enrichExifBackfill(
       ext: string
       volume_id: string | null
       exif_checked: number
+      date_source: string | null
     }[]
 
     const total = pending.length
@@ -1818,7 +1951,8 @@ export async function enrichExifBackfill(
         if (shouldStop?.()) return
         await whenIdle?.()
         if (shouldStop?.()) return
-        const { path: fullPath, ext, volume_id: rowVolumeId, exif_checked: wasChecked } = pending[cursor++]
+        const { path: fullPath, ext, volume_id: rowVolumeId, exif_checked: wasChecked, date_source: rowSource } = pending[cursor++]
+        const relabel = wasChecked > 0 && rowSource === 'mtime'
         const lowerExt = ext.toLowerCase()
         // A file that cannot be reached right now (drive unplugged, path on a
         // letter the volume no longer has) is left unchecked for a later pass.
@@ -1832,6 +1966,8 @@ export async function enrichExifBackfill(
           let date: Date | null = null
           let lat: number | null = null
           let lng: number | null = null
+          let offsetMin: number | null = null
+          let source: DateSource = 'quicktime'
 
           if (VIDEO_EXIF_EXTS.has(lowerExt)) {
             const meta = await getMovMetadata(fullPath)
@@ -1841,13 +1977,25 @@ export async function enrichExifBackfill(
               lng = meta.lng
             }
           } else {
-            ;({ date, lat, lng } = await readPhotoMeta(fullPath))
+            ;({ date, offsetMin, lat, lng } = await readPhotoMeta(fullPath))
+            source = offsetMin !== null ? 'exif-offset' : 'exif'
           }
 
-          if (wasChecked === 1) {
+          if (wasChecked === 1 && lat !== null && lng !== null) {
             // Repair: the date was already corrected on the first read; only
             // the position can be wrong, so only the position is rewritten.
-            if (lat !== null && lng !== null) repairGpsStmt.run(lat, lng, fullPath, rowVolumeId)
+            repairGpsStmt.run(lat, lng, fullPath, rowVolumeId)
+          }
+          if (relabel) {
+            // Provenance only: the stored date already is this time (it equals
+            // mtime), unless the photo records its time zone.
+            if (isUsableCaptureDate(date)) {
+              const d = date as Date
+              relabelStmt.run(d.toISOString(), d.getFullYear().toString(), d.toLocaleString('default', { month: 'long' }), source, offsetMin, fullPath, rowVolumeId)
+              corrected++
+            }
+          } else if (wasChecked === 1) {
+            /* position-only repair, done above */
           } else if (isUsableCaptureDate(date)) {
             const d = date as Date
             updateExifStmt.run(
@@ -1856,19 +2004,28 @@ export async function enrichExifBackfill(
               d.toLocaleString('default', { month: 'long' }),
               lat,
               lng,
+              source,
+              offsetMin,
               fullPath,
               rowVolumeId
             )
             corrected++
-          } else if (lat !== null) {
-            updateGpsOnlyStmt.run(lat, lng, fullPath, rowVolumeId)
+          } else {
+            if (lat !== null) updateGpsOnlyStmt.run(lat, lng, fullPath, rowVolumeId)
+            const st = await fs.promises.stat(fullPath)
+            const fsDate = fsEarliest(st.mtimeMs, st.birthtimeMs)
+            const d = new Date(fsDate.ms)
+            if (fsDate.source === 'birthtime' && isUsableCaptureDate(d)) {
+              updateBirthtimeStmt.run(d.toISOString(), d.getFullYear().toString(), d.toLocaleString('default', { month: 'long' }), fullPath, rowVolumeId)
+            }
           }
         } catch {
           /* unreadable, or simply has no metadata - the mtime date stands */
         }
         // Marked either way, so a file that genuinely has no EXIF is not
         // re-parsed on every launch for the rest of the library's life.
-        markExifCheckedStmt.run(fullPath, rowVolumeId)
+        if (relabel) markRelabelledStmt.run(fullPath, rowVolumeId)
+        else markExifCheckedStmt.run(fullPath, rowVolumeId)
 
         checked++
         if (checked % 500 === 0) {
@@ -2178,6 +2335,7 @@ export async function updateFileInPlace(filePath: string, statInput?: fs.Stats):
     db.prepare(`
       UPDATE files
       SET size = ?, date = ?, year = ?, month = ?, thumb = ?, mtime = ?, ino = ?,
+          date_source = 'mtime', date_offset_min = NULL,
           volume_id = COALESCE(volume_id, ?)
       WHERE path = ? AND volume_id IS ?
     `).run(
@@ -2224,8 +2382,8 @@ export function recordCopiedFile(srcPath: string, destPath: string, destDrive: s
 
   db.prepare(
     `INSERT OR REPLACE INTO files
-       (path, name, ext, size, date, year, month, lat, lng, drive, thumb, favourited, locked, hidden, vault_path, trashed_at, mtime, exif_checked, volume_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, NULL, NULL, ?, ?, ?)`
+       (path, name, ext, size, date, year, month, lat, lng, drive, thumb, favourited, locked, hidden, vault_path, trashed_at, mtime, exif_checked, volume_id, date_source, date_offset_min)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, NULL, NULL, ?, ?, ?, ?, ?)`
   ).run(
     destPath,
     basename(destPath),
@@ -2240,7 +2398,10 @@ export function recordCopiedFile(srcPath: string, destPath: string, destDrive: s
     row?.thumb ?? null,
     Math.round(stat.mtimeMs),
     row ? 1 : 0,
-    getCachedVolumeId(destDrive)
+    getCachedVolumeId(destDrive),
+    // The carried date keeps its provenance; a fresh one is the copy's mtime.
+    row ? (row.date_source ?? 'mtime') : 'mtime',
+    row?.date_offset_min ?? null
   )
 }
 

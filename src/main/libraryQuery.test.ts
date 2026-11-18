@@ -86,11 +86,35 @@ test('search length is capped by the caller, and empty search adds no clause', (
 })
 
 test('group keys sort the same way the dates do', () => {
-  assert.equal(groupKeyExpr('day'), 'substr(date, 1, 10)')
-  assert.equal(groupKeyExpr('month'), 'substr(date, 1, 7)')
-  assert.equal(groupKeyExpr('year'), 'substr(date, 1, 4)')
   assert.match(groupKeyExpr('location'), /ROUND/)
   assert.match(groupKeyExpr('favorites'), /favourited/)
+})
+
+test('day/month/year keys are the LOCAL date the renderer labels, not the UTC one', async () => {
+  // Regression: keys sliced the UTC string, so at UTC+5:30 a photo taken at
+  // 02:00 on the 18th was grouped under the 17th. Whatever zone this runs in,
+  // SQLite's key must equal the local date JavaScript shows for the instant.
+  const { DatabaseSync } = await import('node:sqlite')
+  const db = new DatabaseSync(':memory:')
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  const instants = [
+    '2026-11-17T20:30:00.000Z', // 02:00 on the 18th at UTC+5:30
+    '2026-11-17T18:29:59.999Z',
+    '2026-12-31T19:00:00.000Z', // New Year's Eve east of Greenwich
+    '2026-03-08T07:30:00.000Z', // US spring-forward morning
+    '2026-10-25T00:30:00.000Z', // EU fall-back night
+    '2019-07-08T15:23:46.000Z'
+  ]
+  for (const iso of instants) {
+    const d = new Date(iso)
+    const local = { day: `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, month: `${d.getFullYear()}-${pad(d.getMonth() + 1)}`, year: `${d.getFullYear()}` }
+    for (const g of ['day', 'month', 'year'] as const) {
+      const row = db.prepare(`SELECT ${groupKeyExpr(g)} AS k FROM (SELECT ? AS date)`).get(iso) as { k: string }
+      assert.equal(row.k, local[g], `${g} key for ${iso}`)
+    }
+  }
+  const nul = db.prepare(`SELECT ${groupKeyExpr('day')} AS k FROM (SELECT NULL AS date)`).get() as { k: string | null }
+  assert.equal(nul.k, null, 'an undated row has no key, as before')
 })
 
 // Without a unique tie-break, two pages can return the same row or skip one.

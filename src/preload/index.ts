@@ -90,6 +90,25 @@ const api = {
     }
   },
   openFile: (p: string) => ipcRenderer.send('open-file', p),
+  // Google Calendar: status and actions only - no token ever reaches this side.
+  calendarStatus: () => ipcRenderer.invoke('calendar-status'),
+  calendarConnect: () => ipcRenderer.invoke('calendar-connect'),
+  calendarSyncNow: () => ipcRenderer.invoke('calendar-sync-now'),
+  calendarDisconnect: () => ipcRenderer.invoke('calendar-disconnect'),
+  calendarSetPrefs: (p: { autoSync?: boolean; bufferMin?: number }) => ipcRenderer.invoke('calendar-set-prefs', p),
+  calendarEvents: (drive: string) => ipcRenderer.invoke('calendar-events', drive),
+  calendarEvent: (drive: string, calendarId: string, eventId: string) => ipcRenderer.invoke('calendar-event', drive, calendarId, eventId),
+  calendarEventCandidates: (drive: string, calendarId: string, eventId: string) =>
+    ipcRenderer.invoke('calendar-event-candidates', drive, calendarId, eventId),
+  calendarCover: (path: string) => ipcRenderer.invoke('calendar-cover', path),
+  calendarLink: (l: { op: 'confirm' | 'reject' | 'manual' | 'undo'; path: string; calendarId: string; eventId: string }) => ipcRenderer.invoke('calendar-link', l),
+  onCalendarStatus: (cb: (s: unknown) => void) => {
+    const listener = (_e: unknown, s: unknown): void => cb(s)
+    ipcRenderer.on('calendar-status', listener)
+    return () => {
+      ipcRenderer.removeListener('calendar-status', listener)
+    }
+  },
   readFileBase64: (p: string) => ipcRenderer.invoke('read-file-base64', p),
   onThumbReady: (cb: (d: { filePath: string; thumbPath: string }) => void) => {
     const listener = (_e: unknown, d: any) => cb(d)
@@ -190,6 +209,8 @@ const api = {
     resolved: string
     missingRoot: string | null
   }> => ipcRenderer.invoke('media-status', filePath),
+  dateProvenance: (filePath: string): Promise<{ source: string | null; offsetMin: number | null }> =>
+    ipcRenderer.invoke('date-provenance', filePath),
   favouritePaths: () => ipcRenderer.invoke('favourite-paths'),
   playMpv: (
     filePath: string,

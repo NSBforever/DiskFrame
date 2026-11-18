@@ -59,6 +59,10 @@ jobs:
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          # Google Calendar's OAuth "Desktop app" client. Unset = the build shows
+          # Calendar as not set up; nothing else changes.
+          DF_GOOGLE_CLIENT_ID: ${{ secrets.DF_GOOGLE_CLIENT_ID }}
+          DF_GOOGLE_CLIENT_SECRET: ${{ secrets.DF_GOOGLE_CLIENT_SECRET }}
 
       - name: Verify the release files
         run: node scripts/verify-release.cjs dist
