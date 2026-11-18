@@ -119,7 +119,8 @@ CREATE TABLE IF NOT EXISTS event_file_links (
 CREATE INDEX IF NOT EXISTS idx_links_event ON event_file_links (calendar_id, event_id);
 
 -- Timestamp provenance on the existing table.
-ALTER TABLE files ADD COLUMN date_source TEXT;       -- see section 7
+-- Done (D4). Scans write mtime, hence the default; NULL = unknown (legacy row).
+ALTER TABLE files ADD COLUMN date_source TEXT DEFAULT 'mtime';
 ALTER TABLE files ADD COLUMN date_offset_min INTEGER; -- known UTC offset, else NULL
 -- No local_day column: measured unnecessary, see section 6.
 
@@ -147,7 +148,7 @@ are local midnight to midnight, recomputed if the machine's zone changes.
 | Day view (group-by-day header click) | "Day context" line listing the day's events with times, including ones with no files, as quiet text, not cards. |
 | `LibraryQuery` + gallery header | Optional `event` filter; header shows the event title with a clear (×) to leave it. |
 | Grid / viewer context menu | Confirm / Remove from event / Add to event... / Undo. |
-| `MetadataPanel` (Info) | Shows the date's source and confidence: "Taken 10:15 (camera, with time zone)" or "File modified 10:15 (no capture time)". |
+| `MetadataPanel` (Info) | **Done (D4).** Heading and a source line ("From the camera, taken at UTC+09:00", "File last modified - the file records no capture time"), fetched per file over `date-provenance` IPC; gallery pages keep carrying only what the grid draws. |
 
 Nothing else is redesigned. Existing glass card, typography, spacing, icons
 (lucide `CalendarDays`, `Link`, `Unlink`) and motion are reused.
@@ -197,7 +198,7 @@ cached events and the user's confirmations is decision **D2** below.
 | Event chips in day headers cost a query per visible day. | One query per visible range (`start_day <= ? AND end_day >= ?`), cached with the page cache. | Brisk-scroll frame times with 0 / 1k / 10k cached events. |
 | Suggestion scoring on every render. | Computed in the main process per visible event, memoized by `(event, volume, data_version)`. | Long tasks in scroll trace. |
 | Initial full sync of a large calendar. | Paged, off the main thread's critical path, `whenIdle`-gated, never blocks opening the gallery. | Sync of 10k-instance mock calendar. |
-| `date_source` backfill on 200k rows. | Batched in the library worker, resumable. | Main-thread stalls during backfill. |
+| `date_source` labels on 200k rows. | **Done (D4):** one UPDATE in the migration, no file reads. | Done. |
 | Infinite recurrences produce many future instances. | Stored (cheap), pruned at query time to days that have files. | Row count on a mock calendar with daily recurring events. |
 
 ## 7. Timestamps and matching
@@ -209,13 +210,17 @@ cached events and the user's confirmations is decision **D2** below.
 | EXIF `DateTimeOriginal` + `OffsetTimeOriginal` | `exif-offset` | high |
 | EXIF `DateTimeOriginal` without offset (interpreted in the machine's zone) | `exif` | medium-high |
 | HEIC/QuickTime `creation_time` (UTC) | `quicktime` | medium-high |
-| Earliest of file creation and modification time | `fs-earliest` | low |
+| Earliest of file creation and modification time | `birthtime` or `mtime` (whichever won) | low |
+| Unknown (legacy rows with no stored mtime; 36,087 in the real catalogue) | NULL | low |
 
 The last row deviates from the brief on purpose. On Windows, copying a file
 **preserves** its modification time and **resets** its creation time to the copy time,
 so "creation time first" would date most copied photos by the day they were copied. The
 earliest of the two is right in both the copy case and the edit case. Documents use
-`fs-earliest` and are never suggested automatically; they can be linked by hand.
+the filesystem date and are never suggested automatically; they can be linked by hand.
+
+Existing photos read before D4 keep `exif` (no offset): re-reading ~60k headers off a
+failing drive to find offsets is not worth it. Offsets are recorded for every new read.
 
 **Matching** (local only, read-time, nothing written):
 1. Candidates: files of the open volume with `date` in `[start − buffer, end + buffer]`

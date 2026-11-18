@@ -2,6 +2,7 @@ import { join, basename, extname, dirname } from 'path'
 import * as fs from 'fs'
 import * as cp from 'child_process'
 import { readPhotoMeta } from './photoGps'
+import { fsEarliest, type DateSource } from './captureTime'
 import Database from 'better-sqlite3'
 import { app, utilityProcess } from 'electron'
 import sharp from 'sharp'
@@ -432,6 +433,31 @@ if (!cols.includes('thumb_fail_count'))
 if (!cols.includes('thumb_fail_sig'))
   db.prepare('ALTER TABLE files ADD COLUMN thumb_fail_sig TEXT').run()
 
+// Where `date` came from (captureTime.ts DateSource) and, when the photo said,
+// its UTC offset. Every scan path writes a modification time, hence the
+// default; only the capture-date backfill, an in-place update and a copy
+// change it. Existing rows are labelled from what is already stored - a date
+// that differs from mtime after a capture-date read came from the file's own
+// metadata - so no file is opened for this. Additive: older builds ignore it.
+if (!cols.includes('date_source')) {
+  db.transaction(() => {
+    db.prepare("ALTER TABLE files ADD COLUMN date_source TEXT DEFAULT 'mtime'").run()
+    db.prepare('ALTER TABLE files ADD COLUMN date_offset_min INTEGER').run()
+    const videos = videoExts.map(() => '?').join(',')
+    const r = db
+      .prepare(
+        `UPDATE files SET date_source = CASE WHEN lower(ext) IN (${videos}) THEN 'quicktime' ELSE 'exif' END
+         WHERE exif_checked > 0 AND date IS NOT NULL AND mtime IS NOT NULL
+           AND abs(CAST(strftime('%s', date) AS INTEGER) * 1000 - mtime) >= 2000`
+      )
+      .run(...videoExts)
+    // Legacy rows with no stored mtime cannot be told apart without opening
+    // the file: unknown, not a claim (35,972 rows in one real catalogue).
+    const u = db.prepare('UPDATE files SET date_source = NULL WHERE mtime IS NULL').run()
+    console.log(`[migrate] date_source: ${r.changes} from file metadata, ${u.changes} unknown, the rest mtime`)
+  })()
+}
+
 // Left behind by an older schema that had an `is_vaulted` column. SQLite keeps
 // the index definition around, and every write to `files` has to consider it.
 try {
@@ -659,6 +685,9 @@ export interface ScannedFile {
   hash?: string
   ino?: number | null
   volume_id?: string | null
+  /** captureTime.ts DateSource */
+  date_source?: string | null
+  date_offset_min?: number | null
 }
 
 // ─── PIN MANAGEMENT ───────────────────────────────────────────────────────────
@@ -1242,6 +1271,15 @@ export function toggleFavourite(filePath: string, volumeId?: string | null): boo
   return on
 }
 
+/** Where one file's catalogue date came from (captureTime.ts), for the Info panel.
+ *  Not part of a gallery page: pages carry only what the grid draws. */
+export function getDateProvenance(filePath: string): { source: string | null; offsetMin: number | null } {
+  const row = db
+    .prepare('SELECT date_source, date_offset_min FROM files WHERE path = ? ORDER BY (volume_id IS ?) DESC LIMIT 1')
+    .get(filePath, getCachedVolumeId(filePath.slice(0, 2))) as { date_source: string | null; date_offset_min: number | null } | undefined
+  return { source: row?.date_source ?? null, offsetMin: row?.date_offset_min ?? null }
+}
+
 /** Every favourited path, including ones whose file does not currently resolve. */
 export function getFavouritePaths(): string[] {
   return (db.prepare('SELECT path FROM favourite_paths ORDER BY added_at').all() as { path: string }[]).map(
@@ -1743,7 +1781,13 @@ const EXIF_EXTS = new Set([
 // its EXIF onto every row at a colliding path, including another volume's
 // that is not even connected.
 const updateExifStmt = db.prepare(
-  `UPDATE files SET date=?, year=?, month=?, lat=?, lng=? WHERE path=? AND volume_id IS ? AND lat IS NULL`
+  `UPDATE files SET date=?, year=?, month=?, lat=?, lng=?, date_source=?, date_offset_min=? WHERE path=? AND volume_id IS ? AND lat IS NULL`
+)
+
+// No capture metadata: the file's creation time, when it is earlier than the
+// mtime the scan wrote (captureTime.fsEarliest). Only over an mtime date.
+const updateBirthtimeStmt = db.prepare(
+  `UPDATE files SET date=?, year=?, month=?, date_source='birthtime' WHERE path=? AND volume_id IS ? AND date_source='mtime'`
 )
 
 // A file with GPS but no capture date must keep whatever date it already has
@@ -1843,6 +1887,8 @@ export async function enrichExifBackfill(
           let date: Date | null = null
           let lat: number | null = null
           let lng: number | null = null
+          let offsetMin: number | null = null
+          let source: DateSource = 'quicktime'
 
           if (VIDEO_EXIF_EXTS.has(lowerExt)) {
             const meta = await getMovMetadata(fullPath)
@@ -1852,7 +1898,8 @@ export async function enrichExifBackfill(
               lng = meta.lng
             }
           } else {
-            ;({ date, lat, lng } = await readPhotoMeta(fullPath))
+            ;({ date, offsetMin, lat, lng } = await readPhotoMeta(fullPath))
+            source = offsetMin !== null ? 'exif-offset' : 'exif'
           }
 
           if (wasChecked === 1) {
@@ -1867,12 +1914,20 @@ export async function enrichExifBackfill(
               d.toLocaleString('default', { month: 'long' }),
               lat,
               lng,
+              source,
+              offsetMin,
               fullPath,
               rowVolumeId
             )
             corrected++
-          } else if (lat !== null) {
-            updateGpsOnlyStmt.run(lat, lng, fullPath, rowVolumeId)
+          } else {
+            if (lat !== null) updateGpsOnlyStmt.run(lat, lng, fullPath, rowVolumeId)
+            const st = await fs.promises.stat(fullPath)
+            const fsDate = fsEarliest(st.mtimeMs, st.birthtimeMs)
+            const d = new Date(fsDate.ms)
+            if (fsDate.source === 'birthtime' && isUsableCaptureDate(d)) {
+              updateBirthtimeStmt.run(d.toISOString(), d.getFullYear().toString(), d.toLocaleString('default', { month: 'long' }), fullPath, rowVolumeId)
+            }
           }
         } catch {
           /* unreadable, or simply has no metadata - the mtime date stands */
@@ -2189,6 +2244,7 @@ export async function updateFileInPlace(filePath: string, statInput?: fs.Stats):
     db.prepare(`
       UPDATE files
       SET size = ?, date = ?, year = ?, month = ?, thumb = ?, mtime = ?, ino = ?,
+          date_source = 'mtime', date_offset_min = NULL,
           volume_id = COALESCE(volume_id, ?)
       WHERE path = ? AND volume_id IS ?
     `).run(
@@ -2235,8 +2291,8 @@ export function recordCopiedFile(srcPath: string, destPath: string, destDrive: s
 
   db.prepare(
     `INSERT OR REPLACE INTO files
-       (path, name, ext, size, date, year, month, lat, lng, drive, thumb, favourited, locked, hidden, vault_path, trashed_at, mtime, exif_checked, volume_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, NULL, NULL, ?, ?, ?)`
+       (path, name, ext, size, date, year, month, lat, lng, drive, thumb, favourited, locked, hidden, vault_path, trashed_at, mtime, exif_checked, volume_id, date_source, date_offset_min)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, NULL, NULL, ?, ?, ?, ?, ?)`
   ).run(
     destPath,
     basename(destPath),
@@ -2251,7 +2307,10 @@ export function recordCopiedFile(srcPath: string, destPath: string, destDrive: s
     row?.thumb ?? null,
     Math.round(stat.mtimeMs),
     row ? 1 : 0,
-    getCachedVolumeId(destDrive)
+    getCachedVolumeId(destDrive),
+    // The carried date keeps its provenance; a fresh one is the copy's mtime.
+    row ? (row.date_source ?? 'mtime') : 'mtime',
+    row?.date_offset_min ?? null
   )
 }
 

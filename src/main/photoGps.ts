@@ -1,8 +1,11 @@
 import exifr from 'exifr'
+import { parseExifOffset, wallAtOffset } from './captureTime.ts'
 
 /** Capture date and position read from a photo's EXIF. */
 export interface PhotoMeta {
   date: Date | null
+  /** Minutes east of UTC from OffsetTimeOriginal; null = not recorded. */
+  offsetMin: number | null
   lat: number | null
   lng: number | null
 }
@@ -19,12 +22,15 @@ export async function readPhotoMeta(input: string | Buffer): Promise<PhotoMeta> 
     // GPSLongitude are unsigned, and with only those picked exifr had no sign
     // to apply: every photo west of Greenwich or south of the equator was
     // stored at its mirror image (Mountain View landed in China).
-    pick: ['DateTimeOriginal', 'GPSLatitude', 'GPSLatitudeRef', 'GPSLongitude', 'GPSLongitudeRef'],
+    pick: ['DateTimeOriginal', 'OffsetTimeOriginal', 'GPSLatitude', 'GPSLatitudeRef', 'GPSLongitude', 'GPSLongitudeRef'],
     gps: true
   })
-  if (!exif) return { date: null, lat: null, lng: null }
+  if (!exif) return { date: null, offsetMin: null, lat: null, lng: null }
+  const wall = exif.DateTimeOriginal ? new Date(exif.DateTimeOriginal) : null
+  const offsetMin = parseExifOffset(exif.OffsetTimeOriginal)
   return {
-    date: exif.DateTimeOriginal ? new Date(exif.DateTimeOriginal) : null,
+    date: wall && offsetMin !== null ? wallAtOffset(wall, offsetMin) : wall,
+    offsetMin: wall ? offsetMin : null,
     lat: typeof exif.latitude === 'number' ? exif.latitude : null,
     lng: typeof exif.longitude === 'number' ? exif.longitude : null
   }

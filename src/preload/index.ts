@@ -190,6 +190,8 @@ const api = {
     resolved: string
     missingRoot: string | null
   }> => ipcRenderer.invoke('media-status', filePath),
+  dateProvenance: (filePath: string): Promise<{ source: string | null; offsetMin: number | null }> =>
+    ipcRenderer.invoke('date-provenance', filePath),
   favouritePaths: () => ipcRenderer.invoke('favourite-paths'),
   playMpv: (
     filePath: string,

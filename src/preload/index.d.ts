@@ -252,6 +252,7 @@ declare global {
         resolved: string
         missingRoot: string | null
       }>
+      dateProvenance: (filePath: string) => Promise<{ source: string | null; offsetMin: number | null }>
       cancelIndexFolder: () => Promise<boolean>
       favouritePaths: () => Promise<string[]>
       playMpv: (

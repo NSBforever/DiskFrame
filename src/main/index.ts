@@ -82,6 +82,7 @@ import {
   reconcileDriveLetterForVolume,
   backupBeforeMigration,
   getFavouritePaths,
+  getDateProvenance,
   catalogueDbPath
 } from './scanner'
 import type { LibraryQuery } from './libraryQuery'
@@ -2141,6 +2142,9 @@ app.whenReady().then(() => {
    * preview and the viewer cannot disagree about one path. Reports only - it
    * never deletes a record and never copies the file anywhere.
    */
+  ipcMain.handle('date-provenance', (_event, raw: unknown) =>
+    typeof raw === 'string' && raw.length < 32768 ? getDateProvenance(raw) : { source: null, offsetMin: null }
+  )
   ipcMain.handle('media-status', (_event, raw: unknown) => {
     const filePath = typeof raw === 'string' ? raw : ''
     if (!isSafeLocalPath(filePath)) return { status: 'missing', volumeKnown: false, resolved: filePath }
