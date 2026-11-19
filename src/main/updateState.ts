@@ -138,17 +138,70 @@ export function shouldAnnounce(state: UpdateState, opts: { busy: boolean; snooze
   return !(s && s.version === state.version && opts.now < s.until)
 }
 
+function timeAgo(t: number, now: number): string {
+  const m = Math.round((now - t) / 60000)
+  if (m < 1) return 'just now'
+  if (m < 60) return `${m} minute${m === 1 ? '' : 's'} ago`
+  const h = Math.round(m / 60)
+  if (h < 24) return `${h} hour${h === 1 ? '' : 's'} ago`
+  const d = Math.round(h / 24)
+  return `${d} day${d === 1 ? '' : 's'} ago`
+}
+
+/**
+ * The fact rows in the Settings Updates card. Every value comes from the
+ * state the main process pushed; the latest version is only ever one the
+ * updater actually saw, never assumed.
+ */
+export function updateFacts(
+  state: UpdateState,
+  now: number
+): { installed: string; latest: string; lastChecked: string } {
+  // Phase first: a version can be left over from an earlier check or failed download.
+  const latest =
+    state.phase === 'current'
+      ? state.currentVersion
+      : state.phase === 'checking'
+        ? 'Checking…'
+        : state.version
+          ? state.version
+          : state.phase === 'idle'
+            ? 'Not checked yet'
+            : state.phase === 'unsupported'
+              ? 'Not checked'
+              : 'Unknown'
+  const lastChecked = state.checkedAt ? timeAgo(state.checkedAt, now) : 'Never'
+  return { installed: state.currentVersion, latest, lastChecked }
+}
+
+/** The status chip in the Updates card header: the phase in two words, and how it should read. */
+export function updateChip(state: UpdateState): {
+  label: string
+  tone: 'neutral' | 'ok' | 'warn' | 'danger'
+} {
+  switch (state.phase) {
+    case 'unsupported':
+      return { label: state.reason === 'safe-mode' ? 'Off' : 'Development build', tone: 'neutral' }
+    case 'idle':
+      return { label: 'Not checked', tone: 'neutral' }
+    case 'checking':
+      return { label: 'Checking…', tone: 'neutral' }
+    case 'current':
+      return { label: 'Up to date', tone: 'ok' }
+    case 'available':
+      return { label: 'Update available', tone: 'warn' }
+    case 'downloading':
+      return { label: `Downloading ${Math.round(state.percent ?? 0)}%`, tone: 'neutral' }
+    case 'ready':
+      return { label: 'Ready to install', tone: 'ok' }
+    case 'error':
+      return { label: state.version ? 'Download failed' : 'Check failed', tone: 'danger' }
+  }
+}
+
 /** One line for Settings: what the last check found. */
 export function statusLine(state: UpdateState, now: number): string {
-  const ago = (t: number): string => {
-    const m = Math.round((now - t) / 60000)
-    if (m < 1) return 'just now'
-    if (m < 60) return `${m} minute${m === 1 ? '' : 's'} ago`
-    const h = Math.round(m / 60)
-    if (h < 24) return `${h} hour${h === 1 ? '' : 's'} ago`
-    const d = Math.round(h / 24)
-    return `${d} day${d === 1 ? '' : 's'} ago`
-  }
+  const ago = (t: number): string => timeAgo(t, now)
   switch (state.phase) {
     case 'unsupported':
       return state.reason === 'safe-mode' ? 'Updates are off in diagnostic mode.' : 'This is a development build; it does not check for updates.'

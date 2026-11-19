@@ -1,34 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react'
+import { CalendarDays, CalendarOff } from 'lucide-react'
 import type { CalendarStatus } from '../../../main/calendarTypes'
-
-function ago(iso: string | null, now: number): string {
-  if (!iso) return 'not yet'
-  const s = Math.max(0, Math.round((now - Date.parse(iso)) / 1000))
-  if (s < 60) return 'just now'
-  if (s < 3600) return `${Math.round(s / 60)} min ago`
-  if (s < 86400) return `${Math.round(s / 3600)} h ago`
-  return new Date(iso).toLocaleDateString()
-}
-
-function statusLine(s: CalendarStatus, now: number): string {
-  switch (s.state) {
-    case 'unconfigured':
-      return s.message ?? 'Not available in this build.'
-    case 'disconnected':
-      return s.message ? `Not connected. ${s.message}` : 'Not connected.'
-    case 'connecting':
-      return s.message ?? 'Waiting for Google…'
-    case 'syncing':
-      return 'Syncing…'
-    case 'connected':
-      return `Connected${s.email ? ` as ${s.email}` : ''}. Last synced ${ago(s.lastSyncAt, now)} · ${s.eventCount.toLocaleString()} events saved.`
-    default:
-      return `${s.message ?? ''} Last synced ${ago(s.lastSyncAt, now)}.`.trim()
-  }
-}
+import { calendarCard, calendarStatusLine } from '../../../main/calendarView'
+import { SettingsCard, SettingRow, SettingsSwitch, SettingsSlider } from './SettingsCard'
 
 /** The Google Calendar card in Settings. Everything it shows comes from the
- *  main process's status; it never sees a token. */
+ *  main process's status; it never sees a token. Which of the five card
+ *  states a status is, and its chip, is decided in main/calendarView.ts. */
 export function CalendarSettings(): React.JSX.Element {
   const [s, setS] = useState<CalendarStatus | null>(null)
   const [now, setNow] = useState(Date.now)
@@ -47,9 +25,10 @@ export function CalendarSettings(): React.JSX.Element {
   }, [])
 
   const state = s?.state
-  const hasAccount = state === 'connected' || state === 'syncing' || state === 'offline' || state === 'error' || state === 'expired'
+  const card = s ? calendarCard(s) : null
+  const kind = card?.kind
+  const hasAccount = kind === 'connected' || kind === 'expired' || kind === 'failed'
   const busy = state === 'connecting' || state === 'syncing'
-  const isProblem = state === 'expired' || state === 'error'
 
   const disconnect = (): void => {
     if (!confirming) {
@@ -62,93 +41,123 @@ export function CalendarSettings(): React.JSX.Element {
   }
 
   return (
-    <section className="glass-panel settings-card calendar-card" aria-labelledby="calendar-heading">
-      <h3 id="calendar-heading" className="settings-heading">
-        Google Calendar
-      </h3>
-      <div className="settings-field">
-        <div className="settings-hint">
-          Shows your calendar events beside the photos and videos taken during them. Read-only: DiskFrame never changes your
-          calendar, and nothing about your files is ever sent to Google.
-        </div>
-        <div className="settings-field-head">
-          <div className={`settings-status${isProblem ? ' update-notice-error' : ''}`} role="status" aria-live="polite" data-calendar-state={state ?? ''}>
-            {s ? statusLine(s, now) : ' '}
-          </div>
-          <div className="settings-actions">
-            {(state === 'disconnected' || state === 'unconfigured' || state === 'connecting') && (
-              <button
-                type="button"
-                className="df-button df-button-primary"
-                disabled={state !== 'disconnected'}
-                onClick={() => void window.api.calendarConnect().then(setS)}
-              >
-                {state === 'connecting' ? 'Connecting…' : 'Connect Google Calendar'}
-              </button>
-            )}
-            {state === 'expired' && (
-              <button type="button" className="df-button df-button-primary" onClick={() => void window.api.calendarConnect().then(setS)}>
-                Reconnect
-              </button>
-            )}
-            {hasAccount && state !== 'expired' && (
-              <button type="button" className="df-button" disabled={busy} onClick={() => void window.api.calendarSyncNow().then(setS)}>
-                {state === 'syncing' ? 'Syncing…' : 'Sync Now'}
-              </button>
-            )}
-            {hasAccount && (
-              <button type="button" className={`df-button${confirming ? ' df-button-primary' : ' df-button-quiet'}`} disabled={busy} onClick={disconnect}>
-                {confirming ? 'Confirm Disconnect' : 'Disconnect'}
-              </button>
-            )}
+    <SettingsCard
+      id="calendar"
+      icon={<CalendarDays size={16} />}
+      title="Google Calendar"
+      description="Shows your events beside the photos and videos taken during them. Read-only: DiskFrame never changes your calendar, and nothing about your files is sent to Google."
+      chip={card ? { label: card.chip, tone: card.tone } : undefined}
+      className={`calendar-card${kind === 'unavailable' ? ' is-unavailable' : ''}`}
+    >
+      {kind === 'unavailable' && s ? (
+        // Nothing to press: a build without a Google client cannot connect, so
+        // no button is drawn that looks like it might.
+        <div className="settings-notice" role="status" data-calendar-state={state}>
+          <CalendarOff size={18} aria-hidden="true" className="settings-notice-icon" />
+          <div>
+            <div className="settings-notice-title">{calendarStatusLine(s, now)}</div>
+            <div className="settings-hint">
+              There is nothing to connect here. Your library and photos are not affected.
+            </div>
           </div>
         </div>
-      </div>
+      ) : (
+        <div className="settings-row settings-row--stack">
+          <div className="settings-row-head settings-row-head--wrap">
+            <div
+              className={`settings-status${card && card.tone !== 'neutral' && card.tone !== 'ok' ? ` is-${card.tone}` : ''}`}
+              role="status"
+              aria-live="polite"
+              data-calendar-state={state ?? ''}
+            >
+              {s ? calendarStatusLine(s, now) : ' '}
+            </div>
+            <div className="settings-actions">
+              {kind === 'disconnected' && (
+                <button
+                  type="button"
+                  className="df-button df-button-primary"
+                  disabled={!card?.canConnect}
+                  onClick={() => void window.api.calendarConnect().then(setS)}
+                >
+                  {state === 'connecting' ? 'Connecting…' : 'Connect Google Calendar'}
+                </button>
+              )}
+              {kind === 'expired' && (
+                <button
+                  type="button"
+                  className="df-button df-button-primary"
+                  onClick={() => void window.api.calendarConnect().then(setS)}
+                >
+                  Reconnect
+                </button>
+              )}
+              {hasAccount && kind !== 'expired' && (
+                <button
+                  type="button"
+                  className="df-button"
+                  disabled={busy}
+                  onClick={() => void window.api.calendarSyncNow().then(setS)}
+                >
+                  {state === 'syncing' ? 'Syncing…' : kind === 'failed' ? 'Try Again' : 'Sync Now'}
+                </button>
+              )}
+              {hasAccount && (
+                <button
+                  type="button"
+                  className={`df-button${confirming ? ' df-button-primary' : ' df-button-quiet'}`}
+                  disabled={busy}
+                  onClick={disconnect}
+                >
+                  {confirming ? 'Confirm Disconnect' : 'Disconnect'}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {hasAccount && s && (
         <>
-          <div className="settings-field">
-            <div className="settings-field-head">
-              <label htmlFor="settings-calendar-autosync" className="settings-label">
-                Sync automatically
-              </label>
-              <input
-                id="settings-calendar-autosync"
-                className="settings-switch"
-                type="checkbox"
-                checked={s.autoSync}
-                onChange={(e) => void window.api.calendarSetPrefs({ autoSync: e.target.checked }).then(setS)}
-              />
-            </div>
-            <div className="settings-hint">Every 30 minutes while DiskFrame is open. Saved events stay available offline.</div>
-          </div>
-          <div className="settings-field">
-            <div className="settings-field-head">
+          <SettingRow
+            label="Sync automatically"
+            htmlFor="settings-calendar-autosync"
+            hint="Every 30 minutes while DiskFrame is open. Saved events stay available offline."
+          >
+            <SettingsSwitch
+              id="settings-calendar-autosync"
+              checked={s.autoSync}
+              onChange={(on) => void window.api.calendarSetPrefs({ autoSync: on }).then(setS)}
+            />
+          </SettingRow>
+          <div className="settings-row settings-row--stack">
+            <div className="settings-row-head">
               <label htmlFor="settings-calendar-buffer" className="settings-label">
                 Time around an event
               </label>
-              <span className="settings-value">{s.bufferMin} min</span>
+              <span className="settings-value" aria-hidden="true">
+                {s.bufferMin} min
+              </span>
             </div>
-            <input
+            <SettingsSlider
               id="settings-calendar-buffer"
-              className="settings-slider"
-              type="range"
-              min="0"
-              max="120"
-              step="5"
+              min={0}
+              max={120}
+              step={5}
               value={s.bufferMin}
+              aria-valuetext={`${s.bufferMin} minutes`}
               onChange={(e) => setS({ ...s, bufferMin: Number(e.target.value) })}
               onPointerUp={(e) => void window.api.calendarSetPrefs({ bufferMin: Number((e.target as HTMLInputElement).value) }).then(setS)}
               onKeyUp={(e) => void window.api.calendarSetPrefs({ bufferMin: Number((e.target as HTMLInputElement).value) }).then(setS)}
             />
             <div className="settings-hint">Photos and videos taken this long before or after an event can be suggested for it.</div>
           </div>
-          <div className="settings-hint">
-            Disconnect removes the sign-in and the saved events from this PC. Files you confirmed for an event stay linked, so
-            reconnecting brings them back.
-          </div>
+          <p className="settings-footnote">
+            Disconnect removes the sign-in and the saved events from this PC. Files you confirmed
+            for an event stay linked, so reconnecting brings them back.
+          </p>
         </>
       )}
-    </section>
+    </SettingsCard>
   )
 }

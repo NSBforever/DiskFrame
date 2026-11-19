@@ -95,19 +95,6 @@
   margin-top: 10px;
 }
 
-.settings-status {
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--app-fg, #f2f2f0);
-}
-.settings-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .update-notice {
     animation: none;
