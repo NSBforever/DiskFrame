@@ -109,8 +109,28 @@ const api = {
       ipcRenderer.removeListener('calendar-status', listener)
     }
   },
+  // Which drives Calendar matching may read (by volume, never by letter).
+  calendarConsent: () => ipcRenderer.invoke('calendar-consent'),
+  setCalendarConsent: (volumeId: string, allowed: boolean) => ipcRenderer.invoke('set-calendar-consent', volumeId, allowed),
+  // All Drives: which indexed volumes are combined (stored by volume id).
+  driveScope: () => ipcRenderer.invoke('drive-scope'),
+  setDriveScope: (scope: unknown) => ipcRenderer.invoke('set-drive-scope', scope),
+  // Events: Places, Trips and collections, found and kept on this machine only.
+  eventsList: (drive: string) => ipcRenderer.invoke('events-list', drive),
+  eventsDiscover: (drive: string) => ipcRenderer.invoke('events-discover', drive),
+  collectionFiles: (id: number) => ipcRenderer.invoke('collection-files', id),
+  collectionCover: (ref: { path: string; volumeId: string }) => ipcRenderer.invoke('collection-cover', ref),
+  collectionCreate: (c: unknown) => ipcRenderer.invoke('collection-create', c),
+  collectionUpdate: (u: unknown) => ipcRenderer.invoke('collection-update', u),
+  collectionAdd: (id: number, refs: unknown) => ipcRenderer.invoke('collection-add', { id, refs }),
+  collectionRemove: (id: number, refs: unknown) => ipcRenderer.invoke('collection-remove', { id, refs }),
+  collectionMerge: (into: number, from: number) => ipcRenderer.invoke('collection-merge', { into, from }),
+  collectionSplit: (id: number, refs: unknown, name: string) => ipcRenderer.invoke('collection-split', { id, refs, name }),
+  collectionDelete: (id: number) => ipcRenderer.invoke('collection-delete', id),
+  discoveryPrefs: () => ipcRenderer.invoke('discovery-prefs'),
+  setDiscoveryPrefs: (p: unknown) => ipcRenderer.invoke('set-discovery-prefs', p),
   readFileBase64: (p: string) => ipcRenderer.invoke('read-file-base64', p),
-  onThumbReady: (cb: (d: { filePath: string; thumbPath: string }) => void) => {
+  onThumbReady: (cb: (d: { filePath: string; thumbPath: string; volumeId?: string | null }) => void) => {
     const listener = (_e: unknown, d: any) => cb(d)
     ipcRenderer.on('thumb-ready', listener)
     return () => {
@@ -202,21 +222,22 @@ const api = {
   /** Why one file would not paint - unavailable, unreadable, or decodable but
    *  broken. Reports only; never deletes a record or moves the file. */
   mediaStatus: (
-    filePath: string
+    filePath: string,
+    volumeId?: string | null
   ): Promise<{
     status: 'ok' | 'drive-offline' | 'volume-mismatch' | 'folder-missing' | 'no-access' | 'missing'
     volumeKnown: boolean
     resolved: string
     missingRoot: string | null
-  }> => ipcRenderer.invoke('media-status', filePath),
-  dateProvenance: (filePath: string): Promise<{ source: string | null; offsetMin: number | null }> =>
-    ipcRenderer.invoke('date-provenance', filePath),
+  }> => ipcRenderer.invoke('media-status', filePath, volumeId),
+  dateProvenance: (filePath: string, volumeId?: string | null): Promise<{ source: string | null; offsetMin: number | null }> =>
+    ipcRenderer.invoke('date-provenance', filePath, volumeId),
   favouritePaths: () => ipcRenderer.invoke('favourite-paths'),
   playMpv: (
     filePath: string,
     relativeBounds: { left: number; top: number; width: number; height: number },
-    opts: { deferShow?: boolean } = {}
-  ) => ipcRenderer.invoke('start-mpv', { filePath, relativeBounds, deferShow: !!opts.deferShow }),
+    opts: { deferShow?: boolean; volumeId?: string | null } = {}
+  ) => ipcRenderer.invoke('start-mpv', { filePath, relativeBounds, deferShow: !!opts.deferShow, volumeId: opts.volumeId ?? null }),
   /** Shows a session started with deferShow, and unpauses it. */
   revealMpv: () => ipcRenderer.send('mpv-reveal'),
   // Used by the control overlay that runs inside the mpv window.

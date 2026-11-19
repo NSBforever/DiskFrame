@@ -1,6 +1,24 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 import type { UpdateMode, UpdateState } from '../main/updateState'
 import type { CalendarStatus, DayFile, EventDetail, EventsList, LinkOp } from '../main/calendarTypes'
+import type { CollectionCard, CollectionKind, CollectionStatus, FileRef } from '../main/collections'
+import type { DiscoveryPrefs } from '../main/discovery'
+import type { DriveScope } from '../main/driveScope'
+
+interface DriveScopeInfo {
+  scope: DriveScope
+  volumes: {
+    volumeId: string
+    count: number
+    /** Letter it was last seen at (volume_drives). */
+    letter: string | null
+    label: string | null
+    lastSeen: string | null
+    /** Where it is mounted now; null = not connected. */
+    mountedLetter: string | null
+    included: boolean
+  }[]
+}
 
 interface DriveInfo {
   name: string
@@ -164,7 +182,8 @@ declare global {
       onFavouriteToggled: (callback: (data: { filePath: string; isFav: boolean }) => void) => () => void
       openFile: (filePath: string) => void
       readFileBase64: (filePath: string) => Promise<string>
-      onThumbReady: (callback: (data: { filePath: string; thumbPath: string }) => void) => () => void
+      /** volumeId: the volume the thumbnail was made from (the one mounted at that letter). */
+      onThumbReady: (callback: (data: { filePath: string; thumbPath: string; volumeId?: string | null }) => void) => () => void
       calendarStatus: () => Promise<CalendarStatus>
       calendarConnect: () => Promise<CalendarStatus>
       calendarSyncNow: () => Promise<CalendarStatus>
@@ -176,6 +195,32 @@ declare global {
       calendarCover: (path: string) => Promise<string | null>
       calendarLink: (l: { op: LinkOp; path: string; calendarId: string; eventId: string }) => Promise<boolean>
       onCalendarStatus: (callback: (s: CalendarStatus) => void) => () => void
+      calendarConsent: () => Promise<(Omit<DriveScopeInfo['volumes'][number], 'included'> & { allowed: boolean })[]>
+      setCalendarConsent: (volumeId: string, allowed: boolean) => Promise<boolean>
+      driveScope: () => Promise<DriveScopeInfo>
+      setDriveScope: (scope: DriveScope) => Promise<DriveScopeInfo>
+      eventsList: (drive: string) => Promise<{ cards: CollectionCard[]; volumeIds: string[]; prefs: DiscoveryPrefs }>
+      eventsDiscover: (drive: string) => Promise<{ scope: string; items: number; added: number; updated: number; removed: number }[]>
+      collectionFiles: (id: number) => Promise<ScannedFile[]>
+      collectionCover: (ref: FileRef) => Promise<string | null>
+      collectionCreate: (c: { kind: CollectionKind; name: string; refs?: FileRef[] }) => Promise<number | null>
+      collectionUpdate: (u: {
+        id: number
+        name?: string | null
+        note?: string | null
+        status?: CollectionStatus
+        kind?: CollectionKind
+        cover?: FileRef | null
+        startMs?: number | null
+        endMs?: number | null
+      }) => Promise<boolean>
+      collectionAdd: (id: number, refs: FileRef[]) => Promise<number>
+      collectionRemove: (id: number, refs: FileRef[]) => Promise<number>
+      collectionMerge: (into: number, from: number) => Promise<boolean>
+      collectionSplit: (id: number, refs: FileRef[], name: string) => Promise<number | null>
+      collectionDelete: (id: number) => Promise<boolean>
+      discoveryPrefs: () => Promise<DiscoveryPrefs>
+      setDiscoveryPrefs: (p: Partial<DiscoveryPrefs>) => Promise<DiscoveryPrefs>
       transcodeVideo: (inputPath: string) => Promise<string>
       onTranscodeDone: (callback: (data: { inputPath: string; outPath: string }) => void) => () => void
       onTranscodeProgress: (
@@ -258,19 +303,19 @@ declare global {
           volumeMatches: boolean | null
         }[]
       >
-      mediaStatus: (filePath: string) => Promise<{
+      mediaStatus: (filePath: string, volumeId?: string | null) => Promise<{
         status: 'ok' | 'drive-offline' | 'volume-mismatch' | 'folder-missing' | 'no-access' | 'missing'
         volumeKnown: boolean
         resolved: string
         missingRoot: string | null
       }>
-      dateProvenance: (filePath: string) => Promise<{ source: string | null; offsetMin: number | null }>
+      dateProvenance: (filePath: string, volumeId?: string | null) => Promise<{ source: string | null; offsetMin: number | null }>
       cancelIndexFolder: () => Promise<boolean>
       favouritePaths: () => Promise<string[]>
       playMpv: (
         filePath: string,
         relativeBounds: { left: number; top: number; width: number; height: number },
-        opts?: { deferShow?: boolean }
+        opts?: { deferShow?: boolean; volumeId?: string | null }
       ) => Promise<void>
       revealMpv: () => void
       sendMpvCommand: (command: string, args: any[]) => void

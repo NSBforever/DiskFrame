@@ -1,6 +1,6 @@
 {
   "name": "diskframe",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "description": "Browse photos and videos straight off your drives, without importing them.",
   "main": "./out/main/index.js",
   "author": "Nagi Reddy SaiBaba",
@@ -13,7 +13,8 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
     "start": "electron-vite preview",
     "dev": "electron-vite dev",
-    "build": "npm run typecheck && electron-vite build",
+    "notices": "node scripts/third-party-notices.cjs",
+    "build": "npm run typecheck && npm run notices && electron-vite build",
     "postinstall": "electron-builder install-app-deps",
     "build:unpack": "npm run build && electron-builder --dir --publish never",
     "build:win": "npm run build && electron-builder --win --publish never",

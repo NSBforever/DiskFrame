@@ -6,6 +6,8 @@ import { basename } from 'path'
 import { sweepOrphans, thumbNames } from './cacheBudget'
 import { eventCards } from './calendarEvents'
 import type { CalDb } from './calendarStore'
+import { listCollections, collectionFiles, type ColDb } from './collections'
+import { runDiscovery, type DiscoveryScope } from './discovery'
 
 /**
  * Library reads on their own connection, off the main thread.
@@ -29,6 +31,11 @@ type Request =
   // The Events list: the Stage 7 matcher over the whole calendar, ~100-350 ms
   // on a 62k-file volume with ~7k events - far too long for the main thread.
   | { id: number; kind: 'events'; volumeId: string | null; bufferMin: number }
+  // Every volume with visible files, for the All Drives choices.
+  | { id: number; kind: 'volumes' }
+  // The Events section: collections joined to their files (~100k members at most).
+  | { id: number; kind: 'collections'; volumeIds: string[]; crossDrive: boolean }
+  | { id: number; kind: 'collectionFiles'; collectionId: number }
 
 const run = db.transaction((m: Request) => {
   if (m.kind === 'summary') return reads.summary(m.query)
@@ -36,6 +43,9 @@ const run = db.transaction((m: Request) => {
   if (m.kind === 'owed') return reads.owedThumbnails(m.volumeId, m.exts, m.maxAttempts, m.limit)
   if (m.kind === 'folders') return reads.folders(m.volumeId)
   if (m.kind === 'events') return eventCards(db as unknown as CalDb, m.volumeId, m.bufferMin)
+  if (m.kind === 'volumes') return reads.volumes()
+  if (m.kind === 'collections') return listCollections(db as unknown as ColDb, m.volumeIds, { crossDrive: m.crossDrive })
+  if (m.kind === 'collectionFiles') return collectionFiles(db as unknown as ColDb, m.collectionId)
   return reads.clusters(m.query, m.zoom)
 })
 
@@ -75,6 +85,7 @@ async function sweepThumbOrphans(m: SweepRequest): Promise<{ removed: number; fr
 }
 
 type CheckpointRequest = { id: number; kind: 'checkpoint' }
+type DiscoverRequest = { id: number; kind: 'discover'; scopes: DiscoveryScope[]; home: { lat: number; lng: number } | null }
 
 /**
  * The catalogue's WAL checkpoint, which the main connection no longer runs
@@ -82,16 +93,44 @@ type CheckpointRequest = { id: number; kind: 'checkpoint' }
  * checkpoint writes the database file.
  */
 let checkpointDb: Database.Database | null = null
-function checkpoint(): unknown {
+function writer(): Database.Database {
   checkpointDb ??= new Database(workerData.dbPath as string, { fileMustExist: true })
-  return checkpointDb.pragma('wal_checkpoint(PASSIVE)')
+  return checkpointDb
+}
+function checkpoint(): unknown {
+  return writer().pragma('wal_checkpoint(PASSIVE)')
 }
 
-parentPort?.on('message', async (m: Request | SweepRequest | CheckpointRequest) => {
+/**
+ * Places and Trips discovery: reads on the read-only connection, records
+ * suggestions on the writable one - none of it on the main thread. A scope
+ * whose files have not changed since its last run (same catalogue epoch, same
+ * home) is skipped.
+ */
+const discoveredAt = new Map<string, string>()
+function discover(m: DiscoverRequest): unknown {
+  const epoch = reads.version()
+  const todo = m.scopes.filter((s) => discoveredAt.get(s.scope) !== JSON.stringify([epoch, s.volumeIds, m.home]))
+  if (!todo.length) return []
+  const read = db.transaction(() =>
+    runDiscovery(db as unknown as ColDb, writer() as unknown as ColDb, todo, { home: m.home }, new Date().toISOString(), (t) => -new Date(t).getTimezoneOffset())
+  )
+  const out = read()
+  for (const s of todo) discoveredAt.set(s.scope, JSON.stringify([epoch, s.volumeIds, m.home]))
+  return out
+}
+
+parentPort?.on('message', async (m: Request | SweepRequest | CheckpointRequest | DiscoverRequest) => {
   const t = Date.now()
   try {
     const result =
-      m.kind === 'thumbOrphans' ? await sweepThumbOrphans(m) : m.kind === 'checkpoint' ? checkpoint() : run(m)
+      m.kind === 'thumbOrphans'
+        ? await sweepThumbOrphans(m)
+        : m.kind === 'checkpoint'
+          ? checkpoint()
+          : m.kind === 'discover'
+            ? discover(m)
+            : run(m)
     parentPort?.postMessage({ id: m.id, ok: true, result, ms: Date.now() - t })
   } catch (err) {
     parentPort?.postMessage({ id: m.id, ok: false, error: String(err) })

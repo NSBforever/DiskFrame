@@ -126,8 +126,9 @@ import { videoExts } from '../../main/validation'
 import UnresolvedFolders from './components/UnresolvedFolders'
 import AppearanceSetting from './components/AppearanceSetting'
 import { CalendarSettings } from './components/CalendarSettings'
-import { EventsSection } from './components/Events'
-import type { DayFile } from '../../main/calendarTypes'
+import { AddToCollectionDialog, EventsSection } from './components/Events'
+import { DriveScopeChip } from './components/AllDrives'
+import { ALL_DRIVES_KEY as ALL_DRIVES } from '../../main/libraryQuery'
 import AboutConnect from './components/AboutConnect'
 import GlassSelect from './components/GlassSelect'
 import { UpdateNotice, UpdateSettings } from './components/Updates'
@@ -178,7 +179,7 @@ import {
   PanelLeftClose,
   Maximize2,
   Minimize2,
-  CalendarHeart,
+  Compass,
   LayoutGrid,
   Monitor,
   CirclePlay,
@@ -239,6 +240,8 @@ export interface ScannedFile {
    *  pre-identity legacy row. Passed back on single-file actions so a path
    *  shared by two different volumes can never be acted on ambiguously. */
   volume_id?: string | null
+  /** All Drives: this row's drive is not the one mounted at its letter now (set by the main process). */
+  offline?: boolean
 }
 
 const photoExts = ['.jpg', '.jpeg', '.png', '.webp', '.heic']
@@ -279,8 +282,7 @@ const ScanProgressDisplay: React.FC<{ scanning: boolean; scanCount: number }> = 
   )
 })
 function thumbUrl(file: ScannedFile): string {
-  const src = file.thumb || file.path
-  return mediaUrl(src)
+  return file.thumb ? mediaUrl(file.thumb) : mediaUrl(file.path, file.volume_id)
 }
 
 export const FileTile = React.memo(({
@@ -1226,17 +1228,16 @@ const MainContentArea: React.FC<{
       <EventsSection
         drive={selectedDrive}
         onOpenSettings={onOpenSettings}
-        // A DayFile carries every gallery-row field, so it is a ScannedFile.
-        renderTile={(f: DayFile, list: DayFile[], size: number) => (
+        renderTile={(f: ScannedFile, list: ScannedFile[], size: number) => (
           <FileTile
-            file={f as unknown as ScannedFile}
+            file={f}
             thumbKey={f.thumb}
-            onOpen={(file, e) => handleTileOpen(file, list as unknown as ScannedFile[], e)}
+            onOpen={(file, e) => handleTileOpen(file, list, e)}
             onFav={handleFav}
             isFav={favourites.has(f.path)}
             isSelected={false}
             onSelect={() => {}}
-            onContextMenu={(file, e) => handleTileContextMenu(file, list as unknown as ScannedFile[], e)}
+            onContextMenu={(file, e) => handleTileContextMenu(file, list, e)}
             tileSize={size}
           />
         )}
@@ -1255,6 +1256,7 @@ const MainContentArea: React.FC<{
     )
   }
 
+  const driveTitle = selectedDrive === ALL_DRIVES ? 'All Drives' : selectedDrive
   if (selectedDrive && !hasFiles && activeNav !== 'archive' && activeNav !== 'trash' && activeNav !== 'settings' && activeNav !== 'places') {
     const loading = libraryState !== 'ready' || scanning
     const diagnostic = !!runtimeMode?.safeMode
@@ -1266,7 +1268,7 @@ const MainContentArea: React.FC<{
               <div style={{ height: '100%', width: '40%', background: 'linear-gradient(90deg, transparent, #e11d2e, transparent)', animation: 'shimmer 1.4s ease-in-out infinite' }} />
             </div>
             <div style={{ fontSize: '12px', color: 'var(--app-fg, #f2f2f0)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px' }}>
-              Loading {selectedDrive}…
+              Loading {driveTitle}…
             </div>
             <div style={{ fontSize: '10px', color: 'var(--app-fg-dim, #8a8a8f)' }}>
               {scanning ? `${scanCount.toLocaleString()} files mapped so far` : 'Reading the cached index'}
@@ -1279,7 +1281,7 @@ const MainContentArea: React.FC<{
               Diagnostic mode — your library is not loaded
             </div>
             <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', maxWidth: '520px', lineHeight: 1.6 }}>
-              This window is using an isolated diagnostic database, so {selectedDrive} has no records here.
+              This window is using an isolated diagnostic database, so {driveTitle} has no records here.
               Your real library is untouched. Close this window and open <strong style={{ color: 'var(--app-fg, #f2f2f0)' }}>DiskFrame</strong> (not
               “DiskFrame — Diagnostics”) to browse it.
             </div>
@@ -1289,10 +1291,10 @@ const MainContentArea: React.FC<{
           <>
             <AlertTriangle size={40} style={{ color: 'var(--app-fg-muted, #52525b)' }} />
             <div style={{ fontSize: '13px', color: 'var(--app-fg, #f2f2f0)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px' }}>
-              Could not verify {selectedDrive}
+              Could not verify {driveTitle}
             </div>
             <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', maxWidth: '460px', lineHeight: 1.6 }}>
-              DiskFrame could not confirm which physical drive is connected at {selectedDrive} right now, so
+              DiskFrame could not confirm which physical drive is connected at {driveTitle} right now, so
               its catalogue is not shown rather than risking someone else&apos;s. Reconnecting the drive or
               trying again usually resolves this.
             </div>
@@ -1301,21 +1303,21 @@ const MainContentArea: React.FC<{
           <>
             <FolderOpen size={40} style={{ color: 'var(--app-fg-muted, #52525b)' }} />
             <div style={{ fontSize: '13px', color: 'var(--app-fg, #f2f2f0)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px' }}>
-              {selectedDrive} has not been indexed yet
+              {driveTitle} has not been indexed yet
             </div>
             <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', maxWidth: '460px', lineHeight: 1.6 }}>
               Opening a drive only reads the existing index — it never scans on its own. Scanning a large
               drive reads every folder and can take a long time.
             </div>
             <button onClick={onReconcile} className="cred-button" style={{ marginTop: '4px', padding: '8px 18px', background: '#e11d2e', borderColor: '#e11d2e', color: '#fff', fontWeight: 700 }}>
-              Scan {selectedDrive} now
+              Scan {driveTitle} now
             </button>
           </>
         ) : (
           <>
             <FolderOpen size={40} style={{ color: 'var(--app-fg-muted, #52525b)' }} />
             <div style={{ fontSize: '13px', color: 'var(--app-fg, #f2f2f0)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1px' }}>
-              Nothing matches in {selectedDrive}
+              Nothing matches in {driveTitle}
             </div>
             <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', maxWidth: '460px', lineHeight: 1.6 }}>
               {driveOpened ? `${driveOpened.indexed.toLocaleString()} records are indexed for this drive, but none match the current filter or search.` : 'No records match the current filter or search.'}
@@ -1331,9 +1333,11 @@ const MainContentArea: React.FC<{
       <div className="view-transition-enter" style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, ...animationStyle }}>
         {/* Above the grid, because it explains why a block of it is unavailable
             and offers the one action that fixes the whole block. */}
-        <div style={{ padding: '0 20px' }}>
-          <UnresolvedFolders drive={selectedDrive} onRelinked={onFoldersRelinked} refreshKey={unresolvedKey} />
-        </div>
+        {selectedDrive !== ALL_DRIVES && (
+          <div style={{ padding: '0 20px' }}>
+            <UnresolvedFolders drive={selectedDrive} onRelinked={onFoldersRelinked} refreshKey={unresolvedKey} />
+          </div>
+        )}
         <PhotoGrid
           groups={libraryGroups}
           getRow={getRow}
@@ -1389,7 +1393,7 @@ const MainContentArea: React.FC<{
         {/* Only in the library itself; Settings and Map have their own pages. */}
         {activeNav !== 'trash' && (
           <div style={{ padding: '0 20px' }}>
-            <UnresolvedFolders drive={selectedDrive} onRelinked={onFoldersRelinked} />
+            {selectedDrive !== ALL_DRIVES && <UnresolvedFolders drive={selectedDrive} onRelinked={onFoldersRelinked} />}
           </div>
         )}
         <Virtuoso
@@ -1823,6 +1827,7 @@ export default function App(): React.JSX.Element {
   }, [sidebarCollapsed])
   const [searchQuery, setSearchQuery] = useState('')
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; file: ScannedFile; currentList: ScannedFile[] } | null>(null)
+  const [addToCollection, setAddToCollection] = useState<ScannedFile[] | null>(null)
   const [fileToDelete, setFileToDelete] = useState<ScannedFile | null>(null)
   const [showBatchDeleteConfirm, setShowBatchDeleteConfirm] = useState(false)
 
@@ -1912,10 +1917,10 @@ export default function App(): React.JSX.Element {
   const clipboardActionRef = useRef<'copy' | 'cut' | null>(null)
 
   // Queue to buffer thumbnail ready events, preventing multiple full re-renders
-  const thumbQueueRef = useRef<{ filePath: string; thumbPath: string; tries?: number }[]>([])
+  const thumbQueueRef = useRef<{ filePath: string; thumbPath: string; volumeId?: string | null; tries?: number }[]>([])
   // Held in a ref so the drain interval (created once) always reaches the
   // current library instance without being torn down and rebuilt.
-  const patchLibraryThumbRef = useRef<(path: string, thumb: string) => boolean>(() => false)
+  const patchLibraryThumbRef = useRef<(path: string, thumb: string, volumeId?: string | null) => boolean>(() => false)
   const [thumbVersion, setThumbVersion] = useState(0)
   // Each Years card's four preview rows; see the effect that fills it.
   const [yearPreviews, setYearPreviews] = useState<Record<string, ScannedFile[]>>({})
@@ -1983,7 +1988,6 @@ export default function App(): React.JSX.Element {
       const batch = [...thumbQueueRef.current]
       thumbQueueRef.current = []
 
-      const batchMap = new Map(batch.map(item => [item.filePath, item.thumbPath]))
 
       // Thumbnails don't change grouping or order, so patch the resident row in
       // place and bump a version counter rather than re-querying (which would
@@ -1994,23 +1998,29 @@ export default function App(): React.JSX.Element {
       // it is retried a few times (its page may still be in flight) and then
       // dropped - the page query will read the thumb from SQLite anyway.
       let patched = false
-      const unmatched: { filePath: string; thumbPath: string; tries?: number }[] = []
+      const unmatched: { filePath: string; thumbPath: string; volumeId?: string | null; tries?: number }[] = []
       for (const item of batch) {
-        const thumbPath = batchMap.get(item.filePath)!
-        if (patchLibraryThumbRef.current(item.filePath, thumbPath)) { patched = true; continue }
+        const { thumbPath, volumeId } = item
+        if (patchLibraryThumbRef.current(item.filePath, thumbPath, volumeId)) { patched = true; continue }
         const tries = (item.tries ?? 0) + 1
-        if (tries <= 10) unmatched.push({ filePath: item.filePath, thumbPath, tries })
+        if (tries <= 10) unmatched.push({ filePath: item.filePath, thumbPath, volumeId, tries })
       }
       if (unmatched.length > 0) thumbQueueRef.current.unshift(...unmatched.slice(0, 2000))
       if (patched) setThumbVersion(v => v + 1)
 
+      // A thumbnail names the volume it came from; a row of another volume
+      // that shares the literal path (All Drives) never takes it.
+      const thumbFor = (f: ScannedFile): string | undefined => {
+        for (const item of batch) if (item.filePath === f.path && (item.volumeId == null || item.volumeId === f.volume_id)) return item.thumbPath
+        return undefined
+      }
       // Years cards hold their own rows, outside the page cache.
       setYearPreviews((prev) => {
         let changed = false
         const next: Record<string, ScannedFile[]> = {}
         for (const [year, rows] of Object.entries(prev)) {
           next[year] = rows.map((f) => {
-            const t = batchMap.get(f.path)
+            const t = thumbFor(f)
             if (!t || t === f.thumb) return f
             changed = true
             return { ...f, thumb: t }
@@ -2022,7 +2032,7 @@ export default function App(): React.JSX.Element {
       setTrashedFiles(prev => {
         let hasChanges = false
         const newFiles = prev.map(f => {
-          const t = batchMap.get(f.path)
+          const t = thumbFor(f)
           if (t) {
             hasChanges = true
             return { ...f, thumb: t }
@@ -2038,7 +2048,13 @@ export default function App(): React.JSX.Element {
 
   // Setup fully cleanable IPC listeners on mount and return cleanup callbacks
   useEffect(() => {
-    const unsubDrives = window.api.onDrivesUpdated((d) => setDrives(d as DriveInfo[]))
+    let mountedKey = ''
+    const unsubDrives = window.api.onDrivesUpdated((d) => {
+      setDrives(d as DriveInfo[])
+      const key = (d as { name: string; volumeId?: string | null }[]).map((x) => `${x.name}=${x.volumeId ?? ''}`).sort().join(',')
+      if (mountedKey && key !== mountedKey && currentDriveRef.current === ALL_DRIVES) window.api.openDrive(ALL_DRIVES)
+      mountedKey = key
+    })
     const unsubFavs = window.api.onFavouritesUpdated(({ drive, files }) => {
       // Scoped to one volume, never merged across drives (see getFavourites
       // in the main process). Tagged with the drive it was computed for, so
@@ -2533,7 +2549,7 @@ export default function App(): React.JSX.Element {
       { id: 'photos', label: 'Photos', icon: <ImageIcon size={18} />, isActive: activeNav === 'photos', onClick: () => setActiveNav('photos') },
       { id: 'videos', label: 'Videos', icon: <Film size={18} />, isActive: activeNav === 'videos', onClick: () => setActiveNav('videos') },
       { id: 'map', label: 'Map', icon: <MapIcon size={18} />, isActive: activeNav === 'map', onClick: () => setActiveNav('map') },
-      { id: 'events', label: 'Events', icon: <CalendarHeart size={18} />, isActive: activeNav === 'events', onClick: () => setActiveNav('events') },
+      { id: 'events', label: 'Events', icon: <Compass size={18} />, isActive: activeNav === 'events', onClick: () => setActiveNav('events') },
       { id: 'favourites', label: 'Favourites', icon: <Star size={18} />, isActive: activeNav === 'favourites', badge: favCount, onClick: () => setActiveNav('favourites') },
       { id: 'trash', label: 'Trash', icon: <Trash2 size={18} />, isActive: activeNav === 'trash', badge: trashCount, onClick: () => setActiveNav('trash') },
       { id: 'settings', label: 'Settings', icon: <Settings size={18} />, isActive: activeNav === 'settings', onClick: () => setActiveNav('settings') }
@@ -2673,6 +2689,13 @@ export default function App(): React.JSX.Element {
   }, [])
 
   const handleTileOpen = useCallback((file: ScannedFile, indexOrList: number | ScannedFile[], _e?: React.MouseEvent): void => {
+    // All Drives lists files whose drive is not connected (or whose letter
+    // another drive has now). They keep their thumbnail, but opening one would
+    // read whatever is at that path today - so it is never opened.
+    if (file.offline) {
+      setToastMsg(`${file.name} is on a drive that is not connected. Connect it to open this file.`)
+      return
+    }
     // The viewer's opening flight starts from this file's own tile. Not the
     // event target: "Open in Viewer" in the context menu would hand over the
     // menu item's rectangle. No visible tile -> no rect -> the viewer fades in.
@@ -2702,23 +2725,29 @@ export default function App(): React.JSX.Element {
     if (!lb) return
     // A view with its own array (favourites, trash) navigates that array.
     if (lb.list) {
-      const next = lb.index + delta
+      let next = lb.index + delta
+      while (next >= 0 && next < lb.list.length && lb.list[next].offline) next += delta
       if (next < 0 || next >= lb.list.length) return
       setLightbox({ file: lb.list[next], index: next, list: lb.list })
       return
     }
     if (!lib) return
-    const next = lb.index + delta
-    if (next < 0 || next >= lib.total) return
-    let row = lib.getRow(next)
-    if (!row) {
-      lib.ensureRange(next, next)
-      for (let i = 0; i < 24 && !row; i++) {
-        await new Promise((r) => setTimeout(r, 50))
-        row = libraryRef.current?.getRow(next)
+    // Steps over All Drives rows whose drive is not connected (see handleTileOpen).
+    for (let next = lb.index + delta, hops = 0; hops < 500; next += delta, hops++) {
+      if (next < 0 || next >= lib.total) return
+      let row = lib.getRow(next)
+      if (!row) {
+        lib.ensureRange(next, next)
+        for (let i = 0; i < 24 && !row; i++) {
+          await new Promise((r) => setTimeout(r, 50))
+          row = libraryRef.current?.getRow(next)
+        }
       }
+      if (!row) return
+      if (row.offline) continue
+      setLightbox({ file: row, index: next })
+      return
     }
-    if (row) setLightbox({ file: row, index: next })
   }, [])
 
   /**
@@ -2993,7 +3022,7 @@ export default function App(): React.JSX.Element {
             setToastMsg(`${selected.size} file${selected.size > 1 ? 's' : ''} cut to clipboard`)
           }
         } else if (e.key === 'v' || e.key === 'V') {
-          if (selectedDrive && clipboardPathsRef.current.length > 0 && clipboardActionRef.current) {
+          if (selectedDrive && selectedDrive !== ALL_DRIVES && clipboardPathsRef.current.length > 0 && clipboardActionRef.current) {
             e.preventDefault()
             const action = clipboardActionRef.current
             const paths = clipboardPathsRef.current
@@ -3138,7 +3167,7 @@ export default function App(): React.JSX.Element {
               { id: 'docs', label: 'Documents', icon: <FileText size={14} /> },
               { id: 'screenshots', label: 'Screenshots', icon: <Camera size={14} /> },
               { id: 'places', label: 'Places Map', icon: <MapIcon size={14} /> },
-              { id: 'events', label: 'Events', icon: <CalendarHeart size={14} /> },
+              { id: 'events', label: 'Events', icon: <Compass size={14} /> },
               { id: 'favourites', label: 'Favourites', icon: <Star size={14} /> },
               { id: 'trash', label: 'Trash', icon: <Trash2 size={14} /> },
               { id: 'settings', label: 'Settings', icon: <Settings size={14} /> }
@@ -3211,7 +3240,7 @@ export default function App(): React.JSX.Element {
                 >
                   <ArrowLeft size={12} color="#e11d2e" />
                   <span>
-                    <span style={{ color: '#ffffff' }}>{selectedDrive}</span> · <span style={{ color: '#e11d2e' }}>{activeNav}</span>
+                    <span style={{ color: '#ffffff' }}>{selectedDrive === ALL_DRIVES ? 'All Drives' : selectedDrive}</span> · <span style={{ color: '#e11d2e' }}>{activeNav}</span>
                   </span>
                 </div>
               ) : (
@@ -3220,6 +3249,14 @@ export default function App(): React.JSX.Element {
                 </div>
               )}
               
+              {selectedDrive === ALL_DRIVES && (
+                <DriveScopeChip
+                  onChanged={() => {
+                    // A different set of drives: re-open, which re-reads favourites and trash too.
+                    handleDriveClick(ALL_DRIVES)
+                  }}
+                />
+              )}
               {/* Search Input */}
               {selectedDrive && isGalleryPage && (
                 <input
@@ -3460,7 +3497,7 @@ export default function App(): React.JSX.Element {
                 Incomplete — discovering
               </div>
             )}
-            {selectedDrive && !scanning && isGalleryPage && (
+            {selectedDrive && selectedDrive !== ALL_DRIVES && !scanning && isGalleryPage && (
               <button
                 onClick={handleReconcile}
                 title={`Re-check ${selectedDrive} for new, changed or removed files. This reads the drive and may take a while on a large library.`}
@@ -3725,14 +3762,32 @@ export default function App(): React.JSX.Element {
               >
                 <Heart size={12} color="#e11d2e" fill={favourites.has(contextMenu.file.path) ? '#e11d2e' : 'none'} /> {favourites.has(contextMenu.file.path) ? 'Unfavourite' : 'Favourite'}
               </div>
-              <div
-                onClick={() => handleReveal(contextMenu.file)}
-                style={{ padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}
-                onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'}
-                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-              >
-                <FolderOpen size={12} color="var(--app-fg-dim, #8a8a8f)" /> Show in Folder
-              </div>
+              {selectedDrive && (
+                <div
+                  // The selection when this tile is part of it, else this tile.
+                  onClick={() => {
+                    const f = contextMenu.file
+                    const many = selected.has(f.path) && selected.size > 1 ? contextMenu.currentList.filter((r) => selected.has(r.path)) : []
+                    setAddToCollection(many.length > 1 ? many : [f])
+                  }}
+                  style={{ padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                >
+                  <Compass size={12} color="var(--app-fg-dim, #8a8a8f)" /> Add to collection…
+                </div>
+              )}
+              {/* Never for a file whose drive is not connected: the path may be another drive's file now. */}
+              {!contextMenu.file.offline && (
+                <div
+                  onClick={() => handleReveal(contextMenu.file)}
+                  style={{ padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                >
+                  <FolderOpen size={12} color="var(--app-fg-dim, #8a8a8f)" /> Show in Folder
+                </div>
+              )}
               <div
                 onClick={() => navigator.clipboard.writeText(contextMenu.file.path)}
                 style={{ padding: '8px 16px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.5px', fontWeight: 600 }}
@@ -3778,6 +3833,17 @@ export default function App(): React.JSX.Element {
       <DropOverlay onDropPaths={handleDroppedPaths} />
 
       {/* Floating toast notification */}
+      {addToCollection && selectedDrive && (
+        <AddToCollectionDialog
+          drive={selectedDrive}
+          files={addToCollection}
+          onClose={() => setAddToCollection(null)}
+          onDone={(msg) => {
+            setAddToCollection(null)
+            setToastMsg(msg)
+          }}
+        />
+      )}
       {toastMsg && (
         <div className="cred-glass" style={{ position: 'fixed', bottom: '80px', right: '24px', padding: '12px 20px', borderRadius: '4px', zIndex: 10000, display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--app-fg, #f2f2f0)', border: '1px solid #e11d2e', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '1.5px', fontWeight: 700 }}>
           <Sparkles size={12} color="#e11d2e" /> {toastMsg}

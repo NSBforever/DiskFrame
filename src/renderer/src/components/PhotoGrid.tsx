@@ -494,7 +494,8 @@ const GridTile = memo(function GridTile({
   // Unmount = scrolled out of view (virtualization), folder switched, or window closed.
   useEffect(() => stopPreview, [stopPreview])
 
-  const canPreview = isVideo && hoverPreviewsEnabled && !reducedMotion
+  // Never for a file whose drive is not the one at its letter now (All Drives).
+  const canPreview = isVideo && hoverPreviewsEnabled && !reducedMotion && !file.offline
 
   // Turning the setting off must stop whatever is already playing, not just
   // refuse the next hover.
@@ -583,7 +584,7 @@ const GridTile = memo(function GridTile({
           <img
             ref={imgRef}
             key={src + ':' + attempt}
-            src={src === usableThumb ? thumbUrl(src) : mediaUrl(src)}
+            src={src === usableThumb ? thumbUrl(src) : mediaUrl(src, file.volume_id)}
             decoding="async"
             draggable={false}
             onLoad={e => e.currentTarget.classList.add('pg-loaded')}
@@ -604,7 +605,7 @@ const GridTile = memo(function GridTile({
                 // deleted along with a copy that shared it). Make it again, so
                 // the next time this tile is drawn it is a thumbnail - not the
                 // full-size original this tile falls back to meanwhile.
-                window.api.prioritizeThumbnails({ visible: [file.path], prefetch: [] }).catch(() => {})
+                if (!file.offline) window.api.prioritizeThumbnails({ visible: [file.path], prefetch: [] }).catch(() => {})
               } else setOriginalFailed(true)
             }}
           />
@@ -650,6 +651,13 @@ const GridTile = memo(function GridTile({
                         : ext.replace('.', '')}
               </span>
             )}
+          </div>
+        )}
+        {file.offline && showImg && (
+          // All Drives: its drive is not connected (or another drive has its
+          // letter now). The thumbnail is the one made earlier, from this file.
+          <div className="pg-offline-badge" title="Drive not connected">
+            <Unplug size={compact ? 8 : 11} />
           </div>
         )}
         {isVideo && showImg && !previewReady && (

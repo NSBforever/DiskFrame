@@ -1,5 +1,5 @@
-/* Events: browse photos by calendar event. Photography first; the app's dark
-   glass for everything around it; one accent, used sparingly. */
+/* Events: Calendar events, Places, Trips and collections. Photography first;
+   the app's dark glass for everything around it; one accent, used sparingly. */
 
 .ev-scroll {
   flex: 1;
@@ -615,4 +615,270 @@
   border-radius: 50%;
   background: var(--app-accent, #e11d2e);
   color: #fff;
+}
+
+/* Header actions and filters */
+.ev-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ev-new {
+  position: relative;
+}
+.ev-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 170px;
+  padding: 6px;
+}
+.ev-menu button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--app-fg, #f2f2f0);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.ev-menu button:hover,
+.ev-menu button:focus-visible {
+  background: rgba(255, 255, 255, 0.08);
+  outline: none;
+}
+.ev-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -8px 0 26px;
+}
+.ev-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--app-fg-dim, #8a8a8f);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.ev-chip:hover,
+.ev-chip:focus-visible {
+  color: var(--app-fg, #f2f2f0);
+  border-color: rgba(255, 255, 255, 0.22);
+  outline: none;
+}
+.ev-chip.is-active {
+  color: #fff;
+  background: rgba(225, 29, 46, 0.16);
+  border-color: rgba(225, 29, 46, 0.55);
+}
+.ev-chip-n {
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.7;
+}
+
+/* Cards: kind, confidence, drives, keep/dismiss */
+.ev-card-wrap {
+  position: relative;
+  min-width: 0;
+}
+.ev-card-wrap > .ev-card {
+  width: 100%;
+  height: 100%;
+}
+.ev-card-wrap.is-suggested > .ev-card {
+  outline: 1.5px dashed rgba(255, 255, 255, 0.28);
+  outline-offset: -1.5px;
+}
+.ev-card-decide {
+  position: absolute;
+  z-index: 2;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  gap: 6px;
+}
+.ev-card-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+.ev-conf {
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  letter-spacing: 0.3px;
+  text-transform: none;
+  background: rgba(255, 255, 255, 0.16);
+}
+.ev-conf.is-high {
+  background: rgba(64, 190, 120, 0.3);
+}
+.ev-conf.is-low {
+  background: rgba(255, 255, 255, 0.1);
+  opacity: 0.85;
+}
+.ev-drives {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+.ev-drive {
+  padding: 1px 6px;
+  border-radius: 5px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+.ev-drive.is-offline {
+  border-style: dashed;
+  opacity: 0.6;
+}
+
+/* Collection page */
+.ev-selbar {
+  position: sticky;
+  top: 8px;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 16px;
+  padding: 8px 10px 8px 16px;
+  font-size: 13px;
+}
+.ev-selbar > span {
+  margin-right: auto;
+}
+.ev-tile.is-picked {
+  outline: 2px solid var(--app-accent, #e11d2e);
+  outline-offset: -2px;
+}
+.ev-tile.is-picked .ev-tile-actions {
+  opacity: 1;
+  transform: none;
+}
+.ev-tile-btn.is-on {
+  background: var(--app-accent, #e11d2e);
+  border-color: transparent;
+}
+.ev-more {
+  margin: 18px auto 0;
+  display: flex;
+}
+
+/* Small dialogs: name, pick, settings */
+.ev-modal-small {
+  width: min(520px, 100%);
+  /* Opaque: text behind a dialog must not read through it. */
+  background: rgba(18, 18, 24, 0.97);
+}
+.ev-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-top: 16px;
+}
+.ev-form .ev-modal-foot {
+  padding: 12px 0 0;
+}
+.ev-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--app-fg, #f2f2f0);
+  font-size: 14px;
+}
+.ev-input:focus-visible {
+  outline: 2px solid var(--app-accent, #e11d2e);
+  outline-offset: 1px;
+}
+.ev-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  font-size: 13px;
+}
+.ev-check > span {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  line-height: 1.45;
+}
+.ev-check input {
+  margin-top: 3px;
+  accent-color: var(--app-accent, #e11d2e);
+}
+.ev-picklist {
+  list-style: none;
+  margin: 0;
+  padding: 8px 12px 12px;
+}
+.ev-picklist button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--app-fg, #f2f2f0);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.ev-picklist button:hover,
+.ev-picklist button:focus-visible {
+  background: rgba(255, 255, 255, 0.08);
+  outline: none;
+}
+.ev-picklist-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.ev-dates {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.ev-dates label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+.ev-input[type="date"] {
+  color-scheme: dark;
 }

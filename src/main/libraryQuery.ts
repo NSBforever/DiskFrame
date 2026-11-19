@@ -40,6 +40,12 @@ export interface LibraryQuery {
    * established and the query returns nothing rather than guessing.
    */
   volumeId: string | null
+  /**
+   * All Drives only (drive === ALL_DRIVES_KEY): the volumes in the user's
+   * selection, resolved by the main process from the stored scope and the
+   * catalogue - never taken from the renderer. Ignored for a single drive.
+   */
+  volumeIds?: string[] | null
   nav: NavFilter
   search: string
   groupBy: GroupBy
@@ -97,6 +103,10 @@ export function compactExpr(): string {
 // diagnostic sample has no physical volume to verify identity against, so it
 // is the one drive value still matched by letter.
 const SAMPLE_DRIVE_KEY = 'SAMPLE:'
+/** The virtual "drive" that browses several volumes' existing records as one library. */
+export const ALL_DRIVES_KEY = 'ALL:'
+
+export const isAllDrives = (q: Pick<LibraryQuery, 'drive'>): boolean => q.drive === ALL_DRIVES_KEY
 
 export function buildWhere(q: LibraryQuery): { sql: string; params: unknown[] } {
   const clauses: string[] = ['hidden = 0', 'trashed_at IS NULL']
@@ -104,6 +114,12 @@ export function buildWhere(q: LibraryQuery): { sql: string; params: unknown[] } 
   if (q.drive === SAMPLE_DRIVE_KEY) {
     clauses.unshift('drive = ?')
     params.push(q.drive)
+  } else if (isAllDrives(q)) {
+    const ids = q.volumeIds ?? []
+    if (ids.length) {
+      clauses.unshift(`volume_id IN (${ids.map(() => '?').join(',')})`)
+      params.push(...ids)
+    } else clauses.unshift('0')
   } else if (q.volumeId) {
     clauses.unshift('volume_id = ?')
     params.push(q.volumeId)
@@ -214,8 +230,12 @@ export function groupKeyExpr(groupBy: GroupBy): string {
  * or repeat files at page boundaries. `path` is UNIQUE, so it is a total
  * tie-break and pagination is stable.
  */
-export function orderExpr(order: SortOrder): string {
-  return order === 'reverse' ? 'date ASC, path ASC' : 'date DESC, path ASC'
+export function orderExpr(order: SortOrder, multiVolume = false): string {
+  // Across volumes `path` is no longer unique - two drives that were each E:
+  // at some point can both hold E:\DCIM\IMG_0001.JPG - so the volume is the
+  // last tie-break there. A single drive keeps its exact old ordering.
+  const tie = multiVolume ? ', volume_id ASC' : ''
+  return (order === 'reverse' ? 'date ASC, path ASC' : 'date DESC, path ASC') + tie
 }
 
 /** Groups ordered consistently with the rows inside them. */
@@ -277,7 +297,7 @@ export function pageSql(q: LibraryQuery): { sql: string; params: unknown[] } {
  */
 export function orderedSql(q: LibraryQuery, columns: string = PAGE_COLUMNS): { sql: string; params: unknown[] } {
   const where = buildWhere(q)
-  const rowOrder = orderExpr(q.order)
+  const rowOrder = orderExpr(q.order, isAllDrives(q))
   const key = groupKeyExpr(q.groupBy)
   const dir = q.order === 'reverse' ? 'ASC' : 'DESC'
 

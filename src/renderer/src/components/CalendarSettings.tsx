@@ -152,6 +152,7 @@ export function CalendarSettings(): React.JSX.Element {
             />
             <div className="settings-hint">Photos and videos taken this long before or after an event can be suggested for it.</div>
           </div>
+          <CalendarDrives />
           <p className="settings-footnote">
             Disconnect removes the sign-in and the saved events from this PC. Files you confirmed
             for an event stay linked, so reconnecting brings them back.
@@ -159,5 +160,57 @@ export function CalendarSettings(): React.JSX.Element {
         </>
       )}
     </SettingsCard>
+  )
+}
+
+type ConsentVolume = Awaited<ReturnType<typeof window.api.calendarConsent>>[number]
+
+/**
+ * Which drives' photos are matched to the calendar. A drive can hold someone
+ * else's photos (a family HDD, a friend's SSD), so each one is the user's
+ * choice and a newly connected drive starts off. Matching runs on this PC.
+ */
+function CalendarDrives(): React.JSX.Element | null {
+  const [vols, setVols] = useState<ConsentVolume[] | null>(null)
+  useEffect(() => {
+    let live = true
+    void window.api.calendarConsent().then((v) => live && setVols(v))
+    return () => {
+      live = false
+    }
+  }, [])
+  if (!vols || vols.length === 0) return null
+  const set = async (v: ConsentVolume, allowed: boolean): Promise<void> => {
+    setVols((cur) => cur?.map((x) => (x.volumeId === v.volumeId ? { ...x, allowed } : x)) ?? cur)
+    if (!(await window.api.setCalendarConsent(v.volumeId, allowed))) setVols(await window.api.calendarConsent())
+  }
+  const none = !vols.some((v) => v.allowed)
+  return (
+    <div className="settings-row settings-row--stack">
+      <div className="settings-row-head">
+        <span className="settings-label">Drives matched to your calendar</span>
+      </div>
+      <div className="settings-hint">
+        {none
+          ? 'No drive yet. Switch on the drives that hold your own photos. A newly connected drive starts off.'
+          : 'Only these drives’ photos are matched to your events, on this PC. A newly connected drive starts off.'}
+      </div>
+      {vols.map((v) => {
+        const letter = v.mountedLetter ?? v.letter
+        const label = (v.label ?? '').trim()
+        const name = label.length > 3 ? `${label}${letter ? ` (${letter})` : ''}` : `Local Disk${letter ? ` (${letter})` : ''}`
+        const id = `settings-calendar-drive-${v.volumeId.replace(/[^A-Za-z0-9]/g, '')}`
+        return (
+          <SettingRow
+            key={v.volumeId}
+            label={name}
+            htmlFor={id}
+            hint={`${v.count.toLocaleString()} files${v.mountedLetter ? '' : ' · not connected'}`}
+          >
+            <SettingsSwitch id={id} checked={v.allowed} onChange={(on) => void set(v, on)} />
+          </SettingRow>
+        )
+      })}
+    </div>
   )
 }

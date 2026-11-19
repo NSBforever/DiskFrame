@@ -3,10 +3,16 @@ import { join, basename, extname } from 'path'
 import { spawn, execFile } from 'child_process'
 import * as fs from 'fs'
 import { fileResponse } from './mediaRange'
-import { mediaUrl, mediaUrlPath } from './mediaUrl'
+import { mediaUrl, mediaUrlPath, mediaUrlVolume } from './mediaUrl'
 import { initUpdates } from './updater'
 import { initCalendar } from './calendarService'
 import { eventCards } from './calendarEvents'
+import { initEvents } from './eventsService'
+import { isMatchingAllowed, setMatchingAllowed, consentList, type ConsentDb } from './calendarConsent'
+import { listCollections, collectionFiles, type ColDb } from './collections'
+import { runDiscovery } from './discovery'
+import { markOffline, parseScope, resolveScope } from './driveScope'
+import { ALL_DRIVES_KEY } from './libraryQuery'
 import { gpuSwitchFor, parseVideoControllers, readGpuSwitch, writeGpuSwitch, VIDEO_CONTROLLER_QUERY } from './gpuChoice'
 import { isUpdateMode } from './updateState'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -88,6 +94,11 @@ import {
   coverForFile,
   getCalendarPrefs,
   setCalendarPrefs,
+  getDriveScopePref,
+  setDriveScopePref,
+  getDiscoveryPrefs,
+  setDiscoveryPrefs,
+  getIndexedVolumes,
   catalogueDb,
   catalogueDbPath
 } from './scanner'
@@ -997,7 +1008,10 @@ app.whenReady().then(() => {
     // Thumbnails we generated ourselves live in userData, not on the indexed
     // volume, so they are exempt.
     if (!filePath.toLowerCase().startsWith(app.getPath('userData').toLowerCase())) {
-      const availability = checkPathAvailability(filePath)
+      // `?v=` names the volume of the row being shown (All Drives can show two
+      // volumes' files at one literal path). Without it, the volume mounted at
+      // the letter now is assumed, as before.
+      const availability = checkPathAvailability(filePath, mediaUrlVolume(request.url) ?? undefined)
       if (availability.status === 'drive-offline') {
         return new Response('Drive not connected', { status: 503 })
       }
@@ -1307,6 +1321,10 @@ app.whenReady().then(() => {
   // drive must not run after the user has moved to another.
 
   ipcMain.on('open-drive', (_event, drivePath: string) => {
+    if (drivePath === ALL_DRIVES_KEY) {
+      void openAllDrives().catch((err) => diag('open-drive', `All Drives: ${String(err)}`))
+      return
+    }
     const drive = normalizeDrive(drivePath)
     if (!drive) return
     currentOpenDrive = drive
@@ -1399,8 +1417,106 @@ app.whenReady().then(() => {
   // The summary is small (one row per group) and lets the renderer lay out the
   // whole grid without holding any file rows. Pages are fetched only for what
   // is actually on screen.
-  function normalizeQuery(raw: unknown): LibraryQuery | null {
+  // ── ALL DRIVES ────────────────────────────────────────────────────────────
+  // One library over the records already indexed for several volumes. Nothing
+  // is copied: a query names the volumes, by id, and SQLite does the rest. The
+  // selection is stored by volume id (driveScope.ts); which ids it stands for
+  // is re-read whenever the catalogue changes, so "all" includes a volume
+  // indexed later and never one whose records are gone.
+  let scopeCache: { key: string; ids: string[] } | null = null
+  const indexedVolumes = (): Promise<ReturnType<typeof getIndexedVolumes>> =>
+    readLibrary(catalogueDbPath, { kind: 'volumes' }, () => getIndexedVolumes())
+  async function allDrivesIds(): Promise<string[]> {
+    const stored = getDriveScopePref()
+    const key = getCatalogueVersion() + '|' + (stored ?? '')
+    if (scopeCache?.key === key) return scopeCache.ids
+    const ids = resolveScope(parseScope(stored), await indexedVolumes())
+    scopeCache = { key, ids }
+    return ids
+  }
+  /** The volume ids a drive key stands for: All Drives' selection, or the volume verifiably at a letter. */
+  async function volumesFor(raw: unknown): Promise<string[]> {
+    if (raw === ALL_DRIVES_KEY) return allDrivesIds()
+    const drive = normalizeDrive(raw)
+    const v = drive ? getCachedVolumeId(drive) : null
+    return v ? [v] : []
+  }
+  /** Where a volume is mounted right now, if anywhere. */
+  function mountedLetterOf(volumeId: string): string | null {
+    for (const l of knownDriveLetters) if (getCachedVolumeId(l) === volumeId) return l
+    return null
+  }
+  /**
+   * Marks rows whose own volume is not the one mounted at their letter now:
+   * its drive is unplugged, or that letter now belongs to another drive. The
+   * row stays listed with any thumbnail it already has; without one it shows
+   * as "drive not connected" rather than asking for a thumbnail that would be
+   * made from whatever the letter holds now.
+   */
+  function annotateOffline<T extends Record<string, unknown>>(rows: T[]): T[] {
+    markOffline(rows as unknown as { path: string }[], (letter) => getCachedVolumeId(letter))
+    return rows
+  }
+  async function driveScopeInfo(): Promise<unknown> {
+    const vols = await indexedVolumes()
+    const scope = parseScope(getDriveScopePref())
+    const included = new Set(resolveScope(scope, vols))
+    return {
+      scope,
+      volumes: vols.map((v) => ({ ...v, mountedLetter: mountedLetterOf(v.volumeId), included: included.has(v.volumeId) }))
+    }
+  }
+  ipcMain.handle('drive-scope', () => driveScopeInfo())
+  ipcMain.handle('set-drive-scope', (_event, raw: unknown) => {
+    setDriveScopePref(JSON.stringify(parseScope(raw)))
+    scopeCache = null
+    return driveScopeInfo()
+  })
+  /**
+   * Opening All Drives reads nothing from any drive. It only brings each
+   * mounted, selected volume's records onto the letter it has now (the same
+   * repair opening that drive alone does), so a drive that came back under a
+   * different letter shows its files, not a stranger's at its old one.
+   */
+  async function openAllDrives(): Promise<void> {
+    currentOpenDrive = ALL_DRIVES_KEY
+    syncService.cancel()
+    const t0 = Date.now()
+    await refreshVolumeCache()
+    const ids = await allDrivesIds()
+    let mounted = 0
+    for (const id of ids) {
+      const letter = mountedLetterOf(id)
+      if (!letter) continue
+      mounted++
+      reconcileDriveLetterForVolume(id, letter)
+    }
+    const vols = await indexedVolumes()
+    const chosen = new Set(await allDrivesIds())
+    const indexed = vols.filter((v) => chosen.has(v.volumeId)).reduce((n, v) => n + v.count, 0)
+    diag('open-drive', `All Drives: ${ids.length} volume(s), ${mounted} connected, ${indexed} records, ${Date.now() - t0}ms`)
+    if (currentOpenDrive !== ALL_DRIVES_KEY) return
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('drive-opened', { drive: ALL_DRIVES_KEY, indexed, needsInitialScan: false, identityUnresolved: false })
+    }
+  }
+
+  async function normalizeQuery(raw: unknown): Promise<LibraryQuery | null> {
     const q = (raw ?? {}) as Partial<LibraryQuery>
+    if (q.drive === ALL_DRIVES_KEY) {
+      const navs = ['all', 'photos', 'videos', 'docs', 'screenshots', 'places', 'favourites']
+      const groups = ['day', 'month', 'year', 'location', 'favorites']
+      return {
+        drive: ALL_DRIVES_KEY,
+        volumeId: null,
+        volumeIds: await allDrivesIds(),
+        nav: (navs.includes(String(q.nav)) ? q.nav : 'all') as LibraryQuery['nav'],
+        search: typeof q.search === 'string' ? q.search.slice(0, 200) : '',
+        groupBy: (groups.includes(String(q.groupBy)) ? q.groupBy : 'day') as LibraryQuery['groupBy'],
+        order: q.order === 'reverse' ? 'reverse' : 'default',
+        bbox: normalizeBounds((q as { bbox?: unknown }).bbox)
+      }
+    }
     const drive = q.drive === SAMPLE_DRIVE_KEY ? SAMPLE_DRIVE_KEY : normalizeDrive(q.drive)
     if (!drive) return null
     const navs = ['all', 'photos', 'videos', 'docs', 'screenshots', 'places', 'favourites']
@@ -1441,7 +1557,7 @@ app.whenReady().then(() => {
   // this thread (see libraryWorker.ts); each answer carries the version it was
   // read at, from the same snapshot as its rows.
   ipcMain.handle('library-summary', async (_event, raw) => {
-    const q = normalizeQuery(raw)
+    const q = await normalizeQuery(raw)
     if (!q) return { total: 0, groups: [], version: getCatalogueVersion() }
     const t0 = Date.now()
     const res = await readLibrary(catalogueDbPath, { kind: 'summary', query: q }, () => getLibrarySummary(q))
@@ -1455,7 +1571,7 @@ app.whenReady().then(() => {
       zoom?: number
       bounds?: { minLat: number; maxLat: number; minLng: number; maxLng: number }
     }
-    const q = normalizeQuery(query)
+    const q = await normalizeQuery(query)
     if (!q) return { clusters: [] }
     const num = (v: unknown): number | null => (Number.isFinite(Number(v)) ? Number(v) : null)
     const minLat = num(bounds?.minLat)
@@ -1479,13 +1595,15 @@ app.whenReady().then(() => {
 
   ipcMain.handle('library-page', async (_event, raw) => {
     const { query, offset, limit } = (raw ?? {}) as { query?: unknown; offset?: number; limit?: number }
-    const q = normalizeQuery(query)
+    const q = await normalizeQuery(query)
     if (!q) return { offset: 0, rows: [], version: getCatalogueVersion() }
     const from = Math.max(0, Math.floor(Number(offset) || 0))
     const size = Math.max(1, Math.min(Math.floor(Number(limit) || 100), MAX_PAGE_SIZE))
     const page = await readLibrary(catalogueDbPath, { kind: 'page', query: q, offset: from, limit: size }, () =>
       getLibraryPage(q, from, size)
     )
+    // A single drive is open because it is mounted, so only All Drives can hold offline rows.
+    if (q.drive === ALL_DRIVES_KEY) annotateOffline(page.rows as unknown as Record<string, unknown>[])
     return { offset: from, ...page }
   })
 
@@ -1552,7 +1670,13 @@ app.whenReady().then(() => {
   // tagged with that drive so a renderer that has since switched drives can
   // tell a late answer apart from a current one instead of briefly showing
   // it.
-  ipcMain.on('get-favourites', (_event, drivePath: unknown) => {
+  ipcMain.on('get-favourites', async (_event, drivePath: unknown) => {
+    if (drivePath === ALL_DRIVES_KEY) {
+      // Marked like gallery rows: a disconnected drive's favourite is never opened or revealed.
+      const files = annotateOffline(getFavourites(await allDrivesIds()) as unknown as Record<string, unknown>[])
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('favourites-updated', { drive: ALL_DRIVES_KEY, files })
+      return
+    }
     const drive = normalizeDrive(drivePath)
     const volumeId = drive ? getCachedVolumeId(drive) : null
     const files = getFavourites(volumeId)
@@ -1574,6 +1698,12 @@ app.whenReady().then(() => {
   // in the Favourites view and its count.
   const pushFavourites = (volumeId: string | null, refs: ReturnType<typeof safePathRefs>): void => {
     if (!mainWindow || mainWindow.isDestroyed()) return
+    if (currentOpenDrive === ALL_DRIVES_KEY) {
+      void allDrivesIds().then((ids) => {
+        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('favourites-updated', { drive: ALL_DRIVES_KEY, files: annotateOffline(getFavourites(ids) as unknown as Record<string, unknown>[]) })
+      })
+      return
+    }
     const first = refs[0]
     const drive = first ? normalizeDrive(typeof first === 'string' ? first : first.path) : null
     mainWindow.webContents.send('favourites-updated', { drive, files: getFavourites(volumeId) })
@@ -1619,20 +1749,27 @@ app.whenReady().then(() => {
     return r
   })
 
-  ipcMain.handle('empty-trash', (_event, drivePath: unknown) => {
-    const drive = normalizeDrive(drivePath)
-    return emptyTrash(drive ? getCachedVolumeId(drive) : null)
+  // All Drives: the trash of every selected volume, each file still on its own.
+  ipcMain.handle('empty-trash', async (_event, drivePath: unknown) => {
+    const out = { success: true, count: 0, left: 0 }
+    for (const v of await volumesFor(drivePath)) {
+      const r = await emptyTrash(v)
+      out.success &&= r.success
+      out.count += r.count
+      out.left += r.left
+    }
+    return out
   })
 
-  ipcMain.handle('get-trashed-files', (_event, drivePath: unknown) => {
-    const drive = normalizeDrive(drivePath)
-    return getTrashedFiles(drive ? getCachedVolumeId(drive) : null)
+  ipcMain.handle('get-trashed-files', async (_event, drivePath: unknown) => {
+    const files = (await volumesFor(drivePath)).flatMap((v) => getTrashedFiles(v))
+    if (drivePath === ALL_DRIVES_KEY) annotateOffline(files as unknown as Record<string, unknown>[])
+    return files.sort((a, b) => String(b.trashed_at ?? '').localeCompare(String(a.trashed_at ?? '')))
   })
 
-  ipcMain.handle('get-trash-count', (_event, drivePath: unknown) => {
-    const drive = normalizeDrive(drivePath)
-    return getTrashCount(drive ? getCachedVolumeId(drive) : null)
-  })
+  ipcMain.handle('get-trash-count', async (_event, drivePath: unknown) =>
+    (await volumesFor(drivePath)).reduce((n, v) => n + getTrashCount(v), 0)
+  )
 
   // ── SKIP CONFIRM PREF ──
   ipcMain.handle('get-skip-confirm', () => getSkipConfirm())
@@ -1697,12 +1834,53 @@ app.whenReady().then(() => {
     prefs: { get: getCalendarPrefs, set: setCalendarPrefs },
     log: (m) => diag('calendar', m),
     safeMode: safeMode.enabled,
-    volumeOf: (drive) => getCachedVolumeId(drive),
+    // Only a drive the user allowed is ever matched (calendarConsent.ts); any
+    // other drive resolves to no volume, so the matcher reads none of its files.
+    volumeOf: (drive) => {
+      const v = getCachedVolumeId(drive)
+      return isMatchingAllowed(catalogueDb as unknown as ConsentDb, v) ? v : null
+    },
     isSafeLocalPath,
     coverFor: coverForFile,
     // Off the main thread; answered on it only if the worker is unavailable.
     readEvents: (volumeId, bufferMin) =>
       readLibrary(catalogueDbPath, { kind: 'events', volumeId, bufferMin }, () => eventCards(catalogueDb, volumeId, bufferMin))
+  })
+  // Which drives Calendar matching may read. Choices are by volume, for indexed volumes only.
+  ipcMain.handle('calendar-consent', async () => {
+    const allowed = new Map(consentList(catalogueDb as unknown as ConsentDb).map((c) => [c.volumeId, c.allowed]))
+    return (await indexedVolumes()).map((v) => ({ ...v, mountedLetter: mountedLetterOf(v.volumeId), allowed: allowed.get(v.volumeId) === true }))
+  })
+  ipcMain.handle('set-calendar-consent', async (_event, volumeId: unknown, allowed: unknown) => {
+    if (typeof volumeId !== 'string' || typeof allowed !== 'boolean') return false
+    if (!(await indexedVolumes()).some((v) => v.volumeId === volumeId)) return false
+    setMatchingAllowed(catalogueDb as unknown as ConsentDb, volumeId, allowed, new Date())
+    diag('calendar', `matching ${allowed ? 'allowed' : 'not allowed'} for a drive`)
+    return true
+  })
+  initEvents({
+    ipcMain,
+    db: catalogueDb as unknown as ColDb,
+    volumesFor,
+    // Reads and discovery on the library worker; the main thread answers only if it is unavailable.
+    listCards: (volumeIds, crossDrive) =>
+      readLibrary(catalogueDbPath, { kind: 'collections', volumeIds, crossDrive }, () =>
+        listCollections(catalogueDb as unknown as ColDb, volumeIds, { crossDrive })
+      ),
+    members: (id) => readLibrary(catalogueDbPath, { kind: 'collectionFiles', collectionId: id }, () => collectionFiles(catalogueDb as unknown as ColDb, id)),
+    discover: (scopes, home) =>
+      readLibrary(catalogueDbPath, { kind: 'discover', scopes, home }, () =>
+        runDiscovery(catalogueDb as unknown as ColDb, catalogueDb as unknown as ColDb, scopes, { home }, new Date().toISOString(), (t) => -new Date(t).getTimezoneOffset())
+      ),
+    annotate: annotateOffline,
+    cover: async (r) => {
+      const a = checkPathAvailability(r.path, r.volumeId)
+      return a.status === 'ok' ? coverForFile(a.resolved, extname(r.path), r.volumeId) : null
+    },
+    getPrefs: getDiscoveryPrefs,
+    setPrefs: setDiscoveryPrefs,
+    isSafeLocalPath,
+    log: (m) => diag('events', m)
   })
 
   ipcMain.handle('get-ai-search-button', () => getAiSearchButtonPref())
@@ -1903,10 +2081,13 @@ app.whenReady().then(() => {
     let deliverMs = 0
     let cacheHit = false
     let failed = false
-    const send = (thumbPath: string): void => {
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath })
-    }
     const pathVolumeId = getCachedVolumeId(p.slice(0, 2))
+    // Tagged with the volume mounted at that letter - the only one a thumbnail
+    // is ever made from - so All Drives patches that volume's tile and never
+    // another volume's tile that shares the literal path.
+    const send = (thumbPath: string): void => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath, volumeId: pathVolumeId })
+    }
     /** Remembers the failure; resolves to whether the file is there at all. */
     const recordFailure = (): Promise<boolean> => {
       thumbFailed.add(p)
@@ -2035,7 +2216,11 @@ app.whenReady().then(() => {
     // The renderer still has to stop showing a spinner for them.
     if (mainWindow && !mainWindow.isDestroyed()) {
       for (const [p, present] of exhausted) {
-        mainWindow.webContents.send('thumb-ready', { filePath: p, thumbPath: present ? THUMB_NO_PREVIEW : THUMB_UNAVAILABLE })
+        mainWindow.webContents.send('thumb-ready', {
+          filePath: p,
+          thumbPath: present ? THUMB_NO_PREVIEW : THUMB_UNAVAILABLE,
+          volumeId: getCachedVolumeId(p.slice(0, 2))
+        })
       }
     }
     void pumpThumbs()
@@ -2161,13 +2346,16 @@ app.whenReady().then(() => {
    * preview and the viewer cannot disagree about one path. Reports only - it
    * never deletes a record and never copies the file anywhere.
    */
-  ipcMain.handle('date-provenance', (_event, raw: unknown) =>
-    typeof raw === 'string' && raw.length < 32768 ? getDateProvenance(raw) : { source: null, offsetMin: null }
+  // Both take the row's volume when the caller has it (All Drives can show two
+  // volumes' files at one literal path).
+  const rowVolume = (v: unknown): string | null | undefined => (typeof v === 'string' && v.length <= 512 ? v : v === null ? null : undefined)
+  ipcMain.handle('date-provenance', (_event, raw: unknown, volumeId?: unknown) =>
+    typeof raw === 'string' && raw.length < 32768 ? getDateProvenance(raw, rowVolume(volumeId)) : { source: null, offsetMin: null }
   )
-  ipcMain.handle('media-status', (_event, raw: unknown) => {
+  ipcMain.handle('media-status', (_event, raw: unknown, volumeId?: unknown) => {
     const filePath = typeof raw === 'string' ? raw : ''
     if (!isSafeLocalPath(filePath)) return { status: 'missing', volumeKnown: false, resolved: filePath }
-    const a = checkPathAvailability(filePath)
+    const a = checkPathAvailability(filePath, rowVolume(volumeId))
     return {
       status: a.status,
       volumeKnown: a.volumeKnown,
@@ -2383,12 +2571,18 @@ app.whenReady().then(() => {
     return true
   })
 
-  ipcMain.handle('start-mpv', (_event, { filePath, relativeBounds, deferShow }) => {
+  ipcMain.handle('start-mpv', (_event, { filePath, relativeBounds, deferShow, volumeId }) => {
     if (!subsystemEnabled(safeMode, 'mpv')) {
       diag('safe-mode', 'mpv start refused (mpv subsystem off)')
       throw new Error('mpv disabled in safe mode')
     }
     if (!isSafeLocalPath(filePath)) throw new Error('Invalid file path')
+    // The row's own volume, when the viewer knows it: never play another
+    // volume's file that now sits at the same path (All Drives).
+    if (typeof volumeId === 'string' && volumeId) {
+      const a = checkPathAvailability(filePath, volumeId)
+      if (a.status === 'drive-offline' || a.status === 'volume-mismatch') throw new Error('Drive not connected')
+    }
     const res = resolveMediaFile(filePath)
     if (!res.exists) {
       throw new Error(`File not found on disk: ${filePath}`)

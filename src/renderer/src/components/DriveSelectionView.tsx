@@ -1,4 +1,5 @@
 import DriveSelectGrid, { Drive } from './DriveSelectGrid'
+import { ALL_DRIVES_KEY as ALL_DRIVES } from '../../../main/libraryQuery'
 
 export interface DriveInfo {
   name: string
@@ -37,6 +38,7 @@ export function DriveSelectionView({
     >
       <DriveSelectGrid
         onSelectDrive={handleSelectDrive}
+        onSelectAll={() => onDriveSelect(ALL_DRIVES)}
         drives={drives}
       />
     </div>

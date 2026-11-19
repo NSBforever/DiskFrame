@@ -96,6 +96,8 @@ interface ScannedFile {
   drive: string
   favourited: number
   thumb: string | null
+  /** The row's own volume: media URLs name it, so another volume's file at the same path is never shown. */
+  volume_id?: string | null
 }
 
 interface MediaViewerProps {
@@ -203,7 +205,7 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
   phaseRef.current = phase
   const [flight, setFlight] = useState<FlightState | null>(() =>
     canFly && rect
-      ? { thumb: startThumb, thumbAspect: startTile?.aspect ?? null, full: isPhoto ? toUrl(file.path) : null }
+      ? { thumb: startThumb, thumbAspect: startTile?.aspect ?? null, full: isPhoto ? mediaUrl(file.path, file.volume_id) : null }
       : null
   )
   // The flight is two nested elements moved with transforms only: the outer
@@ -473,8 +475,8 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
       // Photos close with the full picture, already in memory, so nothing
       // drops in quality on the way back; at the tile it is cropped exactly as
       // the thumbnail is.
-      full: isVid ? null : toUrl(f.path),
-      fullReady: prev?.full === toUrl(f.path) ? prev?.fullReady : undefined
+      full: isVid ? null : mediaUrl(f.path, f.volume_id),
+      fullReady: prev?.full === mediaUrl(f.path, f.volume_id) ? prev?.fullReady : undefined
     }))
   }, [mediaBox, reducedMotion, cancelFlight])
 
@@ -733,7 +735,7 @@ const MediaViewer: React.FC<MediaViewerProps> = ({
 
   const handleDownload = () => {
     const a = document.createElement('a')
-    a.href = mediaUrl(file.path)
+    a.href = mediaUrl(file.path, file.volume_id)
     a.download = file.name
     document.body.appendChild(a)
     a.click()
