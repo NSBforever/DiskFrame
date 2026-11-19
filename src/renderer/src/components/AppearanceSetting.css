@@ -1,155 +1,95 @@
-/* ── Appearance card ───────────────────────────────────────────────────── */
-.appearance-card {
-  padding: 16px 18px;
-}
-.appearance-title {
-  margin: 0;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-  color: var(--app-accent, #e11d2e);
-}
-.appearance-sub {
-  font-size: 12px;
-  color: var(--app-fg-dim, #8a8a8f);
-  margin: 6px 0 14px;
-}
-.appearance-row {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  flex-wrap: wrap;
-}
-
-/* ── Theme capsule ─────────────────────────────────────────────────────────
-   Translucent capsule with a single thumb that slides between the halves.
-   The glow and highlight are static gradients - nothing animates unless the
-   selection changes, so there is no continuous cost. */
-.theme-switch {
+/* ── Theme segmented control ───────────────────────────────────────────────
+   Light / Dark / System in one inset track with a single thumb that slides
+   under the chosen option. The selected option is told apart three ways:
+   the raised thumb, full-strength text, and an accent-coloured icon - not
+   colour alone. Nothing animates unless the choice changes. */
+.theme-seg {
+  --seg-pad: 3px;
   position: relative;
-  display: inline-flex;
-  align-items: stretch;
-  padding: 4px;
-  border-radius: 999px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  width: 100%;
+  max-width: 380px;
+  padding: var(--seg-pad);
+  border-radius: 10px;
   isolation: isolate;
-  background: var(--switch-bg, rgba(12, 12, 16, 0.55));
-  backdrop-filter: blur(18px) saturate(1.5);
-  -webkit-backdrop-filter: blur(18px) saturate(1.5);
-  border: 1px solid var(--switch-border, rgba(255, 255, 255, 0.16));
-  box-shadow:
-    0 8px 22px rgba(0, 0, 0, 0.42),
-    inset 0 1px 0 rgba(255, 255, 255, 0.14);
-}
-/* Fine reflective edge along the top. */
-.theme-switch::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
-  background: linear-gradient(to bottom, rgba(255, 255, 255, 0.16), transparent 46%);
+  background: var(--seg-track, rgba(0, 0, 0, 0.28));
+  border: 1px solid var(--app-hairline, rgba(255, 255, 255, 0.14));
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
 }
 
-.theme-switch-thumb {
+.theme-seg-thumb {
   position: absolute;
   z-index: 0;
-  top: 4px;
-  bottom: 4px;
-  left: 4px;
-  width: calc(50% - 4px);
-  border-radius: 999px;
-  background: var(--switch-thumb, rgba(255, 255, 255, 0.14));
-  border: 1px solid var(--switch-thumb-border, rgba(255, 255, 255, 0.2));
+  top: var(--seg-pad);
+  bottom: var(--seg-pad);
+  left: var(--seg-pad);
+  width: calc((100% - 2 * var(--seg-pad)) / 3);
+  border-radius: 7px;
+  background: var(--seg-thumb, rgba(255, 255, 255, 0.13));
+  border: 1px solid var(--seg-thumb-border, rgba(255, 255, 255, 0.18));
   box-shadow:
-    0 2px 10px rgba(0, 0, 0, 0.35),
-    inset 0 1px 0 rgba(255, 255, 255, 0.24);
-  transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1), background-color 260ms ease;
-}
-.theme-switch.is-dark .theme-switch-thumb {
-  transform: translateX(100%);
-  /* Soft glow, only on the active side. */
-  box-shadow:
-    0 2px 14px rgba(120, 140, 255, 0.25),
-    inset 0 1px 0 rgba(255, 255, 255, 0.24);
-}
-.theme-switch:not(.is-dark) .theme-switch-thumb {
-  box-shadow:
-    0 2px 14px rgba(255, 196, 92, 0.28),
-    inset 0 1px 0 rgba(255, 255, 255, 0.3);
-}
-.theme-switch.no-anim .theme-switch-thumb {
-  transition: none;
+    0 2px 8px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  transform: translateX(calc(100% * var(--seg-i, 0)));
+  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.theme-switch-half {
+/* .settings-card prefix: outranks the generic `.glass-panel button:hover` fill,
+   which would otherwise paint a box over the thumb (the hover rule below needs
+   one class more, to beat the light theme's `:root[data-theme] .glass-panel
+   button:hover`). */
+.settings-card .theme-seg-opt {
   position: relative;
   z-index: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 7px;
-  /* Equal halves so the thumb lines up with either one exactly. */
-  width: 104px;
-  padding: 8px 0;
+  height: 32px;
+  padding: 0 10px;
   border: 0;
-  border-radius: 999px;
+  border-radius: 7px;
   background: transparent;
   cursor: pointer;
   font: inherit;
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 600;
-  color: var(--app-fg-dim, #9a9aa6);
-  transition: color 200ms ease;
+  color: var(--app-fg-dim, #8a8a8f);
+  transition: color 160ms ease;
 }
-.theme-switch-half.is-on {
+:root .settings-card .theme-seg .theme-seg-opt:hover {
+  background: transparent;
   color: var(--app-fg, #f2f2f0);
 }
-.theme-switch-half:focus-visible {
-  outline: 2px solid var(--app-accent, #e11d2e);
-  outline-offset: 2px;
+.settings-card .theme-seg-opt[aria-checked='true'] {
+  color: var(--app-fg, #f2f2f0);
 }
-.theme-switch.no-anim .theme-switch-half {
+.settings-card .theme-seg-opt[aria-checked='true'] svg {
+  color: var(--app-accent, #e11d2e);
+}
+.settings-card .theme-seg-opt:focus-visible {
+  outline: 2px solid var(--app-accent, #e11d2e);
+  outline-offset: 1px;
+}
+
+:root[data-theme='light'] .theme-seg {
+  --seg-track: rgba(0, 0, 0, 0.05);
+  --seg-thumb: #ffffff;
+  --seg-thumb-border: rgba(0, 0, 0, 0.1);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+:root[data-theme='light'] .theme-seg-thumb {
+  box-shadow: 0 1px 4px rgba(20, 20, 40, 0.16);
+}
+
+.theme-seg.no-anim .theme-seg-thumb,
+.theme-seg.no-anim .theme-seg-opt {
   transition: none;
 }
-
-/* While the OS is in charge the capsule still reports the resolved theme, but
-   reads as secondary so it is clear it is not a manual choice. */
-.theme-switch.is-system {
-  opacity: 0.78;
-}
-
-.theme-system {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--app-fg-dim, #8a8a8f);
-  cursor: pointer;
-}
-.theme-system input {
-  accent-color: var(--app-accent, #e11d2e);
-  cursor: pointer;
-}
-.theme-system-hint {
-  opacity: 0.75;
-}
-
-:root[data-theme='light'] .theme-switch {
-  --switch-bg: rgba(255, 255, 255, 0.6);
-  --switch-border: rgba(0, 0, 0, 0.12);
-  --switch-thumb: rgba(255, 255, 255, 0.9);
-  --switch-thumb-border: rgba(0, 0, 0, 0.08);
-}
-
-.df-reduced-effects .theme-switch {
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  background: var(--app-surface, #111114);
-}
 @media (prefers-reduced-motion: reduce) {
-  .theme-switch-thumb,
-  .theme-switch-half {
+  .theme-seg-thumb,
+  .settings-card .theme-seg-opt {
     transition: none;
   }
 }

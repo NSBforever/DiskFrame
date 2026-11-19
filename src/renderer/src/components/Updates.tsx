@@ -3,11 +3,15 @@ import {
   parseSnooze,
   shouldAnnounce,
   statusLine,
+  updateChip,
+  updateFacts,
   SNOOZE_MS,
   type UpdateMode,
   type UpdateState
 } from '../../../main/updateState'
+import { RefreshCw } from 'lucide-react'
 import GlassSelect from './GlassSelect'
+import { SettingsCard, SettingRow, SettingsFacts } from './SettingsCard'
 import './Updates.css'
 
 /**
@@ -151,7 +155,7 @@ const MODES: { value: UpdateMode; label: string }[] = [
   { value: 'off', label: 'Do not check' }
 ]
 
-/** The Updates card in Settings: the mode, what the last check found, and a manual check. */
+/** The Updates card in Settings: versions, the mode, what the last check found, and a manual check. */
 export function UpdateSettings(): React.JSX.Element {
   const { state } = useUpdateState()
   const [mode, setMode] = useState<UpdateMode>('auto')
@@ -166,29 +170,36 @@ export function UpdateSettings(): React.JSX.Element {
 
   const phase = state?.phase
   const working = phase === 'checking' || phase === 'downloading'
+  const facts = state ? updateFacts(state, now) : null
+  const percent = Math.round(state?.percent ?? 0)
   return (
-    <section className="glass-panel settings-card" aria-labelledby="updates-heading">
-      <h3 id="updates-heading" className="settings-heading">
-        Updates
-      </h3>
-      <div className="settings-field">
-        <div className="settings-field-head">
-          <span className="settings-label">New versions</span>
-          <GlassSelect
-            label="New versions"
-            value={mode}
-            options={MODES}
-            onChange={(next) => {
-              setMode(next)
-              void window.api.setUpdateMode(next)
-            }}
-          />
-        </div>
-        <div className="settings-hint">
-          DiskFrame checks its GitHub releases a little after it starts and every few hours. A download is
-          verified before it is installed. Nothing about your files is sent.
-        </div>
-        <div className="settings-field-head">
+    <SettingsCard
+      id="updates"
+      icon={<RefreshCw size={16} />}
+      title="Updates"
+      description="DiskFrame checks its GitHub releases and verifies every download before installing it. Nothing about your files is sent."
+      chip={state ? updateChip(state) : undefined}
+    >
+      <SettingsFacts
+        facts={[
+          { label: 'Installed', value: facts?.installed ?? '…' },
+          { label: 'Latest', value: facts?.latest ?? '…' },
+          { label: 'Last checked', value: facts?.lastChecked ?? '…' }
+        ]}
+      />
+      <SettingRow label="Update mode" hint="What DiskFrame does when a new version comes out.">
+        <GlassSelect
+          label="Update mode"
+          value={mode}
+          options={MODES}
+          onChange={(next) => {
+            setMode(next)
+            void window.api.setUpdateMode(next)
+          }}
+        />
+      </SettingRow>
+      <div className="settings-row settings-row--stack">
+        <div className="settings-row-head settings-row-head--wrap">
           <div className="settings-status" role="status" aria-live="polite">
             {state ? statusLine(state, now) : ' '}
           </div>
@@ -230,6 +241,18 @@ export function UpdateSettings(): React.JSX.Element {
             </button>
           </div>
         </div>
+        {phase === 'downloading' && (
+          <div
+            className="update-notice-bar"
+            role="progressbar"
+            aria-label="Download progress"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={percent}
+          >
+            <div style={{ transform: `scaleX(${percent / 100})` }} />
+          </div>
+        )}
         {refused && <div className="settings-hint update-notice-error">{refused}</div>}
         {state?.version && phase !== 'current' && <ReleaseNotes version={state.version} notes={state.notes} />}
         {state && !state.canInstall && phase !== 'unsupported' && (
@@ -238,6 +261,6 @@ export function UpdateSettings(): React.JSX.Element {
           </div>
         )}
       </div>
-    </section>
+    </SettingsCard>
   )
 }

@@ -1,6 +1,7 @@
-import React, { useCallback, useEffect, useState } from 'react'
-import { Sun, Moon } from 'lucide-react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
+import { Sun, Moon, MonitorCog, Palette } from 'lucide-react'
 import { useReducedMotionPref } from '../hooks/useReducedMotionPref'
+import { SettingsCard } from './SettingsCard'
 import './AppearanceSetting.css'
 
 export type ThemePref = 'system' | 'light' | 'dark'
@@ -28,9 +29,16 @@ export function applyThemePref(pref: ThemePref): void {
   document.documentElement.dataset.themePref = pref
 }
 
+const OPTIONS: { value: ThemePref; label: string; icon: React.ReactNode }[] = [
+  { value: 'light', label: 'Light', icon: <Sun size={14} aria-hidden="true" /> },
+  { value: 'dark', label: 'Dark', icon: <Moon size={14} aria-hidden="true" /> },
+  { value: 'system', label: 'System', icon: <MonitorCog size={14} aria-hidden="true" /> }
+]
+
 /**
- * Light/Dark capsule with a sliding thumb, plus a separate "use system theme"
- * control so following the OS is still reachable.
+ * Light / Dark / System as one segmented control with a sliding thumb. It is a
+ * radio group: one tab stop, arrow keys move the choice (and apply it, as
+ * radios do).
  *
  * The value is stored in localStorage rather than the database because
  * index.html reads it synchronously before the bundle parses - an async round
@@ -41,6 +49,7 @@ export default function AppearanceSetting(): React.JSX.Element {
   const reducedMotion = useReducedMotionPref()
   const [pref, setPref] = useState<ThemePref>(readThemePref)
   const [systemDark, setSystemDark] = useState<boolean>(systemPrefersDark)
+  const groupRef = useRef<HTMLDivElement>(null)
 
   // Track the OS so the capsule shows what "system" currently resolves to.
   useEffect(() => {
@@ -63,70 +72,74 @@ export default function AppearanceSetting(): React.JSX.Element {
     applyThemePref(next)
   }, [])
 
-  const usingSystem = pref === 'system'
-  const isDark = pref === 'dark' || (usingSystem && systemDark)
+  const index = OPTIONS.findIndex((o) => o.value === pref)
+
+  const onKeyDown = (e: React.KeyboardEvent): void => {
+    const step =
+      e.key === 'ArrowRight' || e.key === 'ArrowDown'
+        ? 1
+        : e.key === 'ArrowLeft' || e.key === 'ArrowUp'
+          ? -1
+          : 0
+    const to =
+      e.key === 'Home'
+        ? 0
+        : e.key === 'End'
+          ? OPTIONS.length - 1
+          : step
+            ? (index + step + OPTIONS.length) % OPTIONS.length
+            : -1
+    if (to < 0) return
+    e.preventDefault()
+    choose(OPTIONS[to].value)
+    groupRef.current?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[to]?.focus()
+  }
 
   return (
-    <section
-      aria-labelledby="appearance-heading"
-      className="glass-panel appearance-card"
+    <SettingsCard
+      id="appearance"
+      icon={<Palette size={16} />}
+      title="Appearance"
+      description="Media keeps its own colours in every theme, and the viewer background stays dark."
     >
-      <h3 id="appearance-heading" className="appearance-title">
-        Appearance
-      </h3>
-      <div className="appearance-sub">
-        Media keeps its own colours in every theme, and the viewer background stays dark.
-      </div>
-
-      <div className="appearance-row">
-        <div
-          className={
-            'theme-switch' +
-            (isDark ? ' is-dark' : '') +
-            (usingSystem ? ' is-system' : '') +
-            (reducedMotion ? ' no-anim' : '')
-          }
-          role="radiogroup"
-          aria-label="Theme"
-        >
-          {/* One thumb that slides between the two halves. */}
-          <span className="theme-switch-thumb" aria-hidden="true" />
-          <button
-            type="button"
-            role="radio"
-            aria-checked={!isDark}
-            className={'theme-switch-half' + (!isDark ? ' is-on' : '')}
-            onClick={() => choose('light')}
-          >
-            <Sun size={14} aria-hidden="true" />
-            <span>Light</span>
-          </button>
-          <button
-            type="button"
-            role="radio"
-            aria-checked={isDark}
-            className={'theme-switch-half' + (isDark ? ' is-on' : '')}
-            onClick={() => choose('dark')}
-          >
-            <Moon size={14} aria-hidden="true" />
-            <span>Dark</span>
-          </button>
-        </div>
-
-        <label className="theme-system">
-          <input
-            type="checkbox"
-            checked={usingSystem}
-            onChange={(e) => choose(e.target.checked ? 'system' : systemDark ? 'dark' : 'light')}
-          />
-          <span>
-            Use system theme
-            {usingSystem && (
-              <span className="theme-system-hint"> — currently {systemDark ? 'dark' : 'light'}</span>
-            )}
+      <div className="settings-row settings-row--stack">
+        <div className="settings-row-head">
+          <span className="settings-label" id="theme-label">
+            Theme
           </span>
-        </label>
+          <span className="settings-hint" id="theme-hint">
+            {pref === 'system'
+              ? `Following Windows, currently ${systemDark ? 'dark' : 'light'}`
+              : `Always ${pref}`}
+          </span>
+        </div>
+        <div
+          ref={groupRef}
+          className={'theme-seg' + (reducedMotion ? ' no-anim' : '')}
+          role="radiogroup"
+          aria-labelledby="theme-label"
+          aria-describedby="theme-hint"
+          style={{ '--seg-i': index } as React.CSSProperties}
+          onKeyDown={onKeyDown}
+        >
+          {/* One thumb that slides under the chosen option. */}
+          <span className="theme-seg-thumb" aria-hidden="true" />
+          {OPTIONS.map((o) => (
+            <button
+              key={o.value}
+              type="button"
+              role="radio"
+              aria-checked={pref === o.value}
+              tabIndex={pref === o.value ? 0 : -1}
+              className="theme-seg-opt"
+              onClick={() => choose(o.value)}
+            >
+              {o.icon}
+              <span>{o.label}</span>
+            </button>
+          ))}
+        </div>
       </div>
-    </section>
+    </SettingsCard>
   )
 }

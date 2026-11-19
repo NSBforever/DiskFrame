@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { modeFromPref, prefFromMode, releaseUrl, parseSnooze, shouldAnnounce, statusLine, releaseNotesText, NOTES_MAX, SNOOZE_MS, type UpdateState } from './updateState.ts'
+import { modeFromPref, prefFromMode, releaseUrl, parseSnooze, shouldAnnounce, statusLine, updateFacts, updateChip, releaseNotesText, NOTES_MAX, SNOOZE_MS, type UpdateState } from './updateState.ts'
 
 const base: UpdateState = { phase: 'idle', currentVersion: '1.1.0', canInstall: true }
 const quiet = { busy: false, snooze: null, now: 1_000_000, dismissed: false }
@@ -70,6 +70,53 @@ test('the settings line says what happened, with both versions when they differ'
   assert.match(statusLine({ ...base, phase: 'error', error: 'offline' }, now), /Could not check for updates: offline/)
   assert.match(statusLine({ ...base, phase: 'error', version: '1.2.0', error: 'checksum' }, now), /Could not download the update: checksum/)
   assert.match(statusLine({ ...base, phase: 'ready', version: '1.2.0' }, now), /installs when you close/)
+})
+
+test('the settings facts: installed and latest version and the last check, all from the state', () => {
+  const now = 10 * 60 * 60 * 1000
+  const facts = (s: Partial<UpdateState>): ReturnType<typeof updateFacts> =>
+    updateFacts({ ...base, ...s }, now)
+  // Up to date: the latest is the one installed.
+  assert.deepEqual(facts({ phase: 'current', checkedAt: now - 2 * 3600_000 }), {
+    installed: '1.1.0',
+    latest: '1.1.0',
+    lastChecked: '2 hours ago'
+  })
+  // A newer version is the latest through available, downloading, ready and a failed download.
+  for (const phase of ['available', 'downloading', 'ready', 'error'] as const) {
+    assert.equal(facts({ phase, version: '1.2.0', checkedAt: now }).latest, '1.2.0', phase)
+  }
+  assert.equal(facts({ phase: 'idle' }).latest, 'Not checked yet')
+  assert.equal(facts({ phase: 'idle' }).lastChecked, 'Never')
+  assert.equal(facts({ phase: 'checking' }).latest, 'Checking…')
+  // A failed check does not know the latest version; it never invents one.
+  const failedCheck = facts({ phase: 'error', error: 'offline', checkedAt: now - 60_000 })
+  assert.equal(failedCheck.latest, 'Unknown')
+  assert.equal(facts({ phase: 'unsupported', reason: 'development' }).latest, 'Not checked')
+  assert.equal(facts({ phase: 'current', checkedAt: now - 10_000 }).lastChecked, 'just now')
+  // The phase wins over a version left over from an earlier failed download or check:
+  // "up to date" never sits beside a newer Latest, and a re-check reads as checking.
+  assert.equal(facts({ phase: 'current', version: '1.2.0' }).latest, '1.1.0')
+  assert.equal(facts({ phase: 'checking', version: '1.2.0' }).latest, 'Checking…')
+})
+
+test('the Updates card chip names the phase, and only a real problem is shown as one', () => {
+  const chip = (s: Partial<UpdateState>): string => {
+    const c = updateChip({ ...base, ...s })
+    return `${c.label} / ${c.tone}`
+  }
+  assert.equal(chip({ phase: 'current' }), 'Up to date / ok')
+  assert.equal(chip({ phase: 'available', version: '1.2.0' }), 'Update available / warn')
+  const halfway = chip({ phase: 'downloading', version: '1.2.0', percent: 41.6 })
+  assert.equal(halfway, 'Downloading 42% / neutral')
+  assert.equal(chip({ phase: 'ready', version: '1.2.0' }), 'Ready to install / ok')
+  assert.equal(chip({ phase: 'error', error: 'offline' }), 'Check failed / danger')
+  const badDownload = chip({ phase: 'error', version: '1.2.0', error: 'checksum' })
+  assert.equal(badDownload, 'Download failed / danger')
+  assert.equal(chip({ phase: 'checking' }), 'Checking… / neutral')
+  assert.equal(chip({ phase: 'idle' }), 'Not checked / neutral')
+  assert.equal(chip({ phase: 'unsupported', reason: 'development' }), 'Development build / neutral')
+  assert.equal(chip({ phase: 'unsupported', reason: 'safe-mode' }), 'Off / neutral')
 })
 
 test('release notes become plain text: no markup or script, bullets kept, length capped', () => {

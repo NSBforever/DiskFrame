@@ -178,8 +178,13 @@ import {
   PanelLeftClose,
   Maximize2,
   Minimize2,
-  CalendarHeart
+  CalendarHeart,
+  LayoutGrid,
+  Monitor,
+  CirclePlay,
+  Search as SearchIcon
 } from 'lucide-react'
+import { SettingsCard, SettingRow, SettingsSwitch, SettingsSlider } from './components/SettingsCard'
 import { mediaUrl } from '../../main/mediaUrl'
 
 /**
@@ -1407,132 +1412,125 @@ const MainContentArea: React.FC<{
       {/* Settings Panel View */}
       {!scanning && activeNav === 'settings' && (
         <div className="view-transition-enter settings-page">
-          <div>
-            <h2 style={{ fontSize: '22px', fontWeight: 700, color: 'var(--app-fg, #f2f2f0)', letterSpacing: '-0.5px', margin: 0 }}>
-              Settings
-            </h2>
-            <div style={{ fontSize: '9px', color: 'var(--app-fg-dim, #8a8a8f)', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
-              Configure application parameters and interface layout
-            </div>
-          </div>
+          <header className="settings-header">
+            <h2 className="settings-title">Settings</h2>
+            <p className="settings-subtitle">
+              Manage your appearance, interface, playback and application preferences.
+            </p>
+          </header>
 
           {/* Two stacks rather than a row grid: the cards differ in height,
-              so pairing them row by row left holes. Each column is balanced
-              by content (~560 / ~600px at 1536x960), and on a narrow content
-              area the stacks simply follow one another. */}
+            so pairing them row by row left holes. Left is how DiskFrame
+            looks and behaves, right is what it connects to; on a narrow
+            content area the stacks simply follow one another. */}
           <div className="settings-grid">
-          <div className="settings-col">
-          <AppearanceSetting />
+            <div className="settings-col">
+              <AppearanceSetting />
 
-          {/* Same glass card as Appearance and the dock, so Settings reads as
-              one surface rather than three different boxes. */}
-          <section className="glass-panel settings-card" aria-labelledby="interface-heading">
-            <h3 id="interface-heading" className="settings-heading">
-              Interface Layout
-            </h3>
-            <div className="settings-field">
-              <div className="settings-field-head">
-                <label htmlFor="settings-tile-size-slider" className="settings-label">
-                  Grid Tile Size
-                </label>
-                <span className="settings-value">
-                  {Math.round(tileSizePercent)}% ({tileSize}px)
-                </span>
-              </div>
-              <input
-                id="settings-tile-size-slider"
-                className="settings-slider"
-                type="range"
-                min="50"
-                max="200"
-                step="5"
-                value={Math.round(tileSizePercent)}
-                onChange={(e) => onTileSizeChange(Number(e.target.value))}
+              <SettingsCard
+                id="interface"
+                icon={<LayoutGrid size={16} />}
+                title="Interface Layout"
+                description="How large the photo and video tiles are in the gallery."
+              >
+                <div className="settings-row settings-row--stack">
+                  <div className="settings-row-head">
+                    <label htmlFor="settings-tile-size-slider" className="settings-label">
+                      Grid tile size
+                    </label>
+                    <span className="settings-value" aria-hidden="true">
+                      {Math.round(tileSizePercent)}% · {tileSize}px
+                    </span>
+                  </div>
+                  <SettingsSlider
+                    id="settings-tile-size-slider"
+                    min={50}
+                    max={200}
+                    step={5}
+                    value={Math.round(tileSizePercent)}
+                    aria-valuetext={`${Math.round(tileSizePercent)}%, ${tileSize} pixels`}
+                    onChange={(e) => onTileSizeChange(Number(e.target.value))}
+                  />
+                  <div className="settings-scale" aria-hidden="true">
+                    <span>Smaller · 50%</span>
+                    <span>200% · Larger</span>
+                  </div>
+                </div>
+              </SettingsCard>
+
+              <SettingsCard
+                id="window"
+                icon={<Monitor size={16} />}
+                title="Window"
+                description="How DiskFrame opens on your screen."
+              >
+                <SettingRow
+                  label="Open in full screen"
+                  htmlFor="settings-start-fullscreen"
+                  hint={
+                    <>
+                      Applies the next time DiskFrame opens. Press F11, or use Exit full screen at
+                      the top right, to leave or re-enter full screen at any time. A video&apos;s
+                      own full screen is separate.
+                    </>
+                  }
+                >
+                  <SettingsSwitch
+                    id="settings-start-fullscreen"
+                    checked={startFullscreen}
+                    onChange={onStartFullscreenChange}
+                  />
+                </SettingRow>
+              </SettingsCard>
+
+              <SettingsCard
+                id="playback"
+                icon={<CirclePlay size={16} />}
+                title="Playback"
+                description="Video behaviour in the gallery."
+              >
+                <SettingRow
+                  label="Video hover previews"
+                  htmlFor="settings-hover-previews"
+                  hint="Play a short muted preview when you hover over a video tile."
+                >
+                  <SettingsSwitch
+                    id="settings-hover-previews"
+                    checked={hoverPreviewsEnabled}
+                    onChange={onHoverPreviewsChange}
+                  />
+                </SettingRow>
+              </SettingsCard>
+            </div>
+
+            <div className="settings-col">
+              <UpdateSettings />
+              <CalendarSettings />
+
+              <SettingsCard
+                id="search"
+                icon={<SearchIcon size={16} />}
+                title="Search"
+                description="Find files by name, date or place."
+              >
+                <SettingRow
+                  label="Floating search button"
+                  htmlFor="settings-ai-search-button"
+                  hint="The round button at the bottom right of the gallery. Turning it off removes the button and its search overlay until you turn it back on here."
+                >
+                  <SettingsSwitch
+                    id="settings-ai-search-button"
+                    checked={aiSearchButtonEnabled}
+                    onChange={onAiSearchButtonChange}
+                  />
+                </SettingRow>
+              </SettingsCard>
+
+              <AboutConnect
+                version={runtimeMode?.appVersion ?? null}
+                buildCommit={runtimeMode?.buildCommit ?? null}
               />
-              <div className="settings-hint">Adjusts the scale of grid item cards in the main lists.</div>
             </div>
-          </section>
-
-          <section className="glass-panel settings-card" aria-labelledby="window-heading">
-            <h3 id="window-heading" className="settings-heading">
-              Window
-            </h3>
-            <div className="settings-field">
-              <div className="settings-field-head">
-                <label htmlFor="settings-start-fullscreen" className="settings-label">
-                  Open in full screen
-                </label>
-                <input
-                  id="settings-start-fullscreen"
-                  className="settings-switch"
-                  type="checkbox"
-                  checked={startFullscreen}
-                  onChange={(e) => onStartFullscreenChange(e.target.checked)}
-                />
-              </div>
-              <div className="settings-hint">
-                Applies the next time DiskFrame opens. F11, or the Exit full screen button at the top
-                right, leaves or re-enters full screen at any time. A video&apos;s own full screen is separate.
-              </div>
-            </div>
-          </section>
-
-          <section className="glass-panel settings-card" aria-labelledby="playback-heading">
-            <h3 id="playback-heading" className="settings-heading">
-              Playback
-            </h3>
-            <div className="settings-field">
-              <div className="settings-field-head">
-                <label htmlFor="settings-hover-previews" className="settings-label">
-                  Video hover previews
-                </label>
-                <input
-                  id="settings-hover-previews"
-                  className="settings-switch"
-                  type="checkbox"
-                  checked={hoverPreviewsEnabled}
-                  onChange={(e) => onHoverPreviewsChange(e.target.checked)}
-                />
-              </div>
-              <div className="settings-hint">Play a short muted preview when hovering a video tile.</div>
-            </div>
-          </section>
-          </div>
-
-          <div className="settings-col">
-          <UpdateSettings />
-          <CalendarSettings />
-
-          <section className="glass-panel settings-card" aria-labelledby="search-heading">
-            <h3 id="search-heading" className="settings-heading">
-              Search
-            </h3>
-            <div className="settings-field">
-              <div className="settings-field-head">
-                <label htmlFor="settings-ai-search-button" className="settings-label">
-                  Floating search button
-                </label>
-                <input
-                  id="settings-ai-search-button"
-                  className="settings-switch"
-                  type="checkbox"
-                  checked={aiSearchButtonEnabled}
-                  onChange={(e) => onAiSearchButtonChange(e.target.checked)}
-                />
-              </div>
-              <div className="settings-hint">
-                The circular button over the bottom-right of the gallery that opens search by name,
-                date or place. Turning it off removes the button and its search overlay entirely,
-                until turned back on here.
-              </div>
-            </div>
-          </section>
-
-          <AboutConnect
-            version={runtimeMode?.appVersion ?? null}
-            buildCommit={runtimeMode?.buildCommit ?? null}
-          />
-          </div>
           </div>
         </div>
       )}
