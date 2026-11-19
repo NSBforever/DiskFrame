@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 import { moveVolumeToLetter, type LetterDb } from './driveLetter.ts'
+import { COLLECTIONS_SCHEMA_SQL } from './collections.ts'
 
 const G = '\\\\?\\Volume{GGGG}\\'
 const OTHER = '\\\\?\\Volume{OOOO}\\'
@@ -15,6 +16,7 @@ function makeDb(): DatabaseSync {
     CREATE TABLE folder_snapshot (volume_id TEXT NOT NULL, path TEXT NOT NULL, mtime INTEGER, children TEXT, PRIMARY KEY (volume_id, path));
     CREATE TABLE event_file_links (path TEXT NOT NULL, volume_id TEXT, calendar_id TEXT NOT NULL, event_id TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (path, volume_id, calendar_id, event_id));
   `)
+  db.exec(COLLECTIONS_SCHEMA_SQL)
   return db
 }
 const add = (db: DatabaseSync, path: string, drive: string | null, vol: string | null): void =>
@@ -77,12 +79,15 @@ test('favourites follow only files that moved; folder snapshots follow the volum
   db.prepare('INSERT INTO favourite_paths (path, volume_id) VALUES (?, ?), (?, ?)').run('D:\\fav.jpg', G, 'D:\\x.jpg', G)
   db.prepare('INSERT INTO folder_snapshot (volume_id, path, mtime) VALUES (?, ?, 5), (?, ?, 7)').run(G, 'D:\\DCIM', OTHER, 'D:\\DCIM')
   db.prepare("INSERT INTO event_file_links VALUES (?, ?, 'primary', 'e1', 'confirmed', 'T'), (?, ?, 'primary', 'e1', 'manual', 'T')").run('D:\\fav.jpg', G, 'D:\\x.jpg', G)
+  db.prepare("INSERT INTO collection_files VALUES (1, ?, ?, 'added'), (1, ?, ?, 'auto')").run('D:\\fav.jpg', G, 'D:\\x.jpg', G)
   move(db, G, 'G:')
   const favs = (db.prepare('SELECT path FROM favourite_paths ORDER BY path').all() as { path: string }[]).map((r) => r.path)
   // D:\x.jpg collided and stayed, so its favourite stays with it.
   assert.deepEqual(favs, ['D:\\x.jpg', 'G:\\fav.jpg'])
-  const links = (db.prepare('SELECT path FROM event_file_links ORDER BY path').all() as { path: string }[]).map((r) => r.path)
-  assert.deepEqual(links, ['D:\\x.jpg', 'G:\\fav.jpg'], 'event links follow their files the same way')
+  const events = (db.prepare('SELECT path FROM event_file_links ORDER BY path').all() as { path: string }[]).map((r) => r.path)
+  assert.deepEqual(events, ['D:\\x.jpg', 'G:\\fav.jpg'], 'event links follow their files the same way')
+  const links = (db.prepare('SELECT path FROM collection_files ORDER BY path').all() as { path: string }[]).map((r) => r.path)
+  assert.deepEqual(links, ['D:\\x.jpg', 'G:\\fav.jpg'], 'collection members follow their files the same way')
   const snaps = (db.prepare('SELECT volume_id, path, mtime FROM folder_snapshot ORDER BY volume_id').all() as object[]).map((r) => ({ ...r }))
   assert.deepEqual(snaps, [
     { volume_id: G, path: 'G:\\DCIM', mtime: 5 },

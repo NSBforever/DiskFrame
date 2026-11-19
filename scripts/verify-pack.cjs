@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports, @typescript-eslint/explicit-function-return-type -- plain CommonJS run by Node/electron-builder, not TypeScript */
 // electron-builder afterPack hook: refuse to produce an installer that is
 // missing a binary DiskFrame needs at runtime.
 //
@@ -39,4 +40,23 @@ exports.default = async function verifyPack(context) {
     )
   }
   console.log(`  • verify-pack: all ${REQUIRED.length + 1} runtime binaries present`)
+
+  // Only the built app belongs in app.asar: no source, tests, source maps or
+  // development folders (the allowlist in electron-builder.yml should already
+  // guarantee this; this makes a regression fail the build instead of shipping).
+  const asar = require('@electron/asar')
+  const entries = asar.listPackage(path.join(context.appOutDir, 'resources', 'app.asar')).map((e) => e.replace(/\\/g, '/'))
+  const ours = entries.filter((e) => !e.startsWith('/node_modules/'))
+  const leaked = ours.filter(
+    (e) =>
+      /\.map$/i.test(e) ||
+      /\.(ts|tsx)$/i.test(e) ||
+      /\.test\./i.test(e) ||
+      /^\/(src|scratch|docs|\.github|\.claude|graphify-out|dist[^/]*)\//i.test(e) ||
+      /(^|\/)\.env/i.test(e)
+  )
+  if (leaked.length > 0) {
+    throw new Error(`app.asar contains development files that must not ship:\n  ${leaked.slice(0, 20).join('\n  ')}`)
+  }
+  console.log(`  • verify-pack: ${ours.length} app entries, no source, tests or source maps`)
 }

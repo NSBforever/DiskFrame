@@ -15,6 +15,8 @@ interface ScannedFile {
   drive: string
   favourited: number
   thumb: string | null
+  /** The row's own volume: media URLs name it, so another volume's file at the same path is never shown. */
+  volume_id?: string | null
 }
 
 /**
@@ -93,7 +95,7 @@ export const MetadataPanel: React.FC<MetadataPanelProps> = ({
     let live = true
     setProv(null)
     window.api
-      .dateProvenance(file.path)
+      .dateProvenance(file.path, file.volume_id)
       .then((p) => live && setProv(p))
       .catch(() => live && setProv(null))
     return () => {
@@ -112,7 +114,7 @@ export const MetadataPanel: React.FC<MetadataPanelProps> = ({
         let exifData: any = {}
 
         if (isPhoto) {
-          const url = mediaUrl(file.path)
+          const url = mediaUrl(file.path, file.volume_id)
           const res = await fetch(url)
           const buffer = await res.arrayBuffer()
           exifData = await exifr.parse(buffer, true) || {}

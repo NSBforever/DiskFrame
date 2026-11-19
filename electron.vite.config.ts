@@ -22,7 +22,11 @@ function buildCommit(): string {
   }
 }
 
-export default defineConfig({
+// Production bundles for main and preload are minified: they used to ship as
+// readable source with comments (index.js, 6,286 lines). This only raises the
+// effort of reading them - a desktop app can always be decompiled. No source
+// maps are emitted; scripts/verify-pack.cjs fails a build that packages one.
+export default defineConfig(({ command }) => ({
   main: {
     define: {
       __DF_COMMIT__: JSON.stringify(buildCommit()),
@@ -33,6 +37,7 @@ export default defineConfig({
       __DF_GOOGLE_CLIENT_SECRET__: JSON.stringify(process.env.DF_GOOGLE_CLIENT_SECRET ?? '')
     },
     build: {
+      minify: command === 'build',
       rollupOptions: {
         input: {
           index: resolve('src/main/index.ts'),
@@ -46,7 +51,7 @@ export default defineConfig({
       }
     }
   },
-  preload: {},
+  preload: { build: { minify: command === 'build' } },
   renderer: {
     resolve: {
       alias: {
@@ -61,4 +66,4 @@ export default defineConfig({
       }
     }
   }
-})
+}))

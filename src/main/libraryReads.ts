@@ -78,7 +78,7 @@ export interface MapCluster {
 const MAX_CACHED = 4
 
 const queryKey = (q: LibraryQuery): string =>
-  JSON.stringify([q.drive, q.volumeId, q.nav, q.search, q.groupBy, q.order, q.bbox ?? null])
+  JSON.stringify([q.drive, q.volumeId, q.volumeIds ?? null, q.nav, q.search, q.groupBy, q.order, q.bbox ?? null])
 
 export class LibraryReads {
   private orderings = new Map<string, { version: string; ids: number[] }>()
@@ -155,6 +155,18 @@ export class LibraryReads {
       rows.push(row)
     }
     return { rows, version }
+  }
+
+  /** Every volume with visible files and its last-seen letter: what All Drives can combine. */
+  volumes(): { volumeId: string; count: number; letter: string | null; label: string | null; lastSeen: string | null }[] {
+    return this.db
+      .prepare(
+        `SELECT f.volume_id AS volumeId, COUNT(*) AS count, v.drive_letter AS letter, v.label AS label, v.last_seen AS lastSeen
+         FROM files f LEFT JOIN volume_drives v ON v.volume_id = f.volume_id
+         WHERE f.volume_id IS NOT NULL AND f.hidden = 0 AND f.trashed_at IS NULL
+         GROUP BY f.volume_id ORDER BY v.drive_letter, f.volume_id`
+      )
+      .all() as { volumeId: string; count: number; letter: string | null; label: string | null; lastSeen: string | null }[]
   }
 
   /** Paths on a volume still owed a thumbnail, newest first - the background

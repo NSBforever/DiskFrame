@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { HardDrive, Usb } from 'lucide-react'
+import { AllDrivesCard } from './AllDrives'
 import './DriveSelectGrid.css'
 
 export interface Drive {
@@ -24,6 +25,8 @@ export interface Drive {
 
 interface DriveSelectGridProps {
   onSelectDrive: (drive: Drive) => void
+  /** Opens All Drives (every indexed drive, or the chosen ones, as one library). */
+  onSelectAll?: () => void
   drives?: any[]
 }
 
@@ -80,7 +83,7 @@ function formatBytes(bytes: number): string {
   return gb.toFixed(1) + ' GB'
 }
 
-export default function DriveSelectGrid({ onSelectDrive, drives: propDrives }: DriveSelectGridProps) {
+export default function DriveSelectGrid({ onSelectDrive, onSelectAll, drives: propDrives }: DriveSelectGridProps) {
   // Seeded from the list the app already holds (returning from a drive), then
   // kept current by every 'drives-updated'. Each entry carries its own indexed
   // count, so a card never says "Not indexed yet" while a separate count
@@ -124,6 +127,7 @@ export default function DriveSelectGrid({ onSelectDrive, drives: propDrives }: D
         </div>
       </div>
       <div className="drive-grid">
+        {onSelectAll && <AllDrivesCard onOpen={onSelectAll} />}
         {drives.map((drive) => {
           const usedPct = drive.totalBytes > 0 ? ((drive.totalBytes - drive.freeBytes) / drive.totalBytes) * 100 : 0
           // The icon always renders: an unknown connection still gets the

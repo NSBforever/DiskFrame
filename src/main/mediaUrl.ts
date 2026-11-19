@@ -14,8 +14,27 @@
  */
 const PREFIX = 'media://local/'
 
-export function mediaUrl(path: string): string {
-  return PREFIX + path.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/')
+/**
+ * `volumeId` names the volume of the catalogue row being shown, as `?v=`.
+ * All Drives can show two volumes' files at one literal path (both drives
+ * were E: at different times); with it the media protocol serves only that
+ * volume's file and refuses when another volume holds the letter now.
+ */
+export function mediaUrl(path: string, volumeId?: string | null): string {
+  const url = PREFIX + path.replace(/\\/g, '/').split('/').map(encodeURIComponent).join('/')
+  return volumeId ? url + '?v=' + encodeURIComponent(volumeId) : url
+}
+
+/** Appends a query parameter whether or not the URL already has one. */
+export function withQuery(url: string, param: string): string {
+  return url + (url.includes('?') ? '&' : '?') + param
+}
+
+/** The volume a `media:` URL names, or null. */
+export function mediaUrlVolume(url: string): string | null {
+  const q = url.indexOf('?')
+  if (q === -1) return null
+  return new URLSearchParams(url.slice(q + 1).split('#')[0]).get('v') || null
 }
 
 /** The Windows path a `media:` URL names, or null when it is not one of ours

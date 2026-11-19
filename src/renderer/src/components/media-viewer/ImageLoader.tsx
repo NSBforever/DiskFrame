@@ -11,7 +11,7 @@ import {
   SkipBack,
   SkipForward
 } from 'lucide-react'
-import { mediaUrl } from '../../../../main/mediaUrl'
+import { mediaUrl, withQuery } from '../../../../main/mediaUrl'
 import { videoExts } from '../../../../main/validation'
 
 interface ScannedFile {
@@ -27,6 +27,8 @@ interface ScannedFile {
   drive: string
   favourited: number
   thumb: string | null
+  /** The row's own volume: media URLs name it, so another volume's file at the same path is never shown. */
+  volume_id?: string | null
 }
 
 interface ImageLoaderProps {
@@ -152,7 +154,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
     if (!videoError) return
     let live = true
     window.api
-      .mediaStatus(file.path)
+      .mediaStatus(file.path, file.volume_id)
       .then((s) => {
         if (live) setVideoFailure(s.status !== 'ok' ? s.status : 'undecodable')
       })
@@ -253,14 +255,14 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
     if (idx < list.length - 1) {
       const nextFile = list[idx + 1]
       if (photoExts.includes(nextFile.ext.toLowerCase())) {
-        imageCache.preload(nextFile.path, toUrl(nextFile.path)).catch(() => {})
+        imageCache.preload(nextFile.path, mediaUrl(nextFile.path, nextFile.volume_id)).catch(() => {})
       }
     }
 
     if (idx > 0) {
       const prevFile = list[idx - 1]
       if (photoExts.includes(prevFile.ext.toLowerCase())) {
-        imageCache.preload(prevFile.path, toUrl(prevFile.path)).catch(() => {})
+        imageCache.preload(prevFile.path, mediaUrl(prevFile.path, prevFile.volume_id)).catch(() => {})
       }
     }
   }, [file.path, list])
@@ -301,7 +303,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
       // media:///<path>, so the same URL would resolve from that cache. The
       // media handler ignores a query string, which makes this a new URL for
       // the cache and the same file for the handler.
-      const fullUrl = retryNonce > 0 ? `${toUrl(file.path)}?retry=${retryNonce}` : toUrl(file.path)
+      const fullUrl = retryNonce > 0 ? withQuery(mediaUrl(file.path, file.volume_id), `retry=${retryNonce}`) : mediaUrl(file.path, file.volume_id)
       imageCache
         .preload(file.path + (retryNonce > 0 ? `#${retryNonce}` : ''), fullUrl)
         .then((img) => {
@@ -321,7 +323,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
           // and readable, so what failed was the decode.
           let kind: FailureKind = 'undecodable'
           try {
-            const s = await window.api.mediaStatus(file.path)
+            const s = await window.api.mediaStatus(file.path, file.volume_id)
             if (s.status !== 'ok') kind = s.status
           } catch {
             /* no answer - the generic decode message is still honest */
@@ -379,7 +381,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
         try {
           // Hidden and paused at its final bounds; revealed by the effect
           // below once the viewer has landed and a frame exists.
-          await window.api.playMpv(file.path, bounds, { deferShow: true })
+          await window.api.playMpv(file.path, bounds, { deferShow: true, volumeId: file.volume_id })
           if (!active) return
           setVideoMode('mpv')
           setIsBuffering(false)
@@ -1040,7 +1042,7 @@ export const ImageLoader: React.FC<ImageLoaderProps> = ({
   const showControls = controlsVisible || forceVisible
 
   const thumbSrc = file.thumb ? toUrl(file.thumb) : null
-  const mediaSrc = toUrl(file.path)
+  const mediaSrc = mediaUrl(file.path, file.volume_id)
 
   const transformStyle = `translate(${translateX}px, ${translateY}px) scale(${scale}) rotate(${rotation}deg) ${flipHorizontal ? 'scaleX(-1)' : ''}`
 

@@ -3,7 +3,10 @@ import * as fs from 'fs'
 import * as cp from 'child_process'
 import { readPhotoMeta } from './photoGps'
 import { fsEarliest, type DateSource } from './captureTime'
+import type { DiscoveryPrefs } from './discovery'
 import { CALENDAR_SCHEMA_SQL } from './calendarStore'
+import { ensureConsentSchema, type ConsentDb } from './calendarConsent'
+import { COLLECTIONS_SCHEMA_SQL } from './collections'
 import Database from 'better-sqlite3'
 import { app, utilityProcess } from 'electron'
 import sharp from 'sharp'
@@ -584,6 +587,12 @@ db.exec(EPOCH_SCHEMA_SQL)
 
 // Google Calendar cache (1.4.0). New tables only: older builds ignore them.
 db.exec(CALENDAR_SCHEMA_SQL)
+// Which drives Calendar matching may read (calendarConsent.ts). New table only.
+ensureConsentSchema(db as unknown as ConsentDb, new Date())
+
+// Places, Trips and collections (collections.ts). New tables only: older
+// builds ignore them.
+db.exec(COLLECTIONS_SCHEMA_SQL)
 
 // favourite_paths needs the same (path, volume_id) identity as files, for the
 // same reason: two different volumes can now share a literal path, and a
@@ -669,6 +678,15 @@ if (!deletePrefsCols.includes('auto_update')) {
 }
 for (const [col, def] of [['calendar_auto_sync', 1], ['calendar_buffer_min', 30]] as const) {
   if (!deletePrefsCols.includes(col)) db.prepare(`ALTER TABLE delete_prefs ADD COLUMN ${col} INTEGER DEFAULT ${def}`).run()
+}
+// All Drives selection (driveScope.ts) and local discovery choices.
+for (const [col, type] of [
+  ['drive_scope', 'TEXT'],
+  ['discovery_cross_drive', 'INTEGER DEFAULT 0'],
+  ['home_lat', 'REAL'],
+  ['home_lng', 'REAL']
+] as const) {
+  if (!deletePrefsCols.includes(col)) db.prepare(`ALTER TABLE delete_prefs ADD COLUMN ${col} ${type}`).run()
 }
 
 export interface ScannedFile {
@@ -860,7 +878,33 @@ export function setCalendarPrefs(p: Partial<CalendarPrefs>): CalendarPrefs {
   return getCalendarPrefs()
 }
 
-/** The catalogue connection, for modules that keep their own SQL (calendarStore). */
+/** The stored All Drives selection, as written (driveScope.ts parses it). */
+export function getDriveScopePref(): string | null {
+  const row = db.prepare('SELECT drive_scope s FROM delete_prefs WHERE id = 1').get() as { s: string | null } | undefined
+  return row?.s ?? null
+}
+export function setDriveScopePref(json: string): void {
+  db.prepare('INSERT OR IGNORE INTO delete_prefs (id) VALUES (1)').run()
+  db.prepare('UPDATE delete_prefs SET drive_scope = ? WHERE id = 1').run(json)
+}
+
+export function getDiscoveryPrefs(): DiscoveryPrefs {
+  const row = db.prepare('SELECT discovery_cross_drive c, home_lat la, home_lng lo FROM delete_prefs WHERE id = 1').get() as
+    | { c: number | null; la: number | null; lo: number | null }
+    | undefined
+  const home = typeof row?.la === 'number' && typeof row?.lo === 'number' ? { lat: row.la, lng: row.lo } : null
+  return { crossDrive: row?.c === 1, home }
+}
+export function setDiscoveryPrefs(p: Partial<DiscoveryPrefs>): DiscoveryPrefs {
+  db.prepare('INSERT OR IGNORE INTO delete_prefs (id) VALUES (1)').run()
+  if (typeof p.crossDrive === 'boolean') db.prepare('UPDATE delete_prefs SET discovery_cross_drive = ? WHERE id = 1').run(p.crossDrive ? 1 : 0)
+  if (p.home === null) db.prepare('UPDATE delete_prefs SET home_lat = NULL, home_lng = NULL WHERE id = 1').run()
+  else if (p.home && Number.isFinite(p.home.lat) && Number.isFinite(p.home.lng) && Math.abs(p.home.lat) <= 90 && Math.abs(p.home.lng) <= 180)
+    db.prepare('UPDATE delete_prefs SET home_lat = ?, home_lng = ? WHERE id = 1').run(p.home.lat, p.home.lng)
+  return getDiscoveryPrefs()
+}
+
+/** The catalogue connection, for modules that keep their own SQL (calendarStore, collections). */
 export const catalogueDb = db
 
 export function setUpdateModePref(mode: UpdateMode): void {
@@ -978,16 +1022,29 @@ function refVolumeId(r: PathRef): string | null | undefined {
  * identity) is reported as failed rather than as a success the UI would then
  * show as gone. Nothing on disk is touched.
  */
+/**
+ * The volume a path-only reference means. A batch action from the grid knows
+ * paths, not volumes, and two volumes can share a literal path (both were E:
+ * once). It means the file on the volume mounted at that letter now; failing
+ * that, the only row at that path. Undefined when it is ambiguous (several
+ * disconnected volumes share it) - then nothing is touched.
+ */
+function pathOnlyVolume(path: string): string | null | undefined {
+  const rows = db.prepare('SELECT volume_id FROM files WHERE path = ?').all(path) as { volume_id: string | null }[]
+  if (rows.length <= 1) return rows[0]?.volume_id ?? null
+  const mounted = getCachedVolumeId(path.slice(0, 2).toUpperCase())
+  return rows.some((r) => r.volume_id === mounted) ? mounted : undefined
+}
+
 export function softDeleteFiles(refs: PathRef[]): { success: string[]; failed: string[] } {
-  const stmt = db.prepare('UPDATE files SET trashed_at = ? WHERE path = ? AND trashed_at IS NULL')
   const stmtScoped = db.prepare('UPDATE files SET trashed_at = ? WHERE path = ? AND volume_id IS ? AND trashed_at IS NULL')
   const now = new Date().toISOString()
   const success: string[] = []
   const failed: string[] = []
   db.transaction(() => {
     for (const r of refs) {
-      const volumeId = refVolumeId(r)
-      const res = volumeId !== undefined ? stmtScoped.run(now, refPath(r), volumeId) : stmt.run(now, refPath(r))
+      const volumeId = refVolumeId(r) ?? pathOnlyVolume(refPath(r))
+      const res = volumeId !== undefined ? stmtScoped.run(now, refPath(r), volumeId) : { changes: 0 }
       ;(res.changes > 0 ? success : failed).push(refPath(r))
     }
   })()
@@ -995,14 +1052,13 @@ export function softDeleteFiles(refs: PathRef[]): { success: string[]; failed: s
 }
 
 export function restoreFiles(refs: PathRef[]): { success: string[]; failed: string[] } {
-  const stmt = db.prepare('UPDATE files SET trashed_at = NULL WHERE path = ? AND trashed_at IS NOT NULL')
   const stmtScoped = db.prepare('UPDATE files SET trashed_at = NULL WHERE path = ? AND volume_id IS ? AND trashed_at IS NOT NULL')
   const success: string[] = []
   const failed: string[] = []
   db.transaction(() => {
     for (const r of refs) {
-      const volumeId = refVolumeId(r)
-      const res = volumeId !== undefined ? stmtScoped.run(refPath(r), volumeId) : stmt.run(refPath(r))
+      const volumeId = refVolumeId(r) ?? pathOnlyVolume(refPath(r))
+      const res = volumeId !== undefined ? stmtScoped.run(refPath(r), volumeId) : { changes: 0 }
       ;(res.changes > 0 ? success : failed).push(refPath(r))
     }
   })()
@@ -1225,11 +1281,15 @@ export function getGroupedFiles(drivePath?: string, volumeId?: string | null): R
  * here on its own once that file is rediscovered by a real walk of its real
  * volume, the same self-healing backfill the rest of the library relies on.
  */
-export function getFavourites(volumeId: string | null): ScannedFile[] {
-  if (!volumeId) return []
+export function getFavourites(volumeId: string | string[] | null): ScannedFile[] {
+  const ids = Array.isArray(volumeId) ? volumeId : volumeId ? [volumeId] : []
+  if (!ids.length) return []
   return db
-    .prepare('SELECT * FROM files INDEXED BY idx_files_favourited WHERE favourited = 1 AND volume_id = ? AND hidden = 0 AND trashed_at IS NULL ORDER BY date DESC')
-    .all(volumeId) as ScannedFile[]
+    .prepare(
+      `SELECT * FROM files INDEXED BY idx_files_favourited WHERE favourited = 1 AND volume_id IN (${ids.map(() => '?').join(',')})
+       AND hidden = 0 AND trashed_at IS NULL ORDER BY date DESC, path ASC, volume_id ASC`
+    )
+    .all(...ids) as ScannedFile[]
 }
 
 
@@ -1246,9 +1306,9 @@ export function getFavourites(volumeId: string | null): ScannedFile[] {
  */
 function repointPath(oldPath: string, newPath: string, volumeId?: string | null): void {
   if (!oldPath || !newPath || oldPath === newPath) return
-  // Favourites and the user's calendar links are both decisions about a file,
-  // keyed by (path, volume_id), and both follow it when it moves.
-  for (const table of ['favourite_paths', 'event_file_links']) {
+  // Favourites, the user's calendar links and collection membership are all
+  // decisions about a file, keyed by (path, volume_id), and follow it when it moves.
+  for (const table of ['favourite_paths', 'event_file_links', 'collection_files']) {
     if (volumeId !== undefined) {
       db.prepare(`UPDATE OR REPLACE ${table} SET path = ? WHERE path = ? AND volume_id IS ?`).run(newPath, oldPath, volumeId)
     } else {
@@ -1268,7 +1328,10 @@ function repointPath(oldPath: string, newPath: string, volumeId?: string | null)
  * so a batch action working from paths alone never toggles a stranger's file
  * that happens to share one.
  */
-export function toggleFavourite(filePath: string, volumeId?: string | null): boolean {
+export function toggleFavourite(filePath: string, requestedVolumeId?: string | null): boolean {
+  // A path-only toggle means one file, never every volume's row at that path.
+  const volumeId = requestedVolumeId !== undefined ? requestedVolumeId : pathOnlyVolume(filePath)
+  if (volumeId === undefined) return false
   if (volumeId !== undefined) {
     db.prepare(
       'UPDATE files SET favourited = CASE WHEN favourited = 1 THEN 0 ELSE 1 END WHERE path = ? AND volume_id IS ?'
@@ -1304,10 +1367,12 @@ export function toggleFavourite(filePath: string, volumeId?: string | null): boo
 
 /** Where one file's catalogue date came from (captureTime.ts), for the Info panel.
  *  Not part of a gallery page: pages carry only what the grid draws. */
-export function getDateProvenance(filePath: string): { source: string | null; offsetMin: number | null } {
+export function getDateProvenance(filePath: string, volumeId?: string | null): { source: string | null; offsetMin: number | null } {
+  // The row the caller is showing, when it said which; else the one on the
+  // volume mounted at that letter now.
   const row = db
     .prepare('SELECT date_source, date_offset_min FROM files WHERE path = ? ORDER BY (volume_id IS ?) DESC LIMIT 1')
-    .get(filePath, getCachedVolumeId(filePath.slice(0, 2))) as { date_source: string | null; date_offset_min: number | null } | undefined
+    .get(filePath, volumeId !== undefined ? volumeId : getCachedVolumeId(filePath.slice(0, 2))) as { date_source: string | null; date_offset_min: number | null } | undefined
   return { source: row?.date_source ?? null, offsetMin: row?.date_offset_min ?? null }
 }
 
@@ -2464,6 +2529,11 @@ export const MAX_PAGE_SIZE = 500
  *  normally; this is its fallback, with the same once-per-version ordering. */
 const mainReads = new LibraryReads(db as unknown as import('./libraryReads').ReadDb)
 
+/** Main-thread fallback for the worker's volume listing (All Drives choices). */
+export function getIndexedVolumes(): ReturnType<LibraryReads['volumes']> {
+  return mainReads.volumes()
+}
+
 export function getLibrarySummary(q: LibraryQuery): ReturnType<LibraryReads['summary']> {
   return db.transaction(() => mainReads.summary(q))()
 }
@@ -3333,13 +3403,20 @@ export function checkPathAvailability(
 } {
   const letter = filePath.slice(0, 2).toUpperCase()
   const isLetterPath = /^[A-Z]:$/.test(letter)
+  // A caller that did not say which row it means gets the row on the volume
+  // mounted at that letter, if there is one. Two volumes can share a literal
+  // path (both were E: at different times); taking whichever row SQLite found
+  // first reported a live file as "different volume" half the time. A caller
+  // showing a specific row (a media URL with ?v=, an All Drives tile) passes
+  // that row's volume and is never served another volume's file.
   const recorded =
     recordedVolumeId !== undefined
       ? recordedVolumeId
       : ((
-          db.prepare('SELECT volume_id FROM files WHERE path = ?').get(filePath) as
-            | { volume_id: string | null }
-            | undefined
+          db.prepare('SELECT volume_id FROM files WHERE path = ? ORDER BY (volume_id IS ?) DESC LIMIT 1').get(
+            filePath,
+            isLetterPath ? getCachedVolumeId(letter) : null
+          ) as { volume_id: string | null } | undefined
         )?.volume_id ?? null)
 
   const resolved = resolveStoredPath(filePath)

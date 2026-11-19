@@ -61,6 +61,19 @@ export function moveVolumeToLetter(
          AND EXISTS (SELECT 1 FROM files f WHERE f.volume_id = event_file_links.volume_id AND f.path = ? || substr(event_file_links.path, 3))
          AND NOT EXISTS (SELECT 1 FROM files f WHERE f.volume_id = event_file_links.volume_id AND f.path = event_file_links.path)`
     ).run(L, volumeId, l, L)
+    // Collection members (Places, Trips, collections) follow their files
+    // exactly as favourites do, and so does a chosen cover.
+    db.prepare(
+      `UPDATE OR IGNORE collection_files SET path = ? || substr(path, 3)
+       WHERE volume_id = ? AND upper(substr(path, 1, 2)) = ?
+         AND EXISTS (SELECT 1 FROM files f WHERE f.volume_id = collection_files.volume_id AND f.path = ? || substr(collection_files.path, 3))
+         AND NOT EXISTS (SELECT 1 FROM files f WHERE f.volume_id = collection_files.volume_id AND f.path = collection_files.path)`
+    ).run(L, volumeId, l, L)
+    db.prepare(
+      `UPDATE collections SET cover_path = ? || substr(cover_path, 3)
+       WHERE cover_volume_id = ? AND upper(substr(cover_path, 1, 2)) = ?
+         AND EXISTS (SELECT 1 FROM files f WHERE f.volume_id = collections.cover_volume_id AND f.path = ? || substr(collections.cover_path, 3))`
+    ).run(L, volumeId, l, L)
     db.prepare(
       `UPDATE OR IGNORE folder_snapshot SET path = ? || substr(path, 3) WHERE volume_id = ? AND upper(substr(path, 1, 2)) = ?`
     ).run(L, volumeId, l)

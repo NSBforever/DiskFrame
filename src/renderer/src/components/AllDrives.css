@@ -1,0 +1,85 @@
+/* All Drives: the combined card on the drive page and the header chip. */
+
+.all-drives-card {
+  border-color: rgba(225, 29, 46, 0.32);
+  background: linear-gradient(160deg, rgba(225, 29, 46, 0.1), rgba(18, 18, 26, 0.6) 55%);
+}
+.all-drives-letters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.all-drives-letter {
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  font-size: 11px;
+  font-weight: 700;
+}
+.all-drives-letter.is-offline {
+  border-style: dashed;
+  opacity: 0.55;
+}
+.all-drives-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+}
+.all-drives-choose {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.05);
+  color: #e5e5e5;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.all-drives-choose:hover,
+.all-drives-choose:focus-visible {
+  border-color: rgba(225, 29, 46, 0.6);
+  outline: none;
+}
+.all-drives-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(225, 29, 46, 0.35);
+  background: rgba(225, 29, 46, 0.1);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.all-drives-chip:hover,
+.all-drives-chip:focus-visible {
+  background: rgba(225, 29, 46, 0.18);
+  outline: none;
+}
+.all-drives-chip-off {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #f4c96b;
+}
+.all-drives-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+.all-drives-list strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

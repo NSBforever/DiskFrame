@@ -62,7 +62,7 @@ export interface Library {
   getRow: (index: number) => ScannedFile | undefined
   ensureRange: (start: number, end: number) => void
   /** Row for a path, if it happens to be resident. Used for in-place patches. */
-  patchThumb: (path: string, thumb: string) => boolean
+  patchThumb: (path: string, thumb: string, volumeId?: string | null) => boolean
   /**
    * Index of a path in the current ordering, searching resident pages only.
    * -1 when it is not resident. Shift-range selection only ever spans what the
@@ -263,10 +263,12 @@ export function useLibrary(query: LibraryQuery | null): Library {
   // grouping or ordering, so nothing is re-queried and the gallery does not
   // move - the tile simply gains its image.
   const patchThumb = useCallback(
-    (path: string, thumb: string): boolean => {
+    (path: string, thumb: string, volumeId?: string | null): boolean => {
+      // All Drives can hold two volumes' rows at one literal path. A thumbnail
+      // says which volume it was made from; only that volume's row takes it.
       for (const page of pagesRef.current.values()) {
         for (const row of page) {
-          if (row.path === path) {
+          if (row.path === path && (volumeId == null || row.volume_id === volumeId)) {
             if (row.thumb === thumb) return false
             row.thumb = thumb
             scheduleRender()
