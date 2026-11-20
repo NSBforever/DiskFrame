@@ -209,6 +209,12 @@ const api = {
   /** Restart into the downloaded version. Refused while a file transfer is running. */
   installUpdate: (): Promise<{ ok: boolean; reason?: 'busy' | 'not-ready' | 'unsupported' }> => ipcRenderer.invoke('update-install'),
   openReleaseNotes: (): Promise<void> => ipcRenderer.invoke('update-open-release'),
+  // 1.6.0: Update History, What's New, opt-in analytics
+  releaseHistory: () => ipcRenderer.invoke('release-history'),
+  whatsNew: () => ipcRenderer.invoke('whats-new'),
+  privacyGet: () => ipcRenderer.invoke('privacy-get'),
+  privacySet: (p: { analytics?: boolean; crashes?: boolean; resetId?: boolean }) => ipcRenderer.invoke('privacy-set', p),
+  trackFeature: (name: string) => ipcRenderer.send('track-feature', name),
   getAiSearchButton: () => ipcRenderer.invoke('get-ai-search-button'),
   setAiSearchButton: (enabled: boolean) => ipcRenderer.invoke('set-ai-search-button', enabled),
   // Two tiers: tiles on screen, then the band being scrolled towards. The band

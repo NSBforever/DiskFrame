@@ -684,7 +684,12 @@ for (const [col, type] of [
   ['drive_scope', 'TEXT'],
   ['discovery_cross_drive', 'INTEGER DEFAULT 0'],
   ['home_lat', 'REAL'],
-  ['home_lng', 'REAL']
+  ['home_lng', 'REAL'],
+  // 1.6.0: What's New, and opt-in analytics (analytics.ts). Consent NULL = never asked = no.
+  ['last_seen_version', 'TEXT'],
+  ['analytics_consent', 'INTEGER'],
+  ['crash_consent', 'INTEGER'],
+  ['install_id', 'TEXT']
 ] as const) {
   if (!deletePrefsCols.includes(col)) db.prepare(`ALTER TABLE delete_prefs ADD COLUMN ${col} ${type}`).run()
 }
@@ -886,6 +891,37 @@ export function getDriveScopePref(): string | null {
 export function setDriveScopePref(json: string): void {
   db.prepare('INSERT OR IGNORE INTO delete_prefs (id) VALUES (1)').run()
   db.prepare('UPDATE delete_prefs SET drive_scope = ? WHERE id = 1').run(json)
+}
+
+/** The version whose What's New the user has seen (null on a fresh profile). */
+export function getLastSeenVersion(): string | null {
+  const row = db.prepare('SELECT last_seen_version v FROM delete_prefs WHERE id = 1').get() as { v: string | null } | undefined
+  return row?.v ?? null
+}
+export function setLastSeenVersion(version: string): void {
+  db.prepare('INSERT OR IGNORE INTO delete_prefs (id) VALUES (1)').run()
+  db.prepare('UPDATE delete_prefs SET last_seen_version = ? WHERE id = 1').run(version)
+}
+
+/** Opt-in analytics state (analytics.ts). Consent null = never asked, which means no. */
+export interface PrivacyPrefs {
+  analytics: boolean | null
+  crashes: boolean | null
+  installId: string | null
+}
+export function getPrivacyPrefs(): PrivacyPrefs {
+  const row = db.prepare('SELECT analytics_consent a, crash_consent c, install_id i FROM delete_prefs WHERE id = 1').get() as
+    | { a: number | null; c: number | null; i: string | null }
+    | undefined
+  const flag = (v: number | null | undefined): boolean | null => (v === 1 ? true : v === 0 ? false : null)
+  return { analytics: flag(row?.a), crashes: flag(row?.c), installId: row?.i ?? null }
+}
+export function setPrivacyPrefs(p: { analytics?: boolean; crashes?: boolean; installId?: string }): PrivacyPrefs {
+  db.prepare('INSERT OR IGNORE INTO delete_prefs (id) VALUES (1)').run()
+  if (typeof p.analytics === 'boolean') db.prepare('UPDATE delete_prefs SET analytics_consent = ? WHERE id = 1').run(p.analytics ? 1 : 0)
+  if (typeof p.crashes === 'boolean') db.prepare('UPDATE delete_prefs SET crash_consent = ? WHERE id = 1').run(p.crashes ? 1 : 0)
+  if (typeof p.installId === 'string') db.prepare('UPDATE delete_prefs SET install_id = ? WHERE id = 1').run(p.installId)
+  return getPrivacyPrefs()
 }
 
 export function getDiscoveryPrefs(): DiscoveryPrefs {

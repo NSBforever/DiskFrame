@@ -59,6 +59,8 @@ jobs:
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          # PostHog EU project key for opt-in analytics. Unset = analytics never sends.
+          DF_POSTHOG_KEY: ${{ secrets.DF_POSTHOG_KEY }}
           # Google Calendar's OAuth "Desktop app" client. Unset = the build shows
           # Calendar as not set up; nothing else changes.
           DF_GOOGLE_CLIENT_ID: ${{ secrets.DF_GOOGLE_CLIENT_ID }}

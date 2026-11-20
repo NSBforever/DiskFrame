@@ -30,6 +30,9 @@ export default defineConfig(({ command }) => ({
   main: {
     define: {
       __DF_COMMIT__: JSON.stringify(buildCommit()),
+      // PostHog EU project key (public, write-only by design) from the build environment;
+      // unset = analytics stays inert. Opt-in only; see src/main/analytics.ts.
+      __DF_POSTHOG_KEY__: JSON.stringify(process.env.DF_POSTHOG_KEY ?? ''),
       // Google OAuth "Desktop app" client, from the build environment (a CI
       // secret for releases). Google treats a desktop client as public, but it
       // still stays out of git. Unset = Calendar shows as not set up.

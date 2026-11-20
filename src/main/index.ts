@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, protocol, crashReporter, Menu, dialog, powerMonitor, nativeImage } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, protocol, crashReporter, Menu, dialog, powerMonitor, nativeImage, net } from 'electron'
 import { join, basename, extname } from 'path'
 import { spawn, execFile } from 'child_process'
 import * as fs from 'fs'
@@ -8,6 +8,7 @@ import { initUpdates } from './updater'
 import { initCalendar } from './calendarService'
 import { eventCards } from './calendarEvents'
 import { initEvents } from './eventsService'
+import { initReleaseHistory, initAnalytics } from './releaseAndPrivacy'
 import { isMatchingAllowed, setMatchingAllowed, consentList, type ConsentDb } from './calendarConsent'
 import { listCollections, collectionFiles, type ColDb } from './collections'
 import { runDiscovery } from './discovery'
@@ -97,6 +98,10 @@ import {
   getDriveScopePref,
   setDriveScopePref,
   getDiscoveryPrefs,
+  getLastSeenVersion,
+  setLastSeenVersion,
+  getPrivacyPrefs,
+  setPrivacyPrefs,
   setDiscoveryPrefs,
   getIndexedVolumes,
   catalogueDb,
@@ -1827,6 +1832,31 @@ app.whenReady().then(() => {
     getMode: getUpdateModePref,
     isBusy: () => transfersInFlight > 0,
     safeMode: safeMode.enabled
+  })
+  // 1.6.0: Update History / What's New and opt-in analytics (releaseAndPrivacy.ts).
+  // The version the user had before is read once and this one recorded at once,
+  // so an update is counted and announced once even if DiskFrame quits early.
+  const previousVersion = getLastSeenVersion()
+  if (previousVersion !== app.getVersion()) setLastSeenVersion(app.getVersion())
+  initReleaseHistory({
+    ipcMain,
+    fetch: (url, init) => net.fetch(url, init),
+    userData: app.getPath('userData'),
+    currentVersion: app.getVersion(),
+    previousVersion,
+    log: (m) => diag('updates', m)
+  })
+  initAnalytics({
+    app,
+    ipcMain,
+    fetch: (url, init) => net.fetch(url, init),
+    // No key in a build without one, and none in safe mode: then nothing is ever sent.
+    projectKey: safeMode.enabled ? '' : __DF_POSTHOG_KEY__,
+    currentVersion: app.getVersion(),
+    previousVersion,
+    getPrefs: getPrivacyPrefs,
+    setPrefs: setPrivacyPrefs,
+    log: (m) => diag('privacy', m)
   })
   initCalendar({
     db: catalogueDb,

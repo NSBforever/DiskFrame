@@ -882,3 +882,63 @@
 .ev-input[type="date"] {
   color-scheme: dark;
 }
+
+/* 1.6.0: Update History, What's New, consent */
+/* Above the gallery dock (1999): these open from Settings and at startup. */
+.rp-back {
+  z-index: 2100;
+}
+/* Portalled to <body>, outside the app's own font: use the same one. */
+.rp-dialog {
+  font-family: system-ui, sans-serif;
+}
+.rp-dialog .ev-modal-foot {
+  padding: 12px 0 0;
+  border-top: none;
+}
+.rp-dialog .ev-modal-body p {
+  margin: 12px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.rp-facts {
+  margin: 12px 0 4px;
+  font-size: 12px;
+}
+.rp-release {
+  padding: 14px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.rp-release:last-child {
+  border-bottom: none;
+}
+.rp-release header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.rp-release header .ev-dim {
+  margin-left: auto;
+  font-size: 12px;
+}
+.rp-badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: rgba(80, 160, 255, 0.18);
+  color: #9cc8ff;
+}
+.rp-section h4 {
+  margin: 10px 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-fg-dim, #8a8a8f);
+}
+.rp-section ul {
+  margin: 0;
+  padding-left: 18px;
+  list-style: disc;
+  font-size: 13px;
+  line-height: 1.5;
+  color: rgba(242, 242, 240, 0.8);
+}

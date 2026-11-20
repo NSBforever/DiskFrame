@@ -132,6 +132,7 @@ import { ALL_DRIVES_KEY as ALL_DRIVES } from '../../main/libraryQuery'
 import AboutConnect from './components/AboutConnect'
 import GlassSelect from './components/GlassSelect'
 import { UpdateNotice, UpdateSettings } from './components/Updates'
+import { PrivacySettings, StartupSheets } from './components/ReleaseAndPrivacy'
 import DateScrubber from './components/DateScrubber'
 import TransferMenu, { type TransferDrive } from './components/TransferMenu'
 import { progressiveUpdateAction, groupSelectionRange } from '../../main/progressiveLibrary'
@@ -1510,6 +1511,7 @@ const MainContentArea: React.FC<{
             <div className="settings-col">
               <UpdateSettings />
               <CalendarSettings />
+              <PrivacySettings />
 
               <SettingsCard
                 id="search"
@@ -1826,6 +1828,27 @@ export default function App(): React.JSX.Element {
     }
   }, [sidebarCollapsed])
   const [searchQuery, setSearchQuery] = useState('')
+  // 1.6.0 feature counters: feature names only (src/main/analytics.ts), and
+  // nothing leaves the PC unless the user allowed usage counts.
+  const onMap = activeNav === 'map' || activeView === 'Map'
+  const viewerOpen = !!lightbox
+  const searching = searchQuery.trim() !== ''
+  const onAllDrives = selectedDrive === ALL_DRIVES
+  useEffect(() => {
+    if (activeNav === 'events') window.api.trackFeature('events_opened')
+  }, [activeNav])
+  useEffect(() => {
+    if (onMap) window.api.trackFeature('map_opened')
+  }, [onMap])
+  useEffect(() => {
+    if (viewerOpen) window.api.trackFeature('viewer_opened')
+  }, [viewerOpen])
+  useEffect(() => {
+    if (searching) window.api.trackFeature('search_used')
+  }, [searching])
+  useEffect(() => {
+    if (onAllDrives) window.api.trackFeature('all_drives_opened')
+  }, [onAllDrives])
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; file: ScannedFile; currentList: ScannedFile[] } | null>(null)
   const [addToCollection, setAddToCollection] = useState<ScannedFile[] | null>(null)
   const [fileToDelete, setFileToDelete] = useState<ScannedFile | null>(null)
@@ -3830,6 +3853,7 @@ export default function App(): React.JSX.Element {
       )}
 
       <UpdateNotice busy={!!ioProgress || !!lightbox} />
+      <StartupSheets />
       <DropOverlay onDropPaths={handleDroppedPaths} />
 
       {/* Floating toast notification */}
