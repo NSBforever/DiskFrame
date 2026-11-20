@@ -248,6 +248,8 @@ export function EventsSection({
   const card =
     open?.kind === 'collection' ? (list?.cards.find((c) => c.id === open.id) ?? null) : null
   const go = (o: Open): void => {
+    const kind = o.kind === 'collection' ? list?.cards.find((c) => c.id === o.id)?.kind : undefined
+    if (kind === 'place' || kind === 'trip') window.api.trackFeature(kind === 'place' ? 'place_opened' : 'trip_opened')
     setScrollTop(scroller.current?.scrollTop ?? 0)
     setOpen(o)
     scroller.current?.scrollTo({ top: 0 })
@@ -475,6 +477,7 @@ function Landing({
           onSave={async (name) => {
             const id = await window.api.collectionCreate({ kind: creating, name })
             setCreating(null)
+            if (id) window.api.trackFeature('collection_created')
             await onChanged()
             if (id) onOpen(id)
           }}

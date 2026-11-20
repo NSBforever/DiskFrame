@@ -10,6 +10,7 @@ import {
   type UpdateState
 } from '../../../main/updateState'
 import { RefreshCw } from 'lucide-react'
+import { UpdateHistoryDialog } from './ReleaseAndPrivacy'
 import GlassSelect from './GlassSelect'
 import { SettingsCard, SettingRow, SettingsFacts } from './SettingsCard'
 import './Updates.css'
@@ -162,6 +163,8 @@ export function UpdateSettings(): React.JSX.Element {
   const { install, refused } = useInstall()
   // "Checked 5 minutes ago" is relative to now; re-read it while the page is open.
   const [now, setNow] = useState(Date.now)
+  const [history, setHistory] = useState(false)
+  const closeHistory = useCallback(() => setHistory(false), [])
   useEffect(() => {
     window.api.getUpdateMode?.().then(setMode).catch(() => {})
     const t = setInterval(() => setNow(Date.now()), 60_000)
@@ -239,6 +242,9 @@ export function UpdateSettings(): React.JSX.Element {
             >
               {phase === 'checking' ? 'Checking…' : 'Check for Updates'}
             </button>
+            <button type="button" className="df-button" onClick={() => setHistory(true)}>
+              Update History
+            </button>
           </div>
         </div>
         {phase === 'downloading' && (
@@ -261,6 +267,7 @@ export function UpdateSettings(): React.JSX.Element {
           </div>
         )}
       </div>
+      {history && <UpdateHistoryDialog onClose={closeHistory} />}
     </SettingsCard>
   )
 }

@@ -4,6 +4,16 @@ import type { CalendarStatus, DayFile, EventDetail, EventsList, LinkOp } from '.
 import type { CollectionCard, CollectionKind, CollectionStatus, FileRef } from '../main/collections'
 import type { DiscoveryPrefs } from '../main/discovery'
 import type { DriveScope } from '../main/driveScope'
+import type { PublishedRelease } from '../main/releaseHistory'
+import type { FEATURES } from '../main/analytics'
+
+type Feature = (typeof FEATURES)[number]
+interface PrivacyState {
+  analytics: boolean | null
+  crashes: boolean | null
+  hasId: boolean
+  available: boolean
+}
 
 interface DriveScopeInfo {
   scope: DriveScope
@@ -260,6 +270,11 @@ declare global {
       downloadUpdate: () => Promise<UpdateState>
       installUpdate: () => Promise<{ ok: boolean; reason?: 'busy' | 'not-ready' | 'unsupported' }>
       openReleaseNotes: () => Promise<void>
+      releaseHistory: () => Promise<{ installed: string; latest: string | null; releases: PublishedRelease[]; fromCache: boolean }>
+      whatsNew: () => Promise<PublishedRelease | null>
+      privacyGet: () => Promise<PrivacyState>
+      privacySet: (p: { analytics?: boolean; crashes?: boolean; resetId?: boolean }) => Promise<PrivacyState>
+      trackFeature: (name: Feature) => void
       fsCancelTransfer: () => Promise<boolean>
       getAiSearchButton: () => Promise<boolean>
       setAiSearchButton: (enabled: boolean) => Promise<void>
