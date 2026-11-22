@@ -103,7 +103,8 @@ import {
   catalogueDbPath
 } from './scanner'
 import type { LibraryQuery } from './libraryQuery'
-import { getMapClusters, getCatalogueVersion } from './scanner'
+import { getMapClusters, getCatalogueVersion, setPlaceLocation, restoreFileLocation, getFileLocation } from './scanner'
+import { parseLocationTarget } from './locationFix'
 
 import { initStreamServer, probeMedia, killActiveStream, closeStreamServer, authorizeStreamPath } from './streamServer'
 import { initMpv, revealMpv, sendMpvCommand, updateMpvBounds, closeMpv, refreshMpvBounds, setOverlayInteractive, sendToOverlay } from './mpvManager'
@@ -1591,6 +1592,30 @@ app.whenReady().then(() => {
     )
     diag('map', `clusters z${z}: ${clusters.length} cells (${Date.now() - t0}ms)`)
     return { clusters }
+  })
+
+  // A wrong position, corrected by hand (locationFix.ts). The place's files are
+  // exactly its boxed query; without a box nothing is written.
+  ipcMain.handle('set-place-location', async (_event, raw) => {
+    const { query, to } = (raw ?? {}) as { query?: unknown; to?: unknown }
+    const q = await normalizeQuery(query)
+    const target = parseLocationTarget(to)
+    if (!q || !q.bbox || target === undefined) return { ok: false, changed: 0 }
+    const changed = setPlaceLocation(q, target) ?? 0
+    diag('map', `location ${target ? 'moved' : 'removed'} for ${changed} files`)
+    return { ok: true, changed }
+  })
+
+  ipcMain.handle('file-location', (_event, raw) => {
+    const { path: p, volumeId } = (raw ?? {}) as { path?: unknown; volumeId?: unknown }
+    if (typeof p !== 'string') return null
+    return getFileLocation(p, typeof volumeId === 'string' ? volumeId : null)
+  })
+
+  ipcMain.handle('restore-file-location', async (_event, raw) => {
+    const { path: p, volumeId } = (raw ?? {}) as { path?: unknown; volumeId?: unknown }
+    if (typeof p !== 'string') return false
+    return restoreFileLocation(p, typeof volumeId === 'string' ? volumeId : null)
   })
 
   ipcMain.handle('library-page', async (_event, raw) => {

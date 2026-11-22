@@ -104,6 +104,36 @@ export const MetadataPanel: React.FC<MetadataPanelProps> = ({
   }, [file.path, isOpen])
   const dateInfo = dateProvenance(prov?.source, prov?.offsetMin)
 
+  // A position the owner corrected on the map wins over what the file says.
+  const [stored, setStored] = useState<{ lat: number | null; lng: number | null; corrected: boolean } | null>(null)
+  const [restoring, setRestoring] = useState(false)
+  const volumeId = file.volume_id ?? null
+  useEffect(() => {
+    if (!isOpen) return
+    let live = true
+    setStored(null)
+    window.api
+      .fileLocation(file.path, volumeId)
+      .then((s) => live && setStored(s))
+      .catch(() => live && setStored(null))
+    return () => {
+      live = false
+    }
+  }, [file.path, volumeId, isOpen])
+  const restoreLocation = (): void => {
+    setRestoring(true)
+    void window.api
+      .restoreFileLocation(file.path, volumeId)
+      .then(() => window.api.fileLocation(file.path, volumeId))
+      .then((s) => {
+        setStored(s)
+        // The map under the viewer re-reads its pins (MapPage).
+        window.dispatchEvent(new Event('df-locations-changed'))
+      })
+      .catch(() => undefined)
+      .finally(() => setRestoring(false))
+  }
+
   useEffect(() => {
     if (!isOpen) return
     setLoading(true)
@@ -353,8 +383,31 @@ export const MetadataPanel: React.FC<MetadataPanelProps> = ({
             </div>
           )}
 
+          {stored?.corrected && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Location</div>
+              <div style={{ fontSize: '12px' }}>
+                {stored.lat !== null && stored.lng !== null
+                  ? `${stored.lat.toFixed(5)}, ${stored.lng.toFixed(5)}`
+                  : 'Not shown on the map'}
+              </div>
+              <div style={{ fontSize: '10px', color: 'var(--app-fg-dim, #8a8a8f)' }}>
+                Corrected by you in DiskFrame. The file itself is unchanged.
+              </div>
+              <button
+                type="button"
+                className="df-button"
+                style={{ alignSelf: 'flex-start' }}
+                disabled={restoring}
+                onClick={restoreLocation}
+              >
+                {restoring ? 'Restoring…' : "Use the file's own location"}
+              </button>
+            </div>
+          )}
+
           {/* GPS Location */}
-          {meta?.location && (
+          {!stored?.corrected && meta?.location && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
               <div style={{ fontSize: '11px', color: 'var(--app-fg-dim, #8a8a8f)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Location</div>
               <div style={{ fontSize: '12px', color: '#e11d2e', display: 'flex', alignItems: 'center', gap: '8px' }}>

@@ -14,6 +14,15 @@ import { createHash } from 'crypto'
 import { Worker } from 'worker_threads'
 import { countSql, type LibraryQuery } from './libraryQuery'
 import {
+  LOC_OVERRIDE_COLUMN_SQL,
+  REPAIR_GPS_SQL,
+  RESTORE_LOCATION_SQL,
+  UPDATE_EXIF_SQL,
+  UPDATE_GPS_ONLY_SQL,
+  setLocationSql,
+  type LocationTarget
+} from './locationFix'
+import {
   applyMappings,
   folderChecks,
   missingRootOf,
@@ -418,7 +427,6 @@ if (pendingColumns.length > 0 || favouritesNeedSeeding) {
 // resumable across launches instead of re-parsing the whole library each time.
 if (!cols.includes('exif_checked'))
   db.prepare('ALTER TABLE files ADD COLUMN exif_checked INTEGER DEFAULT 0').run()
-
 // Why a thumbnail could not be produced, remembered across launches.
 //
 // Failure was only ever held in memory, so every launch retried every file
@@ -537,6 +545,11 @@ if (/path\s+TEXT\s+UNIQUE\b/i.test(filesTableSql)) {
   })()
   console.log('[migrate] rebuilt files table: identity is now (volume_id, path), not path alone')
 }
+
+// A position the owner corrected by hand (see locationFix.ts). After the
+// rebuild above, which would otherwise drop it on a catalogue that old.
+if (!(db.prepare('PRAGMA table_info(files)').all() as { name: string }[]).some((c) => c.name === 'loc_override'))
+  db.prepare(LOC_OVERRIDE_COLUMN_SQL).run()
 
 // Every index files needs. Rebuilding the table above drops its indexes with
 // it, so these always run after - CREATE INDEX IF NOT EXISTS is a no-op when
@@ -1910,9 +1923,8 @@ const EXIF_EXTS = new Set([
 // whichever volume is mounted right now, and a bare path WHERE would write
 // its EXIF onto every row at a colliding path, including another volume's
 // that is not even connected.
-const updateExifStmt = db.prepare(
-  `UPDATE files SET date=?, year=?, month=?, lat=?, lng=?, date_source=?, date_offset_min=? WHERE path=? AND volume_id IS ? AND lat IS NULL`
-)
+// A position the owner corrected is never overwritten here (locationFix.ts).
+const updateExifStmt = db.prepare(UPDATE_EXIF_SQL)
 
 // No capture metadata: the file's creation time, when it is earlier than the
 // mtime the scan wrote (captureTime.fsEarliest). Only over an mtime date.
@@ -1924,12 +1936,10 @@ const updateBirthtimeStmt = db.prepare(
 // (the filesystem mtime from the scan pass). Writing new Date() here stamped it
 // with "today", which is why a large share of the library collapsed into the
 // current month and sorted above genuinely recent photos.
-const updateGpsOnlyStmt = db.prepare(
-  `UPDATE files SET lat=?, lng=? WHERE path=? AND volume_id IS ? AND lat IS NULL`
-)
+const updateGpsOnlyStmt = db.prepare(UPDATE_GPS_ONLY_SQL)
 
 // Overwrites a stored position: only for rows being repaired (see below).
-const repairGpsStmt = db.prepare(`UPDATE files SET lat=?, lng=? WHERE path=? AND volume_id IS ?`)
+const repairGpsStmt = db.prepare(REPAIR_GPS_SQL)
 
 // exif_checked: 0 = never read, 1 = read before the hemisphere fix (a photo's
 // stored position may be mirrored), 2 = read with the GPS reference tags,
@@ -2572,6 +2582,45 @@ export type { MapCluster }
 
 export function getMapClusters(q: LibraryQuery, zoom: number): MapCluster[] {
   return mainReads.clusters(q, zoom)
+}
+
+/** Moves (or removes) the position of a map place's files. Catalogue only; null without a box. */
+export function setPlaceLocation(q: LibraryQuery, to: LocationTarget): number | null {
+  const s = setLocationSql(q, to)
+  if (!s) return null
+  return db.prepare(s.sql).run(...(s.params as never[])).changes
+}
+
+/** The stored position of one file, and whether the owner corrected it. */
+export function getFileLocation(
+  filePath: string,
+  volumeId: string | null
+): { lat: number | null; lng: number | null; corrected: boolean } | null {
+  const row = db
+    .prepare('SELECT lat, lng, loc_override FROM files WHERE path = ? AND volume_id IS ?')
+    .get(filePath, volumeId) as { lat: number | null; lng: number | null; loc_override: number | null } | undefined
+  return row ? { lat: row.lat, lng: row.lng, corrected: row.loc_override === 1 } : null
+}
+
+/**
+ * Undoes a correction: the position the file itself carries, read again now.
+ * Only for a row that was corrected, so the renderer cannot make DiskFrame
+ * read an arbitrary file. False if the file cannot be read right now.
+ */
+export async function restoreFileLocation(filePath: string, volumeId: string | null): Promise<boolean> {
+  const row = db
+    .prepare('SELECT ext FROM files WHERE path = ? AND volume_id IS ? AND loc_override = 1')
+    .get(filePath, volumeId) as { ext: string } | undefined
+  if (!row) return false
+  try {
+    const meta = VIDEO_EXIF_EXTS.has(row.ext.toLowerCase())
+      ? await getMovMetadata(filePath)
+      : await readPhotoMeta(filePath)
+    db.prepare(RESTORE_LOCATION_SQL).run(meta?.lat ?? null, meta?.lng ?? null, filePath, volumeId)
+    return true
+  } catch {
+    return false
+  }
 }
 
 /** Drive key used for the diagnostic sample folder, kept apart from real drives. */

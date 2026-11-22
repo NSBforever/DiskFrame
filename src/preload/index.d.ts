@@ -165,6 +165,17 @@ declare global {
           path: string | null
         }[]
       }>
+      /** Moves (to a position) or removes (null) the location of a map place's files, in DiskFrame only. */
+      setPlaceLocation: (
+        query: LibraryQueryLike & { bbox: { minLat: number; maxLat: number; minLng: number; maxLng: number } },
+        to: { lat: number; lng: number } | null
+      ) => Promise<{ ok: boolean; changed: number }>
+      fileLocation: (
+        path: string,
+        volumeId: string | null
+      ) => Promise<{ lat: number | null; lng: number | null; corrected: boolean } | null>
+      /** Undoes a correction: back to the position the file itself carries. */
+      restoreFileLocation: (path: string, volumeId: string | null) => Promise<boolean>
       onScanProgress: (callback: (data: { count: number; drive: string }) => void) => () => void
       onScanComplete: (callback: (data: { count: number; drive: string }) => void) => () => void
       onFilesUpdated: (

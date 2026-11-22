@@ -46,6 +46,10 @@ const api = {
   },
   mapClusters: (query: unknown, zoom: number, bounds: unknown) =>
     ipcRenderer.invoke('library-map-clusters', { query, zoom, bounds }),
+  setPlaceLocation: (query: unknown, to: unknown) => ipcRenderer.invoke('set-place-location', { query, to }),
+  fileLocation: (path: string, volumeId: string | null) => ipcRenderer.invoke('file-location', { path, volumeId }),
+  restoreFileLocation: (path: string, volumeId: string | null) =>
+    ipcRenderer.invoke('restore-file-location', { path, volumeId }),
   /** One bounded window of rows for a query. */
   libraryPage: (query: unknown, offset: number, limit: number) =>
     ipcRenderer.invoke('library-page', { query, offset, limit }),
