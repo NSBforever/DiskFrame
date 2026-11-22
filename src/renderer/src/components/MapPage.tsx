@@ -129,6 +129,10 @@ export default function MapPage({ query: galleryQuery, onOpenFile }: MapPageProp
   const [anyLocated, setAnyLocated] = useState<boolean | null>(null)
   const [tileTrouble, setTileTrouble] = useState(false)
   const [place, setPlace] = useState<MapCluster | null>(null)
+  /** A place whose files are being moved: the next click on the map is where they go. */
+  const [moving, setMoving] = useState<{ query: MapQuery & { bbox: MapBounds }; count: number } | null>(null)
+  const movingRef = useRef(moving)
+  movingRef.current = moving
 
   // Superseded requests must not paint. Bumped on every fetch and on unmount.
   const genRef = useRef(0)
@@ -219,6 +223,18 @@ export default function MapPage({ query: galleryQuery, onOpenFile }: MapPageProp
 
     map.on('moveend', scheduleFetch)
     map.on('zoomend', scheduleFetch)
+    // Moving a place's files: the clicked spot is their position from now on.
+    const onMapClick = (e: L.LeafletMouseEvent): void => {
+      const m = movingRef.current
+      if (!m) return
+      setMoving(null)
+      const at = e.latlng.wrap()
+      void window.api
+        .setPlaceLocation(m.query, { lat: at.lat, lng: at.lng })
+        .then(() => fetchClusters())
+        .catch(() => fetchClusters())
+    }
+    map.on('click', onMapClick)
 
     // The map is built before its flex parent has been laid out, so Leaflet
     // measures a zero-sized container and every bound collapses to a single
@@ -238,6 +254,7 @@ export default function MapPage({ query: galleryQuery, onOpenFile }: MapPageProp
       ro.disconnect()
       map.off('moveend', scheduleFetch)
       map.off('zoomend', scheduleFetch)
+      map.off('click', onMapClick)
       map.remove()
       mapRef.current = null
       layerRef.current = null
@@ -347,8 +364,41 @@ export default function MapPage({ query: galleryQuery, onOpenFile }: MapPageProp
 
   const total = useMemo(() => clusters.reduce((n, c) => n + c.count, 0), [clusters])
 
+  // A corrected place: its panel closes (its files are elsewhere now) and the pins are re-read.
+  const placeChanged = useCallback(() => {
+    setPlace(null)
+    cameraRef.current = null
+    fetchClusters()
+  }, [fetchClusters])
+  const startMove = useCallback((q: MapQuery & { bbox: MapBounds }, count: number) => {
+    setPlace(null)
+    setMoving({ query: q, count })
+  }, [])
+
+  // A position restored from the viewer's Info panel, over this map.
+  useEffect(() => {
+    const changed = (): void => {
+      setPlace(null)
+      fetchClusters()
+    }
+    window.addEventListener('df-locations-changed', changed)
+    return () => window.removeEventListener('df-locations-changed', changed)
+  }, [fetchClusters])
+
+  useEffect(() => {
+    if (!moving) return
+    const k = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      e.stopPropagation()
+      setMoving(null)
+    }
+    window.addEventListener('keydown', k, true)
+    return () => window.removeEventListener('keydown', k, true)
+  }, [moving])
+
   return (
-    <div className="map-page">
+    <div className={`map-page${moving ? ' map-picking' : ''}`}>
       <div ref={hostRef} className="map-canvas" />
 
       {anyLocated === false && (
@@ -391,12 +441,29 @@ export default function MapPage({ query: galleryQuery, onOpenFile }: MapPageProp
         </div>
       )}
 
+      {moving && (
+        <div className="map-overlay map-move-hint" role="status">
+          <span>
+            Click where{' '}
+            {moving.count === 1
+              ? 'this file was'
+              : `these ${moving.count.toLocaleString()} files were`}{' '}
+            taken
+          </span>
+          <button type="button" className="map-btn" onClick={() => setMoving(null)}>
+            Cancel
+          </button>
+        </div>
+      )}
+
       {place && (
         <PlacePanel
           cluster={place}
           query={query}
           onClose={closePlace}
           onOpenFile={onOpenFile}
+          onChanged={placeChanged}
+          onStartMove={startMove}
         />
       )}
     </div>
@@ -412,22 +479,33 @@ function PlacePanel({
   cluster,
   query,
   onClose,
-  onOpenFile
+  onOpenFile,
+  onChanged,
+  onStartMove
 }: {
   cluster: MapCluster
   query: MapQuery | null
   onClose: () => void
   onOpenFile: (file: ScannedFile, list: ScannedFile[], e?: React.MouseEvent) => void
+  /** The place's files were given another position, or none. */
+  onChanged: () => void
+  onStartMove: (q: MapQuery & { bbox: MapBounds }, count: number) => void
 }): React.JSX.Element {
   const [rows, setRows] = useState<ScannedFile[]>([])
   const [total, setTotal] = useState(cluster.count)
   const [busy, setBusy] = useState(false)
+  const [fixing, setFixing] = useState(false)
   const genRef = useRef(0)
 
   const boxedQuery = useMemo(
     () => (query ? { ...query, bbox: clusterBounds(cluster) } : null),
     [query, cluster]
   )
+  const files = total === 1 ? 'this file' : `these ${total.toLocaleString()} files`
+  const removeLocation = (): void => {
+    if (!boxedQuery) return
+    void window.api.setPlaceLocation(boxedQuery, null).then(onChanged).catch(onChanged)
+  }
 
   const loadMore = useCallback(
     (from: number) => {
@@ -476,6 +554,49 @@ function PlacePanel({
         <button type="button" className="map-btn" onClick={onClose}>
           Back to map
         </button>
+      </div>
+
+      {/* A position can only be as right as the file that carries it: a laptop
+          camera writes the Windows location guess. The owner fixes it here, in
+          DiskFrame only - the files themselves are never changed. */}
+      <div className="map-place-fix">
+        {!fixing ? (
+          <button type="button" className="map-btn map-btn-quiet" onClick={() => setFixing(true)}>
+            Wrong location?
+          </button>
+        ) : (
+          <>
+            <div className="map-place-fix-note">
+              Fix where {files} {total === 1 ? 'appears' : 'appear'} on the map. Only DiskFrame
+              changes; your files are not edited.
+            </div>
+            <div className="map-place-fix-actions">
+              <button
+                type="button"
+                className="map-btn"
+                disabled={!boxedQuery}
+                onClick={() => boxedQuery && onStartMove(boxedQuery, total)}
+              >
+                Move to the right spot
+              </button>
+              <button
+                type="button"
+                className="map-btn"
+                disabled={!boxedQuery}
+                onClick={removeLocation}
+              >
+                Remove from map
+              </button>
+              <button
+                type="button"
+                className="map-btn map-btn-quiet"
+                onClick={() => setFixing(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
       <div className="map-place-grid">

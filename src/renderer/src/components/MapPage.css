@@ -249,6 +249,58 @@
   outline-offset: 2px;
 }
 
+.map-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.map-btn-quiet {
+  background: transparent;
+  border-color: transparent;
+  color: var(--app-fg-dim, #8a8a8f);
+}
+
+/* "Wrong location?" in a place panel. */
+.map-place-fix {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--app-hairline, rgba(255, 255, 255, 0.14));
+}
+
+.map-place-fix-note {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--app-fg-dim, #8a8a8f);
+}
+
+.map-place-fix-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Choosing where a place's files belong: the next click on the map. */
+.map-move-hint {
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 700;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 6px 6px 14px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.map-picking .leaflet-container,
+.map-picking .leaflet-grab {
+  cursor: crosshair;
+}
+
 .map-place-grid {
   flex: 1;
   min-height: 0;
