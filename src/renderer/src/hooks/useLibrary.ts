@@ -20,6 +20,8 @@ export interface LibraryQuery {
   search: string
   groupBy: string
   order: string
+  /** 'date' | 'size-desc' | 'size-asc' - see libraryQuery.SortKey. */
+  sort: string
 }
 
 export interface LibraryGroup {
@@ -102,7 +104,8 @@ function sameQuery(a: LibraryQuery | null, b: LibraryQuery | null): boolean {
     a.nav === b.nav &&
     a.search === b.search &&
     a.groupBy === b.groupBy &&
-    a.order === b.order
+    a.order === b.order &&
+    a.sort === b.sort
   )
 }
 

@@ -154,3 +154,114 @@ test('folders groups a volume by folder with counts that add up to its rows', ()
   assert.deepEqual(groups.map((g) => g.folder).sort(), ['D:\\A', 'D:\\B', 'D:\\U'])
   for (const g of groups) assert.ok(g.sample.startsWith(g.folder + '\\'))
 })
+
+// ── Size sort ────────────────────────────────────────────────────────────────
+
+/** makeDb with real byte counts: repeated sizes (ties) and a few never recorded. */
+function sizedDb(): DatabaseSync {
+  const db = makeDb()
+  db.prepare('UPDATE files SET size = (id * 7919) % 23 * 1000').run()
+  db.prepare('UPDATE files SET size = NULL WHERE id % 13 = 0').run()
+  return db
+}
+
+type Row = { path: string; size: number | null; date: string | null; ext: string }
+
+function walkRows(reads: LibraryReads, query: LibraryQuery): Row[] {
+  const out: Row[] = []
+  for (let off = 0; ; off += 9) {
+    const batch = reads.page(query, off, 9).rows as Row[]
+    out.push(...batch)
+    if (batch.length < 9) return out
+  }
+}
+
+/** Expected comparison inside one group: known sizes first, by size, then date, then path. */
+function sizeCmp(dir: 'size-desc' | 'size-asc', order: 'default' | 'reverse') {
+  return (a: Row, b: Row): number => {
+    if ((a.size === null) !== (b.size === null)) return a.size === null ? 1 : -1
+    if (a.size !== b.size) return dir === 'size-desc' ? b.size! - a.size! : a.size! - b.size!
+    const da = a.date ?? ''
+    const db = b.date ?? ''
+    if (da !== db) return order === 'default' ? (da < db ? 1 : -1) : da < db ? -1 : 1
+    return a.path < b.path ? -1 : a.path > b.path ? 1 : 0
+  }
+}
+
+test('a size sort orders the files inside every group by stored size, with date then path breaking ties', () => {
+  const db = sizedDb()
+  const reads = new LibraryReads(db as unknown as ReadDb)
+  for (const groupBy of ['day', 'month', 'year', 'location', 'favorites'] as const) {
+    for (const order of ['default', 'reverse'] as const) {
+      for (const sort of ['size-desc', 'size-asc'] as const) {
+        const query = q({ groupBy, order, sort })
+        const rows = walkRows(reads, query)
+        const summary = reads.summary(query)
+        // The groups and their sizes are exactly what the date sort gives:
+        // a sort reorders files inside a group, never across groups.
+        assert.deepEqual(summary.groups, reads.summary(q({ groupBy, order })).groups, `${groupBy}/${order}/${sort} groups`)
+        for (const g of summary.groups) {
+          const inGroup = rows.slice(g.offset, g.offset + g.count)
+          const media = inGroup.slice(0, g.count - g.compactCount)
+          const compact = inGroup.slice(g.count - g.compactCount)
+          assert.ok(compact.every((r) => r.ext === '.pdf'), 'previewless files still sit after the rest')
+          const cmp = sizeCmp(sort, order)
+          assert.deepEqual(media, [...media].sort(cmp), `${groupBy}/${order}/${sort} ${g.key}`)
+          assert.deepEqual(compact, [...compact].sort(cmp), `${groupBy}/${order}/${sort} ${g.key} compact`)
+        }
+        // Cached pages are the plain OFFSET pages: pagination is stable.
+        assert.deepEqual(rows.map((r) => r.path), offsetWalk(db, query, 9), `${groupBy}/${order}/${sort} pages`)
+      }
+    }
+  }
+})
+
+test('ungrouped, a size sort runs across the whole collection', () => {
+  const db = sizedDb()
+  const reads = new LibraryReads(db as unknown as ReadDb)
+  // Read the date ordering first: the cache must keep the two apart.
+  walkRows(reads, q({ groupBy: 'none' }))
+  const query = q({ groupBy: 'none', sort: 'size-desc' })
+  const summary = reads.summary(query)
+  assert.equal(summary.groups.length, 1)
+  assert.equal(summary.groups[0].count, summary.total)
+  const rows = walkRows(reads, query)
+  const media = rows.slice(0, summary.total - summary.groups[0].compactCount)
+  assert.deepEqual(media, [...media].sort(sizeCmp('size-desc', 'default')))
+  assert.ok(media[0].size! >= media[media.length - 1].size! || media[media.length - 1].size === null)
+  const sizes = media.filter((r) => r.size !== null).map((r) => r.size!)
+  assert.equal(sizes[0], Math.max(...sizes), 'largest file first')
+  const asc = walkRows(reads, q({ groupBy: 'none', sort: 'size-asc' })).filter((r) => r.ext !== '.pdf' && r.size !== null)
+  assert.equal(asc[0].size, Math.min(...sizes), 'smallest file first')
+})
+
+test('the date sort is untouched by the new key', () => {
+  const db = sizedDb()
+  const reads = new LibraryReads(db as unknown as ReadDb)
+  assert.deepEqual(walkRows(reads, q({ sort: 'date' })), walkRows(reads, q()))
+})
+
+test('a change to a file size alone moves the version, so a size ordering is never stale', () => {
+  const db = sizedDb()
+  const reads = new LibraryReads(db as unknown as ReadDb)
+  const query = q({ groupBy: 'none', sort: 'size-desc' })
+  const first = walkRows(reads, query)[0]
+  const v = reads.version()
+  const last = walkRows(reads, query).filter((r) => r.size !== null && r.ext !== '.pdf').at(-1)!
+  db.prepare('UPDATE files SET size = ? WHERE path = ?').run(10_000_000, last.path)
+  assert.notEqual(reads.version(), v)
+  const top = walkRows(reads, query)[0]
+  assert.equal(top.path, last.path)
+  assert.notEqual(top.path, first.path)
+})
+
+test('re-applying the epoch schema upgrades an old trigger that did not watch size', () => {
+  const db = makeDb()
+  db.exec('DROP TRIGGER files_epoch_update')
+  db.exec(`CREATE TRIGGER files_epoch_update AFTER UPDATE OF date ON files BEGIN UPDATE catalogue_epoch SET n = n + 1; END;`)
+  db.exec(EPOCH_SCHEMA_SQL)
+  const reads = new LibraryReads(db as unknown as ReadDb)
+  const v = reads.version()
+  db.prepare('UPDATE files SET size = 5 WHERE id = 1').run()
+  assert.notEqual(reads.version(), v)
+})

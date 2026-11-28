@@ -341,3 +341,16 @@ test('the summary reports how many files in each group are previewless', () => {
   const sql = summarySql(base).sql
   assert.ok(sql.includes('SUM(' + compactExpr() + ') AS n_compact'))
 })
+
+test('a size sort leads with the stored size, keeps unknown sizes last, and ends with the unique path', () => {
+  assert.equal(orderExpr('default', false, 'size-desc'), '(size IS NULL) ASC, size DESC, date DESC, path ASC')
+  assert.equal(orderExpr('reverse', false, 'size-asc'), '(size IS NULL) ASC, size ASC, date ASC, path ASC')
+  assert.equal(orderExpr('default', true, 'size-desc'), '(size IS NULL) ASC, size DESC, date DESC, path ASC, volume_id ASC')
+  assert.equal(orderExpr('default', false, 'date'), orderExpr('default'))
+})
+
+test('no grouping is one constant key, ordered without a window function', () => {
+  const sql = pageSql({ ...base, groupBy: 'none', sort: 'size-desc' }).sql
+  assert.doesNotMatch(sql, /OVER/)
+  assert.match(sql, /size DESC/)
+})

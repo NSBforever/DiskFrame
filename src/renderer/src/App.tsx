@@ -153,8 +153,16 @@ function makeGroupFormatter(groupBy: string): (key: string) => string {
   }
   if (groupBy === 'year') return (k) => k || 'Unknown year'
   if (groupBy === 'location') return (k) => (k === 'none' ? 'No location info' : `Coords (${k})`)
+  if (groupBy === 'none') return () => 'All files'
   return (k) => (k === 'fav' ? 'Favourites' : 'Other files')
 }
+
+// Module level so the menu gets one stable array, not a new one per render.
+const SORT_OPTIONS: { value: 'date' | 'size-desc' | 'size-asc'; label: string }[] = [
+  { value: 'date', label: 'Sort by Date' },
+  { value: 'size-desc', label: 'Size: largest first' },
+  { value: 'size-asc', label: 'Size: smallest first' }
+]
 import {
   FolderArchive,
   Image as ImageIcon,
@@ -1761,8 +1769,11 @@ export default function App(): React.JSX.Element {
   const lastZoomDirRef = useRef<'in' | 'out' | null>(null)
 
   // Redesign / Trash / AI State
-  const [groupBy, setGroupBy] = useState<'day' | 'month' | 'year' | 'location' | 'favorites'>('day')
+  const [groupBy, setGroupBy] = useState<'day' | 'month' | 'year' | 'location' | 'favorites' | 'none'>('day')
   const [viewOrder, setViewOrder] = useState<'default' | 'reverse'>('default')
+  // Orders the files inside each group (libraryQuery.SortKey). Independent of
+  // viewOrder, which decides which end of the timeline comes first.
+  const [sortKey, setSortKey] = useState<'date' | 'size-desc' | 'size-asc'>('date')
   // Bumped when the user picks a different grouping or order from the menus.
   // The list they were looking at no longer exists, so staying at the same
   // pixel offset drops them somewhere arbitrary in the new one - which reads
@@ -2370,9 +2381,9 @@ export default function App(): React.JSX.Element {
   const libraryQuery = useMemo<LibraryQuery | null>(
     () =>
       selectedDrive
-        ? { drive: selectedDrive, nav: galleryNav, search: searchQuery, groupBy, order: viewOrder }
+        ? { drive: selectedDrive, nav: galleryNav, search: searchQuery, groupBy, order: viewOrder, sort: sortKey }
         : null,
-    [selectedDrive, galleryNav, searchQuery, groupBy, viewOrder]
+    [selectedDrive, galleryNav, searchQuery, groupBy, viewOrder, sortKey]
   )
   const library = useLibrary(libraryQuery)
   // Derived, not a second source of truth. It used to be its own state, set
@@ -3330,8 +3341,19 @@ export default function App(): React.JSX.Element {
                   { value: 'month', label: 'Group by Month' },
                   { value: 'year', label: 'Group by Year' },
                   { value: 'location', label: 'Group by Location' },
-                  { value: 'favorites', label: 'Group by Favorites' }
+                  { value: 'favorites', label: 'Group by Favorites' },
+                  { value: 'none', label: 'No grouping' }
                 ]}
+              />
+            )}
+
+            {/* Sort: what orders the files inside each group. */}
+            {selectedDrive && isGalleryPage && (activeView === 'Grid' || activeView === 'Timeline') && activeNav !== 'trash' && (
+              <GlassSelect
+                label="Sort"
+                value={sortKey}
+                onChange={(v) => { setSortKey(v); setScrollToTopNonce((n) => n + 1) }}
+                options={SORT_OPTIONS}
               />
             )}
 

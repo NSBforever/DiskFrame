@@ -19,8 +19,22 @@ export type NavFilter =
   | 'screenshots'
   | 'places'
   | 'favourites'
-export type GroupBy = 'day' | 'month' | 'year' | 'location' | 'favorites'
+/** 'none' lays the whole result out as one section, so a sort runs across all of it. */
+export type GroupBy = 'day' | 'month' | 'year' | 'location' | 'favorites' | 'none'
+/**
+ * The view-order control ("Top to bottom" / "Bottom to top"): which end of the
+ * timeline comes first - the order of the groups, and of dates inside them.
+ */
 export type SortOrder = 'default' | 'reverse'
+/**
+ * What orders the files INSIDE a group (or across everything when ungrouped).
+ * Separate from SortOrder: "Size: smallest first" is a different question from
+ * "oldest at the top", and the two combine - groups still follow the view
+ * order, the files in each one follow the sort.
+ */
+export type SortKey = 'date' | 'size-desc' | 'size-asc'
+export const SORT_KEYS: readonly SortKey[] = ['date', 'size-desc', 'size-asc']
+export const GROUP_BYS: readonly GroupBy[] = ['day', 'month', 'year', 'location', 'favorites', 'none']
 
 export interface MapBounds {
   minLat: number
@@ -50,6 +64,8 @@ export interface LibraryQuery {
   search: string
   groupBy: GroupBy
   order: SortOrder
+  /** Order of files within a group. Absent means 'date', the order before sorting existed. */
+  sort?: SortKey
   /**
    * Restricts the query to one geographic box. Opening a place on the map is
    * then just an ordinary library query, so it gets the existing grouping,
@@ -221,6 +237,8 @@ export function groupKeyExpr(groupBy: GroupBy): string {
       return "CASE WHEN lat IS NULL OR lng IS NULL THEN 'none' ELSE (CAST(ROUND(lat * 2) / 2 AS TEXT) || ',' || CAST(ROUND(lng * 2) / 2 AS TEXT)) END"
     case 'favorites':
       return "CASE WHEN favourited = 1 THEN 'fav' ELSE 'other' END"
+    case 'none':
+      return "'all'"
   }
 }
 
@@ -230,12 +248,18 @@ export function groupKeyExpr(groupBy: GroupBy): string {
  * or repeat files at page boundaries. `path` is UNIQUE, so it is a total
  * tie-break and pagination is stable.
  */
-export function orderExpr(order: SortOrder, multiVolume = false): string {
+export function orderExpr(order: SortOrder, multiVolume = false, sort: SortKey = 'date'): string {
   // Across volumes `path` is no longer unique - two drives that were each E:
   // at some point can both hold E:\DCIM\IMG_0001.JPG - so the volume is the
   // last tie-break there. A single drive keeps its exact old ordering.
   const tie = multiVolume ? ', volume_id ASC' : ''
-  return (order === 'reverse' ? 'date ASC, path ASC' : 'date DESC, path ASC') + tie
+  const byDate = (order === 'reverse' ? 'date ASC, path ASC' : 'date DESC, path ASC') + tie
+  if (sort === 'date') return byDate
+  // The stored byte count, never a stat of the file. Files whose size was never
+  // recorded go last in both directions: an unknown size is not "smallest".
+  // Equal sizes (burst shots, copies) fall back to the date order, then path,
+  // so pagination stays stable.
+  return `(size IS NULL) ASC, size ${sort === 'size-asc' ? 'ASC' : 'DESC'}, ${byDate}`
 }
 
 /** Groups ordered consistently with the rows inside them. */
@@ -271,6 +295,14 @@ export function groupIsDateDerived(groupBy: GroupBy): boolean {
 }
 
 /**
+ * Whether rows can be ordered by the group key directly. True for the
+ * date-derived keys, and for 'none', whose key is a constant.
+ */
+function groupOrdersDirectly(groupBy: GroupBy): boolean {
+  return groupIsDateDerived(groupBy) || groupBy === 'none'
+}
+
+/**
  * One bounded window of rows, in the same order the summary implies.
  *
  * The summary orders GROUPS by MAX(date) (or MIN when reversed); rows were
@@ -297,7 +329,7 @@ export function pageSql(q: LibraryQuery): { sql: string; params: unknown[] } {
  */
 export function orderedSql(q: LibraryQuery, columns: string = PAGE_COLUMNS): { sql: string; params: unknown[] } {
   const where = buildWhere(q)
-  const rowOrder = orderExpr(q.order, isAllDrives(q))
+  const rowOrder = orderExpr(q.order, isAllDrives(q), q.sort ?? 'date')
   const key = groupKeyExpr(q.groupBy)
   const dir = q.order === 'reverse' ? 'ASC' : 'DESC'
 
@@ -305,8 +337,9 @@ export function orderedSql(q: LibraryQuery, columns: string = PAGE_COLUMNS): { s
   // their own group. The grid needs that: it reserves one cell per previewable
   // file and one per four compact files, so a page has to hand it back in that
   // arrangement for cell N to mean the same rows on both sides. Grouping is
-  // unaffected - nothing crosses a group boundary.
-  if (groupIsDateDerived(q.groupBy)) {
+  // unaffected - nothing crosses a group boundary. A size sort therefore orders
+  // the previewable files of a group, then its compact ones, each by size.
+  if (groupOrdersDirectly(q.groupBy)) {
     return {
       sql: `SELECT ${columns} FROM files WHERE ${where.sql}
           ORDER BY ${key} ${dir}, ${compactExpr()} ASC, ${rowOrder}`,
