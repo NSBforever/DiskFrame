@@ -135,7 +135,8 @@ import { UpdateNotice, UpdateSettings } from './components/Updates'
 import DateScrubber from './components/DateScrubber'
 import TransferMenu, { type TransferDrive } from './components/TransferMenu'
 import { progressiveUpdateAction, groupSelectionRange } from '../../main/progressiveLibrary'
-import { useLibrary, groupYear, type LibraryGroup, type LibraryQuery } from './hooks/useLibrary'
+import { useLibrary, groupYear, type AnchorTarget, type LibraryGroup, type LibraryQuery } from './hooks/useLibrary'
+import type { GalleryAnchor } from '../../main/galleryAnchor'
 
 /**
  * Group keys come out of SQL in a sortable form (an ISO date slice, rounded
@@ -667,12 +668,12 @@ const MainContentArea: React.FC<{
   groupBy: string
   onDragStart: (file: ScannedFile, e: React.DragEvent) => void
   setActiveView: (view: string) => void
-  /** Bumped to send the grid back to the top after a grouping/order change. */
-  scrollToTopNonce: number
   onGridZoomOutBeyond: () => void
   onGridZoomInBeyond: () => void
-  visibleKeyRefProp: React.MutableRefObject<string | null>
-  pendingGroupAnchorRef: React.MutableRefObject<string | null>
+  /** Where to put the viewport after a rearrangement (useLibrary). */
+  anchorTarget: AnchorTarget | null
+  /** The active view's "what is at the top now" probe, for App to capture before a rearrangement. */
+  anchorProbeRef: React.MutableRefObject<((mode: GalleryAnchor['mode']) => GalleryAnchor | null) | null>
   thumbVersion: number
   hoverPreviewsEnabled: boolean
   onHoverPreviewsChange: (enabled: boolean) => void
@@ -741,11 +742,10 @@ const MainContentArea: React.FC<{
   groupBy,
   onDragStart,
   setActiveView,
-  scrollToTopNonce,
   onGridZoomOutBeyond,
   onGridZoomInBeyond,
-  visibleKeyRefProp,
-  pendingGroupAnchorRef,
+  anchorTarget,
+  anchorProbeRef,
   thumbVersion,
   hoverPreviewsEnabled,
   onHoverPreviewsChange,
@@ -921,23 +921,43 @@ const MainContentArea: React.FC<{
 
   const [gridScrollRequest, setGridScrollRequest] = useState<{ key: string; nonce: number } | null>(null)
 
-  // Re-anchor after a grouping change. Group keys are date slices, so the group
-  // covering the same moment is whichever key is a prefix of the old one, or
-  // has the old one as its prefix. Resolved against the new summary, so keeping
-  // the user's place needs no file rows at all.
+  // Timeline keeps its place across a rearrangement too. Its list is two
+  // items per group (header, preview row), so the top item names the group;
+  // the grid does the same at tile precision (PhotoGrid's anchor probe).
+  const timelineTopRef = useRef(0)
+  const timelineStateRef = useRef({ items: timelineItems, groups: libraryGroups, getRow })
+  timelineStateRef.current = { items: timelineItems, groups: libraryGroups, getRow }
+  const timelineActive = activeView === 'Timeline' && activeNav !== 'favourites' && activeNav !== 'trash'
   useEffect(() => {
-    const anchor = pendingGroupAnchorRef.current
-    if (!anchor || libraryGroups.length === 0) return
-    pendingGroupAnchorRef.current = null
-    const match =
-      libraryGroups.find((g) => anchor.startsWith(g.key)) ??
-      libraryGroups.find((g) => g.key.startsWith(anchor))
-    if (match) setGridScrollRequest({ key: match.key, nonce: Date.now() })
-  }, [libraryGroups, pendingGroupAnchorRef])
+    if (!timelineActive) return
+    const probe = (mode: GalleryAnchor['mode']): GalleryAnchor | null => {
+      const { items, groups, getRow: row } = timelineStateRef.current
+      const item = items[timelineTopRef.current]
+      const g = item && groups.find((x) => x.key === item.monthKey)
+      if (!g) return null
+      const f = row(g.offset)
+      return { path: f?.path ?? null, volumeId: f?.volume_id ?? null, date: f?.date ?? g.maxDate ?? null, offsetPx: 0, mode }
+    }
+    anchorProbeRef.current = probe
+    return () => {
+      if (anchorProbeRef.current === probe) anchorProbeRef.current = null
+    }
+  }, [timelineActive, anchorProbeRef])
+  const appliedTimelineAnchorRef = useRef<number | null>(null)
+  useEffect(() => {
+    const n = anchorTarget?.nonce ?? null
+    // A target that arrived while another view was showing is not this list's.
+    if (!timelineActive || !anchorTarget) {
+      appliedTimelineAnchorRef.current = n
+      return
+    }
+    if (appliedTimelineAnchorRef.current === n) return
+    appliedTimelineAnchorRef.current = n
+    virtuosoRef.current?.scrollToIndex({ index: anchorTarget.groupIndex * 2, align: 'start' })
+  }, [timelineActive, anchorTarget])
   const [visibleKey, setVisibleKey] = useState<string | null>(null)
   const onVisibleKeyChange = useCallback((key: string | null) => {
     setVisibleKey(key)
-    visibleKeyRefProp.current = key
   }, [])
   // The scrubber's position dot is moved directly through this ref on every
   // scroll frame - true scroll progress, not React state, so scrolling never
@@ -1366,7 +1386,8 @@ const MainContentArea: React.FC<{
           onMarquee={handleMarquee}
           onEmptyClick={handleEmptyGridClick}
           scrollRequest={gridScrollRequest}
-          scrollToTopNonce={scrollToTopNonce}
+          anchorTarget={anchorTarget}
+          anchorProbeRef={anchorProbeRef}
           thumbVersion={thumbVersion}
           hoverPreviewsEnabled={hoverPreviewsEnabled}
           onVisibleKeyChange={onVisibleKeyChange}
@@ -1411,6 +1432,9 @@ const MainContentArea: React.FC<{
           overscan={overscanPx}
           components={virtuosoComponents}
           ref={virtuosoRef}
+          rangeChanged={(r) => {
+            timelineTopRef.current = r.startIndex
+          }}
         />
       </div>
     )
@@ -1712,10 +1736,15 @@ export default function App(): React.JSX.Element {
     appVersion: string
     buildCommit: string
   } | null>(null)
-  // The group key currently under the top edge, and the one to re-anchor to
-  // after a grouping change.
-  const visibleKeyRef = useRef<string | null>(null)
-  const pendingGroupAnchorRef = useRef<string | null>(null)
+  // Keeping the user's place across a change of grouping, view order or sort
+  // (galleryAnchor.ts): the active view's probe reports what is at the top of
+  // the viewport, captured into anchorRef just before the change; useLibrary
+  // sends it with the new summary and hands back where to scroll.
+  const anchorProbeRef = useRef<((mode: GalleryAnchor['mode']) => GalleryAnchor | null) | null>(null)
+  const anchorRef = useRef<GalleryAnchor | null>(null)
+  const captureAnchor = useCallback((mode: GalleryAnchor['mode']): void => {
+    anchorRef.current = anchorProbeRef.current?.(mode) ?? null
+  }, [])
   // What the cached open reported: how many records exist for this drive, and
   // whether it has never been indexed (which needs a first scan the user asks for).
   const [driveOpened, setDriveOpened] = useState<{
@@ -1779,7 +1808,6 @@ export default function App(): React.JSX.Element {
   // pixel offset drops them somewhere arbitrary in the new one - which reads
   // as "the sort did nothing". Zoom-driven grouping changes do NOT bump this:
   // they keep their own anchor so the zoom animation stays continuous.
-  const [scrollToTopNonce, setScrollToTopNonce] = useState(0)
 
   // Settings and Map are destinations, not library filters. Keeping the query
   // on the last gallery filter means visiting one neither re-runs the library
@@ -2343,8 +2371,9 @@ export default function App(): React.JSX.Element {
   }
 
   const handleViewOrderChange = (order: 'default' | 'reverse') => {
+    // The same photo stays where it is on screen; the timeline turns around it.
+    if (order !== viewOrder) captureAnchor('file')
     setViewOrder(order)
-    setScrollToTopNonce((n) => n + 1)
     window.api.setViewOrder(order).catch((err) => console.error(err))
   }
 
@@ -2385,7 +2414,7 @@ export default function App(): React.JSX.Element {
         : null,
     [selectedDrive, galleryNav, searchQuery, groupBy, viewOrder, sortKey]
   )
-  const library = useLibrary(libraryQuery)
+  const library = useLibrary(libraryQuery, anchorRef)
   // Derived, not a second source of truth. It used to be its own state, set
   // when the full-catalogue payload landed - so it said "ready" based on one
   // query while the counts beside it came from another, which is how the status
@@ -2599,14 +2628,11 @@ export default function App(): React.JSX.Element {
       if (nextIdx < 0 || nextIdx >= GROUP_LADDER.length) return
       groupZoomLockRef.current = now
 
-      // Keep the date the user is looking at anchored across the change. Group
-      // keys are date slices, so the containing group in the next level is a
-      // prefix of the current key (or vice versa).
-      const anchor = visibleKeyRef.current
+      // Keep the photo the user is looking at where it is (galleryAnchor.ts).
+      captureAnchor('file')
       setGroupBy(GROUP_LADDER[nextIdx])
-      if (anchor) pendingGroupAnchorRef.current = anchor
     },
-    [groupBy]
+    [groupBy, captureAnchor]
   )
 
   const handleGridZoomOutBeyond = useCallback((): void => stepGrouping('coarser'), [stepGrouping])
@@ -3335,7 +3361,11 @@ export default function App(): React.JSX.Element {
               <GlassSelect
                 label="Grouping"
                 value={groupBy}
-                onChange={(v) => { setGroupBy(v as never); setScrollToTopNonce((n) => n + 1) }}
+                onChange={(v) => {
+                  if (v === groupBy) return
+                  captureAnchor('file')
+                  setGroupBy(v as never)
+                }}
                 options={[
                   { value: 'day', label: 'Group by Day' },
                   { value: 'month', label: 'Group by Month' },
@@ -3352,7 +3382,12 @@ export default function App(): React.JSX.Element {
               <GlassSelect
                 label="Sort"
                 value={sortKey}
-                onChange={(v) => { setSortKey(v); setScrollToTopNonce((n) => n + 1) }}
+                onChange={(v) => {
+                  if (v === sortKey) return
+                  // A new sort is about the start of a group, not one photo in it.
+                  captureAnchor('group')
+                  setSortKey(v)
+                }}
                 options={SORT_OPTIONS}
               />
             )}
@@ -3435,11 +3470,10 @@ export default function App(): React.JSX.Element {
           onDragStart={handleDragStart}
           setActiveView={setActiveView}
           onTileSizeCommit={handleGridTileSizeCommit}
-          scrollToTopNonce={scrollToTopNonce}
           onGridZoomOutBeyond={handleGridZoomOutBeyond}
           onGridZoomInBeyond={handleGridZoomInBeyond}
-          visibleKeyRefProp={visibleKeyRef}
-          pendingGroupAnchorRef={pendingGroupAnchorRef}
+          anchorTarget={library.anchorTarget}
+          anchorProbeRef={anchorProbeRef}
           thumbVersion={thumbVersion}
           hoverPreviewsEnabled={hoverPreviewsEnabled}
           onHoverPreviewsChange={handleHoverPreviewsChange}

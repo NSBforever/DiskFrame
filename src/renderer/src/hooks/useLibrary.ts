@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ScannedFile } from '../App'
 import { pickEvictionVictim, reconcileCacheVersion, removeResidentRows } from '../../../main/pageCache'
 import { COMPACT_EXTS } from '../../../main/libraryQuery'
+import { resolveAnchorRow, type GalleryAnchor } from '../../../main/galleryAnchor'
 
 const isCompactExt = (ext: string): boolean => COMPACT_EXTS.includes((ext || '').toLowerCase())
 
@@ -52,8 +53,23 @@ export const PAGE_SIZE = 200
  *  is the ceiling on how much file metadata the renderer holds at once. */
 const MAX_CACHED_PAGES = 12
 
+/**
+ * Where to put the viewport after a rearrangement: bring absolute row `row`
+ * to `offsetPx` below the top (file mode), or show the top of its group
+ * (`toGroupTop`). Delivered in the same render as the groups it refers to.
+ */
+export interface AnchorTarget {
+  row: number
+  groupIndex: number
+  offsetPx: number
+  toGroupTop: boolean
+  nonce: number
+}
+
 export interface Library {
   groups: LibraryGroup[]
+  /** Set together with `groups` after a rearrangement that carried an anchor. */
+  anchorTarget: AnchorTarget | null
   total: number
   /** 'loading' until the first summary lands, so callers never report a confident 0. */
   state: 'loading' | 'ready' | 'error'
@@ -97,6 +113,16 @@ export interface Library {
  *  "hold the whole drive in the renderer". */
 export const MAX_RANGE_ROWS = 5000
 
+/**
+ * Same files, different arrangement: only grouping, view order or sort moved.
+ * The gallery keeps its current layout on screen until the new one is known,
+ * instead of dropping back to a loading screen (which unmounted the grid and
+ * lost the user's place - see galleryAnchor.ts).
+ */
+function sameFiles(a: LibraryQuery, b: LibraryQuery): boolean {
+  return a.drive === b.drive && a.nav === b.nav && a.search === b.search
+}
+
 function sameQuery(a: LibraryQuery | null, b: LibraryQuery | null): boolean {
   if (!a || !b) return a === b
   return (
@@ -109,8 +135,16 @@ function sameQuery(a: LibraryQuery | null, b: LibraryQuery | null): boolean {
   )
 }
 
-export function useLibrary(query: LibraryQuery | null): Library {
+export function useLibrary(
+  query: LibraryQuery | null,
+  /**
+   * Set by the caller just before it changes the query; consumed (and cleared)
+   * by the next query change. See galleryAnchor.ts.
+   */
+  anchorRef?: React.MutableRefObject<GalleryAnchor | null>
+): Library {
   const [groups, setGroups] = useState<LibraryGroup[]>([])
+  const [anchorTarget, setAnchorTarget] = useState<AnchorTarget | null>(null)
   // Read synchronously by removePaths, which can run twice before a render.
   const groupsRef = useRef(groups)
   groupsRef.current = groups
@@ -128,7 +162,9 @@ export function useLibrary(query: LibraryQuery | null): Library {
   // Page window the grid last asked for. Drives eviction so a page that is
   // on screen is never the one thrown away.
   const wantRef = useRef({ first: 0, last: 0 })
+  // The query the resident pages and groups belong to.
   const queryRef = useRef<LibraryQuery | null>(null)
+  const wantedRef = useRef<LibraryQuery | null>(null)
   const [pageVersion, setPageVersion] = useState(0)
   // Changes on every query change. ensureRange depends on it so its identity
   // changes too: the consumer's effect is keyed on the visible range, and after
@@ -156,40 +192,68 @@ export function useLibrary(query: LibraryQuery | null): Library {
   }, [])
 
   const loadSummary = useCallback(
-    (q: LibraryQuery, generation: number) => {
+    (q: LibraryQuery, generation: number, anchor: GalleryAnchor | null = null, swap = false) => {
       window.api
-        .librarySummary(q)
+        .librarySummary(q, anchor?.path ? { path: anchor.path, volumeId: anchor.volumeId } : null)
         .then((res) => {
           if (generation !== generationRef.current) return
+          if (swap) {
+            // The old arrangement stayed on screen, with its own pages, until
+            // now. Switch query, pages and layout in this one render. The
+            // generation moves again so a page the old layout asked for in
+            // the meantime cannot land in the new cache.
+            queryRef.current = q
+            generationRef.current++
+            resetCaches()
+            setQueryEpoch((n) => n + 1)
+          }
           setGroups(res.groups)
           setTotal(res.total)
           setState('ready')
+          const hit = anchor ? resolveAnchorRow(res.groups, anchor, res.anchorIndex ?? null) : null
+          setAnchorTarget(
+            hit && anchor
+              ? { row: hit.row, groupIndex: hit.groupIndex, offsetPx: anchor.offsetPx, toGroupTop: !hit.exact, nonce: generation }
+              : null
+          )
         })
         .catch(() => {
           if (generation !== generationRef.current) return
           setState('error')
         })
     },
-    []
+    [resetCaches]
   )
 
   useEffect(() => {
     if (!query) {
       queryRef.current = null
+      wantedRef.current = null
       resetCaches()
       setGroups([])
       setTotal(0)
       setState('loading')
       return
     }
-    if (sameQuery(queryRef.current, query)) return
-    queryRef.current = query
+    // The latest query asked for, which may not be on screen yet (a
+    // rearrangement in flight). Compared against, so asking for the same thing
+    // twice is still a no-op.
+    if (sameQuery(wantedRef.current, query)) return
+    wantedRef.current = query
+    const anchor = anchorRef?.current ?? null
+    if (anchorRef) anchorRef.current = null
     const generation = ++generationRef.current
+    const shown = queryRef.current
+    if (shown && sameFiles(shown, query) && groupsRef.current.length > 0) {
+      loadSummary(query, generation, anchor, true)
+      return
+    }
+    queryRef.current = query
     resetCaches()
     setState('loading')
     setQueryEpoch((n) => n + 1)
-    loadSummary(query, generation)
-  }, [query, loadSummary, resetCaches])
+    loadSummary(query, generation, anchor)
+  }, [query, loadSummary, resetCaches, anchorRef])
 
   useEffect(() => () => window.clearTimeout(renderTimerRef.current), [])
 
@@ -332,6 +396,12 @@ export function useLibrary(query: LibraryQuery | null): Library {
   const refresh = useCallback(async (): Promise<void> => {
     const q = queryRef.current
     if (!q) return
+    // A rearrangement still in flight: re-read what was asked for, not what
+    // happens to be on screen.
+    if (!sameQuery(q, wantedRef.current)) {
+      reloadRef.current()
+      return
+    }
     const generation = ++generationRef.current
     const { first, last } = wantRef.current
     try {
@@ -386,8 +456,9 @@ export function useLibrary(query: LibraryQuery | null): Library {
   )
 
   const reload = useCallback(() => {
-    const q = queryRef.current
+    const q = wantedRef.current ?? queryRef.current
     if (!q) return
+    queryRef.current = q
     const generation = ++generationRef.current
     resetCaches()
     // Same reason as on a query change: the page cache was just emptied, but
@@ -402,6 +473,7 @@ export function useLibrary(query: LibraryQuery | null): Library {
 
   return {
     groups,
+    anchorTarget,
     total,
     state,
     pageVersion,

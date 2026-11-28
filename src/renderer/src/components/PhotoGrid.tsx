@@ -22,8 +22,9 @@ import {
   videoExts
 } from '../../../main/validation'
 import type { ScannedFile } from '../App'
-import { cellCountOf, cellSpan, mediaCountOf } from '../../../main/compactCells'
-import type { LibraryGroup } from '../hooks/useLibrary'
+import { cellCountOf, cellOfRow, cellSpan, mediaCountOf } from '../../../main/compactCells'
+import type { GalleryAnchor } from '../../../main/galleryAnchor'
+import type { AnchorTarget, LibraryGroup } from '../hooks/useLibrary'
 import { useReducedMotionPref } from '../hooks/useReducedMotionPref'
 import { mediaUrl } from '../../../main/mediaUrl'
 import { startFileDrag } from '../dragPreview'
@@ -119,6 +120,21 @@ function buildLayout(groups: LibraryGroup[], width: number, cols: number): Layou
     y = bottom
   }
   return { cols, tile, pitch, sections, height: y + PAD_BOTTOM }
+}
+
+/** Last section starting at or before absolute row `row`. */
+function sectionOfRow(sections: Section[], row: number): number {
+  let lo = 0
+  let hi = sections.length - 1
+  let ans = -1
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1
+    if (sections[mid].offset <= row) {
+      ans = mid
+      lo = mid + 1
+    } else hi = mid - 1
+  }
+  return ans
 }
 
 /** First section whose bottom is below y. */
@@ -746,8 +762,14 @@ export interface PhotoGridProps {
   /** A plain click on empty gallery space. */
   onEmptyClick?: () => void
   scrollRequest: { key: string; nonce: number } | null
-  /** Bumped by the caller to send the grid back to the top. */
-  scrollToTopNonce?: number
+  /**
+   * After a rearrangement (grouping, view order, sort): the row to bring back
+   * and where. Arrives in the same render as the groups it refers to, and is
+   * applied before paint - see galleryAnchor.ts.
+   */
+  anchorTarget?: AnchorTarget | null
+  /** Filled with a function reporting what is at the top of the viewport, for the caller to capture before a rearrangement. */
+  anchorProbeRef?: React.MutableRefObject<((mode: GalleryAnchor['mode']) => GalleryAnchor | null) | null>
   /** Bumped when thumbnails are patched into file objects in place. */
   thumbVersion: number
   hoverPreviewsEnabled: boolean
@@ -1036,20 +1058,75 @@ export default function PhotoGrid(props: PhotoGridProps): React.JSX.Element {
     if (el && el.scrollTop !== scrollTopRef.current) setScrollTop(el.scrollTop)
   }, [layout.height])
 
-  // A grouping or order change rebuilds the list from scratch, so the old
-  // offset means nothing in the new one. Skips the first run: mounting is not
-  // a change, and it must not fight the position restore above.
-  const lastTopNonce = useRef(props.scrollToTopNonce ?? 0)
+  // ── Keeping the user's place across a rearrangement ──
+  // What is at the top of the viewport: the first tile row at least half on
+  // screen (a sliver of the row above is not what the user is looking at),
+  // its first file, and how far down its tile sits.
+  // The caller captures this just before changing grouping/order/sort.
+  const anchorProbeRef = props.anchorProbeRef
+  useEffect(() => {
+    if (!anchorProbeRef) return
+    const probe = (mode: GalleryAnchor['mode']): GalleryAnchor | null => {
+      const el = scrollerRef.current
+      const lay = layoutRef.current
+      if (!el || lay.sections.length === 0 || lay.cols <= 0) return null
+      const top = el.scrollTop
+      let si = Math.min(firstSectionAfter(lay.sections, top), lay.sections.length - 1)
+      let s = lay.sections[si]
+      let row = top <= s.rowsTop ? 0 : Math.floor((top - s.rowsTop) / lay.pitch)
+      if (s.rowsTop + row * lay.pitch + lay.tile / 2 <= top) row++
+      if (row >= s.rows) {
+        if (si + 1 < lay.sections.length) {
+          s = lay.sections[++si]
+          row = 0
+        } else row = s.rows - 1
+      }
+      const abs = cellRows(s, row * lay.cols).start
+      const f = propsRef.current.getRow(abs)
+      const g = propsRef.current.groups.find((x) => x.key === s.key)
+      return {
+        path: f?.path ?? null,
+        volumeId: f?.volume_id ?? null,
+        // A skeleton tile has no row yet; its group's date still finds the place.
+        date: f?.date ?? g?.maxDate ?? null,
+        offsetPx: s.rowsTop + row * lay.pitch - top,
+        mode
+      }
+    }
+    anchorProbeRef.current = probe
+    return () => {
+      if (anchorProbeRef.current === probe) anchorProbeRef.current = null
+    }
+  }, [anchorProbeRef])
+
+  // Applied in a layout effect, in the render that brings the new groups, so
+  // the new arrangement is never painted at the old offset (or at the top)
+  // first. Exact geometry from the layout arithmetic - no rows, no DOM reads.
+  // A grid mounted later (back from Timeline or Settings) treats the target
+  // that already exists as handled: it belongs to the arrangement the user
+  // has since scrolled away from, and the mount restore owns that position.
+  const appliedAnchorRef = useRef<number | null>(props.anchorTarget?.nonce ?? null)
   useLayoutEffect(() => {
-    const n = props.scrollToTopNonce ?? 0
-    if (n === lastTopNonce.current) return
-    lastTopNonce.current = n
+    const t = props.anchorTarget
     const el = scrollerRef.current
-    if (!el) return
-    el.scrollTop = 0
-    setScrollTop(0)
-    lastGalleryScrollTop = 0
-  }, [props.scrollToTopNonce])
+    if (!t || !el || gridWidth <= 0 || appliedAnchorRef.current === t.nonce) return
+    appliedAnchorRef.current = t.nonce
+    const si = sectionOfRow(layout.sections, t.row)
+    if (si < 0) return
+    const s = layout.sections[si]
+    let top: number
+    if (t.toGroupTop) top = s.top - PAD_TOP
+    else {
+      const cell = cellOfRow(s, t.row - s.offset)
+      top = s.rowsTop + Math.floor(cell / layout.cols) * layout.pitch - t.offsetPx
+    }
+    top = clamp(Math.round(top), 0, Math.max(0, layout.height - el.clientHeight))
+    el.scrollTop = top
+    // This IS the position now; a pending mount restore must not override it.
+    restoredRef.current = true
+    lastGalleryScrollTop = top
+    setScrollTop(top)
+  }, [props.anchorTarget, layout, gridWidth])
 
   // ── Pinch / ctrl+wheel zoom ──
   const gesture = useRef({ active: false, raw: 1, endTimer: 0 as number | undefined, lastStep: 0, startedAtDensest: false, startedAtLargest: false, edgeNotches: 0, edgeNotchesIn: 0 })

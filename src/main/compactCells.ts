@@ -49,3 +49,13 @@ export function cellSpan(g: CellGroup, cell: number): { start: number; count: nu
   const remaining = g.count - start
   return { start, count: Math.max(0, Math.min(COMPACT_PER_CELL, remaining)) }
 }
+
+/**
+ * The cell that holds the file at offset `i` of the group - cellSpan's
+ * inverse. Used to scroll a given file back into view without its rows.
+ */
+export function cellOfRow(g: CellGroup, i: number): number {
+  const media = mediaCountOf(g)
+  if (i < media) return Math.max(0, i)
+  return media + Math.floor((i - media) / COMPACT_PER_CELL)
+}

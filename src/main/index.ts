@@ -13,6 +13,7 @@ import { listCollections, collectionFiles, type ColDb } from './collections'
 import { runDiscovery } from './discovery'
 import { markOffline, parseScope, resolveScope } from './driveScope'
 import { ALL_DRIVES_KEY, GROUP_BYS, SORT_KEYS } from './libraryQuery'
+import { normalizeAnchor } from './galleryAnchor'
 import { gpuSwitchFor, parseVideoControllers, readGpuSwitch, writeGpuSwitch, VIDEO_CONTROLLER_QUERY } from './gpuChoice'
 import { isUpdateMode } from './updateState'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -1556,11 +1557,14 @@ app.whenReady().then(() => {
   // Summaries, pages and map clusters are read on the library worker, never on
   // this thread (see libraryWorker.ts); each answer carries the version it was
   // read at, from the same snapshot as its rows.
-  ipcMain.handle('library-summary', async (_event, raw) => {
+  // An optional anchor (a file the renderer had at the top of the viewport)
+  // comes back as anchorIndex: where that file sits in this query's ordering.
+  ipcMain.handle('library-summary', async (_event, raw, rawAnchor) => {
     const q = await normalizeQuery(raw)
     if (!q) return { total: 0, groups: [], version: getCatalogueVersion() }
+    const anchor = normalizeAnchor(rawAnchor)
     const t0 = Date.now()
-    const res = await readLibrary(catalogueDbPath, { kind: 'summary', query: q }, () => getLibrarySummary(q))
+    const res = await readLibrary(catalogueDbPath, { kind: 'summary', query: q, anchor }, () => getLibrarySummary(q, anchor))
     diag('library', `summary ${q.drive}/${q.nav}/${q.groupBy}: ${res.total} files in ${res.groups.length} groups (${Date.now() - t0}ms)`)
     return res
   })

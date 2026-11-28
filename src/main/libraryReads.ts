@@ -144,6 +144,25 @@ export class LibraryReads {
     return ordering.ids
   }
 
+  /**
+   * Where one file sits in a query's ordering, or -1 if the query does not
+   * return it. This is how the gallery keeps the user's place across a change
+   * of grouping or sort: the same photo, wherever the new order puts it.
+   * Costs one indexed lookup plus a scan of the id list the first page needs
+   * anyway (the ordering is cached for the pages that follow).
+   */
+  indexOf(q: LibraryQuery, path: string, volumeId: string | null): number {
+    const row = this.db
+      .prepare('SELECT id FROM files WHERE path = ? AND volume_id IS ? LIMIT 1')
+      .get(path, volumeId) as { id: number } | undefined
+    if (!row) return -1
+    if (dependsOnFavourites(q)) {
+      const o = orderedSql(q, 'id')
+      return (this.db.prepare(o.sql).all(...o.params) as { id: number }[]).findIndex((r) => r.id === row.id)
+    }
+    return this.orderedIds(q, this.version()).indexOf(row.id)
+  }
+
   page(q: LibraryQuery, offset: number, limit: number): { rows: Record<string, unknown>[]; version: string } {
     const version = this.version()
     if (dependsOnFavourites(q)) {

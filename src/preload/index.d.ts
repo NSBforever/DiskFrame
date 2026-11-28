@@ -59,6 +59,7 @@ type LibraryQueryLike = {
   search: string
   groupBy: string
   order: string
+  sort?: string
   /** Optional geographic box, used by the map and the place panel. */
   bbox?: { minLat: number; maxLat: number; minLng: number; maxLng: number } | null
 }
@@ -93,7 +94,11 @@ declare global {
         }) => void
       ) => () => void
       getFiles: (drivePath: string) => void
-      librarySummary: (query: LibraryQueryLike) => Promise<{
+      librarySummary: (
+        query: LibraryQueryLike,
+        /** A file to locate in the result (see galleryAnchor.ts). */
+        anchor?: { path: string; volumeId: string | null } | null
+      ) => Promise<{
         total: number
         groups: {
           key: string
@@ -109,6 +114,8 @@ declare global {
          * cannot end up resident at two indices while discovery is committing.
          */
         version: string
+        /** With an anchor: its row in this ordering, -1 when the result does not hold it. */
+        anchorIndex?: number
       }>
       /** Folders the index expects that are not on the drive right now. */
       listUnresolvedRoots: (drive: string) => Promise<{
