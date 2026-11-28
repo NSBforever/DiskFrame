@@ -23,7 +23,8 @@ const db = new Database(workerData.dbPath as string, { readonly: true, fileMustE
 const reads = new LibraryReads(db as unknown as ReadDb)
 
 type Request =
-  | { id: number; kind: 'summary'; query: LibraryQuery }
+  // With an anchor, also where that file sits in the new ordering - same snapshot.
+  | { id: number; kind: 'summary'; query: LibraryQuery; anchor?: { path: string; volumeId: string | null } | null }
   | { id: number; kind: 'page'; query: LibraryQuery; offset: number; limit: number }
   | { id: number; kind: 'clusters'; query: LibraryQuery; zoom: number }
   | { id: number; kind: 'owed'; volumeId: string; exts: string[]; maxAttempts: number; limit: number }
@@ -38,7 +39,10 @@ type Request =
   | { id: number; kind: 'collectionFiles'; collectionId: number }
 
 const run = db.transaction((m: Request) => {
-  if (m.kind === 'summary') return reads.summary(m.query)
+  if (m.kind === 'summary') {
+    const s = reads.summary(m.query)
+    return m.anchor ? { ...s, anchorIndex: reads.indexOf(m.query, m.anchor.path, m.anchor.volumeId) } : s
+  }
   if (m.kind === 'page') return reads.page(m.query, m.offset, m.limit)
   if (m.kind === 'owed') return reads.owedThumbnails(m.volumeId, m.exts, m.maxAttempts, m.limit)
   if (m.kind === 'folders') return reads.folders(m.volumeId)

@@ -12,7 +12,8 @@ import { isMatchingAllowed, setMatchingAllowed, consentList, type ConsentDb } fr
 import { listCollections, collectionFiles, type ColDb } from './collections'
 import { runDiscovery } from './discovery'
 import { markOffline, parseScope, resolveScope } from './driveScope'
-import { ALL_DRIVES_KEY } from './libraryQuery'
+import { ALL_DRIVES_KEY, GROUP_BYS, SORT_KEYS } from './libraryQuery'
+import { normalizeAnchor } from './galleryAnchor'
 import { gpuSwitchFor, parseVideoControllers, readGpuSwitch, writeGpuSwitch, VIDEO_CONTROLLER_QUERY } from './gpuChoice'
 import { isUpdateMode } from './updateState'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
@@ -1505,22 +1506,21 @@ app.whenReady().then(() => {
     const q = (raw ?? {}) as Partial<LibraryQuery>
     if (q.drive === ALL_DRIVES_KEY) {
       const navs = ['all', 'photos', 'videos', 'docs', 'screenshots', 'places', 'favourites']
-      const groups = ['day', 'month', 'year', 'location', 'favorites']
       return {
         drive: ALL_DRIVES_KEY,
         volumeId: null,
         volumeIds: await allDrivesIds(),
         nav: (navs.includes(String(q.nav)) ? q.nav : 'all') as LibraryQuery['nav'],
         search: typeof q.search === 'string' ? q.search.slice(0, 200) : '',
-        groupBy: (groups.includes(String(q.groupBy)) ? q.groupBy : 'day') as LibraryQuery['groupBy'],
+        groupBy: (GROUP_BYS as readonly string[]).includes(String(q.groupBy)) ? (q.groupBy as LibraryQuery['groupBy']) : 'day',
         order: q.order === 'reverse' ? 'reverse' : 'default',
+        sort: (SORT_KEYS as readonly string[]).includes(String(q.sort)) ? (q.sort as LibraryQuery['sort']) : 'date',
         bbox: normalizeBounds((q as { bbox?: unknown }).bbox)
       }
     }
     const drive = q.drive === SAMPLE_DRIVE_KEY ? SAMPLE_DRIVE_KEY : normalizeDrive(q.drive)
     if (!drive) return null
     const navs = ['all', 'photos', 'videos', 'docs', 'screenshots', 'places', 'favourites']
-    const groups = ['day', 'month', 'year', 'location', 'favorites']
     return {
       drive,
       // Read from the same live cache open-drive/scan primed - never trusted
@@ -1529,8 +1529,9 @@ app.whenReady().then(() => {
       volumeId: drive === SAMPLE_DRIVE_KEY ? null : getCachedVolumeId(drive),
       nav: (navs.includes(String(q.nav)) ? q.nav : 'all') as LibraryQuery['nav'],
       search: typeof q.search === 'string' ? q.search.slice(0, 200) : '',
-      groupBy: (groups.includes(String(q.groupBy)) ? q.groupBy : 'day') as LibraryQuery['groupBy'],
+      groupBy: (GROUP_BYS as readonly string[]).includes(String(q.groupBy)) ? (q.groupBy as LibraryQuery['groupBy']) : 'day',
       order: q.order === 'reverse' ? 'reverse' : 'default',
+      sort: (SORT_KEYS as readonly string[]).includes(String(q.sort)) ? (q.sort as LibraryQuery['sort']) : 'date',
       bbox: normalizeBounds((q as { bbox?: unknown }).bbox)
     }
   }
@@ -1556,11 +1557,14 @@ app.whenReady().then(() => {
   // Summaries, pages and map clusters are read on the library worker, never on
   // this thread (see libraryWorker.ts); each answer carries the version it was
   // read at, from the same snapshot as its rows.
-  ipcMain.handle('library-summary', async (_event, raw) => {
+  // An optional anchor (a file the renderer had at the top of the viewport)
+  // comes back as anchorIndex: where that file sits in this query's ordering.
+  ipcMain.handle('library-summary', async (_event, raw, rawAnchor) => {
     const q = await normalizeQuery(raw)
     if (!q) return { total: 0, groups: [], version: getCatalogueVersion() }
+    const anchor = normalizeAnchor(rawAnchor)
     const t0 = Date.now()
-    const res = await readLibrary(catalogueDbPath, { kind: 'summary', query: q }, () => getLibrarySummary(q))
+    const res = await readLibrary(catalogueDbPath, { kind: 'summary', query: q, anchor }, () => getLibrarySummary(q, anchor))
     diag('library', `summary ${q.drive}/${q.nav}/${q.groupBy}: ${res.total} files in ${res.groups.length} groups (${Date.now() - t0}ms)`)
     return res
   })

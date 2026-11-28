@@ -42,8 +42,12 @@ export const EPOCH_SCHEMA_SQL = `
     BEGIN UPDATE catalogue_epoch SET n = n + 1; END;
   CREATE TRIGGER IF NOT EXISTS files_epoch_delete AFTER DELETE ON files
     BEGIN UPDATE catalogue_epoch SET n = n + 1; END;
-  CREATE TRIGGER IF NOT EXISTS files_epoch_update
-    AFTER UPDATE OF volume_id, drive, path, name, ext, date, month, year, lat, lng, hidden, trashed_at ON files
+  -- size orders the gallery too (the Size sorts), so a rescan that only changes
+  -- a file's byte count must move the epoch. Dropped first: catalogues made
+  -- before that keep the old column list under IF NOT EXISTS.
+  DROP TRIGGER IF EXISTS files_epoch_update;
+  CREATE TRIGGER files_epoch_update
+    AFTER UPDATE OF volume_id, drive, path, name, ext, size, date, month, year, lat, lng, hidden, trashed_at ON files
     BEGIN UPDATE catalogue_epoch SET n = n + 1; END;
 `
 
@@ -78,7 +82,7 @@ export interface MapCluster {
 const MAX_CACHED = 4
 
 const queryKey = (q: LibraryQuery): string =>
-  JSON.stringify([q.drive, q.volumeId, q.volumeIds ?? null, q.nav, q.search, q.groupBy, q.order, q.bbox ?? null])
+  JSON.stringify([q.drive, q.volumeId, q.volumeIds ?? null, q.nav, q.search, q.groupBy, q.order, q.sort ?? 'date', q.bbox ?? null])
 
 export class LibraryReads {
   private orderings = new Map<string, { version: string; ids: number[] }>()
@@ -127,12 +131,8 @@ export class LibraryReads {
     return value
   }
 
-  page(q: LibraryQuery, offset: number, limit: number): { rows: Record<string, unknown>[]; version: string } {
-    const version = this.version()
-    if (dependsOnFavourites(q)) {
-      const o = orderedSql(q)
-      return { rows: this.db.prepare(o.sql + ' LIMIT ? OFFSET ?').all(...o.params, limit, offset) as Record<string, unknown>[], version }
-    }
+  /** Row ids in display order for (query, version), sorted once and then reused. */
+  private orderedIds(q: LibraryQuery, version: string): number[] {
     const key = queryKey(q)
     let ordering = this.orderings.get(key)
     if (!ordering || ordering.version !== version) {
@@ -141,7 +141,35 @@ export class LibraryReads {
       ordering = { version, ids }
       remember(this.orderings, key, ordering)
     }
-    const slice = ordering.ids.slice(offset, offset + limit)
+    return ordering.ids
+  }
+
+  /**
+   * Where one file sits in a query's ordering, or -1 if the query does not
+   * return it. This is how the gallery keeps the user's place across a change
+   * of grouping or sort: the same photo, wherever the new order puts it.
+   * Costs one indexed lookup plus a scan of the id list the first page needs
+   * anyway (the ordering is cached for the pages that follow).
+   */
+  indexOf(q: LibraryQuery, path: string, volumeId: string | null): number {
+    const row = this.db
+      .prepare('SELECT id FROM files WHERE path = ? AND volume_id IS ? LIMIT 1')
+      .get(path, volumeId) as { id: number } | undefined
+    if (!row) return -1
+    if (dependsOnFavourites(q)) {
+      const o = orderedSql(q, 'id')
+      return (this.db.prepare(o.sql).all(...o.params) as { id: number }[]).findIndex((r) => r.id === row.id)
+    }
+    return this.orderedIds(q, this.version()).indexOf(row.id)
+  }
+
+  page(q: LibraryQuery, offset: number, limit: number): { rows: Record<string, unknown>[]; version: string } {
+    const version = this.version()
+    if (dependsOnFavourites(q)) {
+      const o = orderedSql(q)
+      return { rows: this.db.prepare(o.sql + ' LIMIT ? OFFSET ?').all(...o.params, limit, offset) as Record<string, unknown>[], version }
+    }
+    const slice = this.orderedIds(q, version).slice(offset, offset + limit)
     if (slice.length === 0) return { rows: [], version }
     const found = this.db
       .prepare(`SELECT id, ${PAGE_COLUMNS} FROM files WHERE id IN (${slice.map(() => '?').join(',')})`)

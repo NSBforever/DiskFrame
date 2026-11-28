@@ -73,20 +73,35 @@ export default function GlassSelect<T extends string>({
       if (!rootRef.current?.contains(t) && !listRef.current?.contains(t)) setOpen(false)
     }
     // A fixed menu would drift from its button; closing is what native menus do.
-    const onMove = (): void => setOpen(false)
+    const onResize = (): void => setOpen(false)
+    // Only when the scroll actually moves the button. This listener sees every
+    // scroll in the window (scroll does not bubble, so it has to capture), and
+    // the gallery scrolls continuously under the toolbar - wheel momentum,
+    // smooth scrolling, a date jump settling. Closing on all of them made the
+    // menu vanish on the next frame while the gallery moved, so it could not
+    // be used at all mid-scroll. The toolbar is not inside the gallery's
+    // scroller, so those scrolls leave the button, and the menu, where they are.
+    const onScroll = (e: Event): void => {
+      const t = e.target
+      const root = rootRef.current
+      if (!root) return
+      if (t === document || t === window || (t instanceof Node && t.contains(root))) setOpen(false)
+    }
     window.addEventListener('pointerdown', onDown, true)
-    window.addEventListener('resize', onMove)
-    window.addEventListener('scroll', onMove, true)
+    window.addEventListener('resize', onResize)
+    window.addEventListener('scroll', onScroll, true)
     return () => {
       window.removeEventListener('pointerdown', onDown, true)
-      window.removeEventListener('resize', onMove)
-      window.removeEventListener('scroll', onMove, true)
+      window.removeEventListener('resize', onResize)
+      window.removeEventListener('scroll', onScroll, true)
     }
   }, [open])
 
   const openMenu = (): void => {
     const r = btnRef.current?.getBoundingClientRect()
     if (r) setPos({ top: r.bottom + 6, left: r.left, minWidth: r.width })
+    // Each opening starts on the current choice, wherever the pointer left it last time.
+    setActive(selectedIndex)
     setOpen(true)
   }
 
@@ -94,14 +109,18 @@ export default function GlassSelect<T extends string>({
     if (open) listRef.current?.focus()
   }, [open])
 
+  // Keyed on the selected index, not the options array: callers pass a fresh
+  // array literal on every render, and the toolbar re-renders whenever a
+  // gallery page lands - constantly while scrolling. Each of those reset the
+  // highlighted option back to the selected one under the user's pointer or
+  // arrow keys, so Enter could choose an option they had moved off.
+  const selectedIndex = Math.max(
+    0,
+    options.findIndex((o) => o.value === value)
+  )
   useEffect(() => {
-    setActive(
-      Math.max(
-        0,
-        options.findIndex((o) => o.value === value)
-      )
-    )
-  }, [value, options])
+    setActive(selectedIndex)
+  }, [selectedIndex])
 
   const onListKey = (e: React.KeyboardEvent): void => {
     if (e.key === 'Escape') {

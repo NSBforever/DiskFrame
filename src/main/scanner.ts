@@ -2534,8 +2534,14 @@ export function getIndexedVolumes(): ReturnType<LibraryReads['volumes']> {
   return mainReads.volumes()
 }
 
-export function getLibrarySummary(q: LibraryQuery): ReturnType<LibraryReads['summary']> {
-  return db.transaction(() => mainReads.summary(q))()
+export function getLibrarySummary(
+  q: LibraryQuery,
+  anchor?: { path: string; volumeId: string | null } | null
+): ReturnType<LibraryReads['summary']> & { anchorIndex?: number } {
+  return db.transaction(() => {
+    const s = mainReads.summary(q)
+    return anchor ? { ...s, anchorIndex: mainReads.indexOf(q, anchor.path, anchor.volumeId) } : s
+  })()
 }
 
 /**

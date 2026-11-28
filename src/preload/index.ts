@@ -31,7 +31,7 @@ const api = {
   },
   getFiles: (p: string) => ipcRenderer.send('get-files', p),
   /** Group counts + total for a query. Small: one row per group, no file rows. */
-  librarySummary: (query: unknown) => ipcRenderer.invoke('library-summary', query),
+  librarySummary: (query: unknown, anchor?: unknown) => ipcRenderer.invoke('library-summary', query, anchor),
   listUnresolvedRoots: (drive: string) => ipcRenderer.invoke('list-unresolved-roots', drive),
   locateFolder: (root: string) => ipcRenderer.invoke('locate-folder', { root }),
   applyFolderMapping: (root: string, target: string) =>
